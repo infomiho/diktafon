@@ -36,7 +36,7 @@ impl Inference {
                 let asr = CohereModel::load(&models_dir.join("cohere-int8"), &Quantization::Int8)
                     .context("loading ASR model")?;
                 let polisher =
-                    Polisher::load(&models_dir.join("s1-mini-f16.gguf")).context("loading LLM")?;
+                    Polisher::load(&models_dir.join("s1-mini-q4_k_m.gguf")).context("loading LLM")?;
                 Ok((asr, polisher))
             })();
             let (mut asr, polisher) = match loaded {
