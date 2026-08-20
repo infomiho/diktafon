@@ -76,7 +76,8 @@ impl Recorder {
                         }
                     };
                     if has_speech(&chunk, rate) {
-                        let _ = chunk_tx.send(Msg::Chunk(resample_linear(&chunk, rate, TARGET_RATE)));
+                        let trimmed = trim_trailing_silence(&chunk, rate);
+                        let _ = chunk_tx.send(Msg::Chunk(resample_linear(trimmed, rate, TARGET_RATE)));
                     }
                     if done {
                         let _ = chunk_tx.send(Msg::Flush);
@@ -157,6 +158,23 @@ fn find_cut(samples: &[f32], rate: u32) -> Option<usize> {
     None
 }
 
+/// Trim trailing silence, keeping a short pad. Silence fed to the ASR model
+/// makes it hallucinate phrases like "Thank you."
+fn trim_trailing_silence(samples: &[f32], rate: u32) -> &[f32] {
+    let frame = (rate as usize * FRAME_MS / 1000).max(1);
+    let pad = rate as usize / 5;
+    let mut end = samples.len();
+    while end >= frame {
+        let f = &samples[end - frame..end];
+        let rms = (f.iter().map(|s| s * s).sum::<f32>() / frame as f32).sqrt();
+        if rms >= RMS_THRESHOLD {
+            break;
+        }
+        end -= frame;
+    }
+    &samples[..(end + pad).min(samples.len())]
+}
+
 fn has_speech(samples: &[f32], rate: u32) -> bool {
     let frame = rate as usize * FRAME_MS / 1000;
     samples
@@ -215,5 +233,31 @@ mod tests {
     fn no_cut_mid_speech() {
         let rate = 48_000;
         assert!(find_cut(&noise(3.0, rate), rate).is_none());
+    }
+}
+
+#[cfg(test)]
+mod trim_tests {
+    use super::*;
+
+    #[test]
+    fn trims_trailing_silence_keeps_pad() {
+        let rate = 48_000u32;
+        let mut samples: Vec<f32> = (0..rate as usize)
+            .map(|i| if i % 2 == 0 { 0.1 } else { -0.1 })
+            .collect();
+        samples.extend(vec![0.0f32; rate as usize * 2]);
+        let trimmed = trim_trailing_silence(&samples, rate);
+        let secs = trimmed.len() as f32 / rate as f32;
+        assert!((1.0..=1.35).contains(&secs), "trimmed to {secs}s");
+    }
+
+    #[test]
+    fn keeps_speech_untouched() {
+        let rate = 48_000u32;
+        let samples: Vec<f32> = (0..rate as usize)
+            .map(|i| if i % 2 == 0 { 0.1 } else { -0.1 })
+            .collect();
+        assert_eq!(trim_trailing_silence(&samples, rate).len(), samples.len());
     }
 }
