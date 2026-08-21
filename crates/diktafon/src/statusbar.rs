@@ -17,14 +17,7 @@ use objc2_app_kit::{
     NSVariableStatusItemLength,
 };
 use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSString};
-use std::cell::{Cell, OnceCell, RefCell};
-
-/// How many recent dictations the menu offers to copy.
-const HISTORY_SHOWN: usize = 5;
-/// Menu titles stay skimmable; the full text goes in the tooltip.
-const HISTORY_TITLE_CHARS: usize = 44;
-/// More than enough bytes for the last [`HISTORY_SHOWN`] entries.
-const HISTORY_TAIL_BYTES: u64 = 256 * 1024;
+use std::cell::{Cell, OnceCell};
 
 enum MenuAction {
     OpenSettings,
@@ -34,8 +27,6 @@ enum MenuAction {
 
 struct ControllerIvars {
     actions: UnboundedSender<MenuAction>,
-    /// Full texts behind the currently shown history items, indexed by tag.
-    history: RefCell<Vec<String>>,
     status_item: OnceCell<Retained<NSStatusItem>>,
     phase: Cell<Phase>,
 }
@@ -57,18 +48,6 @@ define_class!(
     }
 
     impl MenuController {
-        #[unsafe(method(copyHistoryItem:))]
-        fn copy_history_item(&self, sender: &NSMenuItem) {
-            let index = sender.tag() as usize;
-            let Some(text) = self.ivars().history.borrow().get(index).cloned() else {
-                return;
-            };
-            let copied = arboard::Clipboard::new().and_then(|mut c| c.set_text(text));
-            if let Err(e) = copied {
-                eprintln!("copying dictation failed: {e}");
-            }
-        }
-
         #[unsafe(method(toggleAutostart:))]
         fn toggle_autostart(&self, _sender: &NSMenuItem) {
             if let Err(e) = autostart::set(!autostart::is_enabled()) {
@@ -97,7 +76,6 @@ impl MenuController {
     fn new(mtm: MainThreadMarker, actions: UnboundedSender<MenuAction>) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ControllerIvars {
             actions,
-            history: RefCell::new(Vec::new()),
             status_item: OnceCell::new(),
             phase: Cell::new(Phase::Idle),
         });
@@ -136,18 +114,6 @@ impl MenuController {
             &format!("Diktafon: {}", phase_label(self.ivars().phase.get())),
         );
         self.add_info(menu, &format!("Daemon: {}", daemon_summary()));
-        menu.addItem(&NSMenuItem::separatorItem(mtm));
-
-        let history = recent_history(HISTORY_SHOWN);
-        if history.is_empty() {
-            self.add_info(menu, "No dictations yet");
-        }
-        for (index, text) in history.iter().enumerate() {
-            let item = self.add_action(menu, &menu_title(text), sel!(copyHistoryItem:));
-            item.setTag(index as isize);
-            item.setToolTip(Some(&NSString::from_str(text)));
-        }
-        self.ivars().history.replace(history);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 
         self.add_action(menu, "Settings…", sel!(openSettings:));
@@ -199,14 +165,6 @@ fn phase_label(phase: Phase) -> &'static str {
     }
 }
 
-fn menu_title(text: &str) -> String {
-    let mut title: String = text.chars().take(HISTORY_TITLE_CHARS).collect();
-    if text.chars().count() > HISTORY_TITLE_CHARS {
-        title.push('…');
-    }
-    title
-}
-
 /// Summarizes the daemon from its status.json (see
 /// `diktafon_protocol::status_path`); the pid check guards against a stale
 /// file left by a crashed daemon. Shared with the settings window.
@@ -218,7 +176,7 @@ pub fn daemon_summary() -> String {
             .ok()
             .and_then(|pid| pid.trim().parse().ok())
             .unwrap_or(0);
-        return if pid_is_diktafond(pid) {
+        return if pid_alive(pid) {
             "running".into()
         } else {
             "not running".into()
@@ -228,7 +186,7 @@ pub fn daemon_summary() -> String {
         return "unknown".into();
     };
     let pid = status["pid"].as_u64().unwrap_or(0);
-    if !pid_is_diktafond(pid) {
+    if !pid_alive(pid) {
         return "not running".into();
     }
     let asr = status["asr_model"].as_str().unwrap_or("asr");
@@ -240,6 +198,15 @@ pub fn daemon_summary() -> String {
     }
 }
 
+/// Cheap liveness check (no subprocess: this runs while the menu opens). A
+/// recycled pid can fool it, unlike the comm check `stop_daemon` uses, but
+/// here it only mislabels a dead daemon as running until the next dictation.
+fn pid_alive(pid: u64) -> bool {
+    pid != 0 && unsafe { libc::kill(pid as i32, 0) } == 0
+}
+
+/// Strict check for the destructive path: the pid must still name a
+/// diktafond, since pids get recycled.
 fn pid_is_diktafond(pid: u64) -> bool {
     if pid == 0 {
         return false;
@@ -253,47 +220,6 @@ fn pid_is_diktafond(pid: u64) -> bool {
                 .ends_with("diktafond")
         })
         .unwrap_or(false)
-}
-
-/// Newest first. Prefers the polished text; falls back to the raw transcript.
-/// Reads only the file's tail: this runs synchronously while the menu opens,
-/// and the history grows without bound.
-fn recent_history(count: usize) -> Vec<String> {
-    let path = diktafon_protocol::data_dir().join("history.jsonl");
-    let Ok(raw) = read_tail(&path, HISTORY_TAIL_BYTES) else {
-        return Vec::new();
-    };
-    raw.lines()
-        .rev()
-        .filter_map(|line| {
-            let entry = serde_json::from_str::<serde_json::Value>(line).ok()?;
-            let text = match entry["polished"].as_str() {
-                Some(polished) if !polished.is_empty() => polished,
-                _ => entry["raw"].as_str()?,
-            };
-            (!text.is_empty()).then(|| text.to_string())
-        })
-        .take(count)
-        .collect()
-}
-
-/// The file's last `max_bytes`, starting at the first complete line (the
-/// seek can land mid-line and even mid-UTF-8-character, so trim to the byte
-/// after the first newline before decoding).
-fn read_tail(path: &std::path::Path, max_bytes: u64) -> std::io::Result<String> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut file = std::fs::File::open(path)?;
-    let len = file.metadata()?.len();
-    let mut tail = Vec::new();
-    if len > max_bytes {
-        file.seek(SeekFrom::Start(len - max_bytes))?;
-        file.read_to_end(&mut tail)?;
-        let first_line_end = tail.iter().position(|&b| b == b'\n').map(|i| i + 1);
-        tail.drain(..first_line_end.unwrap_or(tail.len()));
-    } else {
-        file.read_to_end(&mut tail)?;
-    }
-    Ok(String::from_utf8_lossy(&tail).into_owned())
 }
 
 /// SIGTERM the daemon named by its pidfile; quiet no-op if none is running.
