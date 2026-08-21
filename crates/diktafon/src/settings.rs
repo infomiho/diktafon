@@ -18,11 +18,11 @@ use gpui_component::searchable_list::SearchableVec;
 use gpui_component::select::{Select, SelectState};
 use gpui_component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
 use gpui_component::switch::Switch;
-use gpui_component::{ActiveTheme, IconName, IndexPath, Root, StyledExt, h_flex, v_flex};
+use gpui_component::{ActiveTheme, IconName, IndexPath, Root, Sizable, StyledExt, h_flex, v_flex};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(680.), px(440.));
+const WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(720.), px(500.));
 /// How long the "Saved" confirmation stays visible.
 const SAVED_FLASH: Duration = Duration::from_secs(2);
 
@@ -314,9 +314,10 @@ impl SettingsWindow {
         h_flex()
             .justify_between()
             .items_center()
-            .gap_4()
+            .gap_6()
+            .py_1()
             .child(
-                v_flex().gap_1().child(Label::new(label)).child(
+                v_flex().gap_1p5().child(Label::new(label)).child(
                     Label::new(description)
                         .text_sm()
                         .text_color(cx.theme().muted_foreground),
@@ -327,13 +328,16 @@ impl SettingsWindow {
 
     fn general_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
-            .gap_6()
+            .gap_8()
             .child(Self::control_row(
                 "Start at Login",
                 "Launch diktafon when you log in (needs the app bundle)",
-                Switch::new("autostart").checked(self.autostart).on_click(
-                    cx.listener(|view, checked: &bool, _, cx| view.set_autostart(*checked, cx)),
-                ),
+                Switch::new("autostart")
+                    .large()
+                    .checked(self.autostart)
+                    .on_click(
+                        cx.listener(|view, checked: &bool, _, cx| view.set_autostart(*checked, cx)),
+                    ),
                 cx,
             ))
             .child(Self::control_row(
@@ -346,23 +350,24 @@ impl SettingsWindow {
 
     fn dictation_pane(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         v_form()
+            .large()
             .child(
                 field()
                     .label("Post-processing prompt")
                     .description("S1-mini control line; applies to the next dictation")
-                    .child(Input::new(&self.control_input)),
+                    .child(Input::new(&self.control_input).large()),
             )
             .child(
                 field()
                     .label("Language")
                     .description("Hint for the speech recognizer")
-                    .child(Select::new(&self.language_select)),
+                    .child(Select::new(&self.language_select).large()),
             )
     }
 
     fn advanced_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
-            .gap_6()
+            .gap_8()
             .child(
                 field()
                     .label("Unload models when idle")
@@ -370,7 +375,7 @@ impl SettingsWindow {
                         "Frees a few GB of RAM; models reload on the next dictation. \
                          Applies when the daemon restarts.",
                     )
-                    .child(Select::new(&self.idle_select)),
+                    .child(Select::new(&self.idle_select).large()),
             )
             .child(Self::control_row(
                 "Daemon",
@@ -387,7 +392,7 @@ impl Render for SettingsWindow {
         let section = self.section;
         let sidebar =
             Sidebar::new("settings-sidebar")
-                .w(px(170.))
+                .w(px(184.))
                 .child(SidebarMenu::new().children(Section::ALL.map(|entry| {
                     SidebarMenuItem::new(entry.title())
                         .icon(entry.icon())
@@ -418,21 +423,24 @@ impl Render for SettingsWindow {
                     // past the window's right edge.
                     .min_w_0()
                     .h_full()
-                    .p_6()
+                    .p_8()
                     .gap_2()
-                    .child(div().text_xl().font_semibold().child(section.title()))
+                    .child(div().text_2xl().font_semibold().child(section.title()))
                     .child(
                         Label::new(section.description())
                             .text_sm()
                             .text_color(cx.theme().muted_foreground),
                     )
-                    .child(div().mt_4().child(pane))
+                    .child(div().mt_6().child(pane))
                     .child(
                         h_flex()
                             .mt_auto()
+                            .pt_5()
+                            .border_t_1()
+                            .border_color(cx.theme().border)
                             .justify_end()
                             .items_center()
-                            .gap_3()
+                            .gap_4()
                             .child(
                                 Label::new(if saved { "Saved" } else { "" })
                                     .text_sm()
@@ -441,6 +449,7 @@ impl Render for SettingsWindow {
                             .child(
                                 Button::new("save")
                                     .primary()
+                                    .large()
                                     .label("Save")
                                     .on_click(cx.listener(|view, _, _, cx| view.save(cx))),
                             ),
