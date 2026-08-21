@@ -43,11 +43,52 @@ impl Config {
     pub fn hotkey(&self) -> HotKey {
         HotKey::new(Some(self.hotkey_modifiers), self.hotkey_code)
     }
+}
+
+/// The user-editable subset, persisted as `config.json` in the data dir and
+/// edited live from the settings window; the compile-time [`CONFIG`] provides
+/// the defaults.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionSettings {
+    pub language: String,
+    pub control_line: String,
+}
+
+impl Default for SessionSettings {
+    fn default() -> Self {
+        Self {
+            language: CONFIG.language.into(),
+            control_line: CONFIG.control_line.into(),
+        }
+    }
+}
+
+fn settings_path() -> std::path::PathBuf {
+    diktafon_protocol::data_dir().join("config.json")
+}
+
+impl SessionSettings {
+    /// Missing or unparseable file falls back to the defaults.
+    pub fn load() -> Self {
+        std::fs::read_to_string(settings_path())
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) -> anyhow::Result<()> {
+        let path = settings_path();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&path, serde_json::to_vec_pretty(self)?)?;
+        Ok(())
+    }
 
     pub fn session(&self) -> SessionConfig {
         SessionConfig {
-            language: self.language.into(),
-            control_line: self.control_line.into(),
+            language: self.language.clone(),
+            control_line: self.control_line.clone(),
         }
     }
 }

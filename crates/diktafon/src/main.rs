@@ -7,8 +7,10 @@ mod keymap;
 mod paste;
 mod permissions;
 mod pill;
+mod settings;
 mod sounds;
 mod statusbar;
+mod text_input;
 mod theme;
 mod transport;
 
@@ -167,6 +169,8 @@ fn main() -> Result<()> {
         });
     }
 
+    let session_settings = Arc::new(std::sync::Mutex::new(config::SessionSettings::load()));
+
     let (event_tx, event_rx) = mpsc::channel::<GlobalHotKeyEvent>();
     let hotkeys = Hotkeys {
         record: record_key.id(),
@@ -176,8 +180,17 @@ fn main() -> Result<()> {
     // session start by the phase observer; the control loop only reads it.
     let v_keycode = Arc::new(AtomicU32::new(keymap::ANSI_V.into()));
     let paste_keycode = v_keycode.clone();
+    let loop_settings = session_settings.clone();
     thread::spawn(move || {
-        control_loop(recorder, daemon, event_rx, phase_tx, hotkeys, paste_keycode)
+        control_loop(
+            recorder,
+            daemon,
+            event_rx,
+            phase_tx,
+            hotkeys,
+            paste_keycode,
+            loop_settings,
+        )
     });
 
     let receiver = GlobalHotKeyEvent::receiver();
@@ -225,7 +238,8 @@ fn main() -> Result<()> {
             })
             .detach();
             pill::manage(cx, dictation.clone(), levels);
-            statusbar::install(cx, &dictation);
+            statusbar::install(cx, &dictation, session_settings.clone());
+            text_input::bind_keys(cx);
             cx.set_global(AppServices { dictation });
             println!("Ready. Hold Option+Space to dictate, release to paste.");
         });
@@ -260,6 +274,7 @@ fn control_loop(
     phases: futures::channel::mpsc::UnboundedSender<PhaseEvent>,
     hotkeys: Hotkeys,
     v_keycode: Arc<AtomicU32>,
+    settings: Arc<std::sync::Mutex<config::SessionSettings>>,
 ) {
     // Created on this thread: the output stream is not Send.
     let sounds = match sounds::Sounds::new() {
@@ -293,7 +308,9 @@ fn control_loop(
         match event.state {
             HotKeyState::Pressed => {
                 if session.is_none() {
-                    let _ = daemon.chunk_tx.send(Msg::Start(config::CONFIG.session()));
+                    let _ = daemon
+                        .chunk_tx
+                        .send(Msg::Start(settings.lock().unwrap().session()));
                     match recorder.start(daemon.chunk_tx.clone()) {
                         Ok(s) => {
                             let _ = phases.unbounded_send(PhaseEvent::RecordingArmed);

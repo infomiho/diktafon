@@ -27,6 +27,7 @@ const HISTORY_TITLE_CHARS: usize = 44;
 const HISTORY_TAIL_BYTES: u64 = 256 * 1024;
 
 enum MenuAction {
+    OpenSettings,
     Quit,
     QuitDaemonToo,
 }
@@ -73,6 +74,11 @@ define_class!(
             if let Err(e) = autostart::set(!autostart::is_enabled()) {
                 eprintln!("autostart change failed: {e:#}");
             }
+        }
+
+        #[unsafe(method(openSettings:))]
+        fn open_settings(&self, _sender: &NSMenuItem) {
+            let _ = self.ivars().actions.unbounded_send(MenuAction::OpenSettings);
         }
 
         #[unsafe(method(quit:))]
@@ -129,7 +135,7 @@ impl MenuController {
             menu,
             &format!("Diktafon: {}", phase_label(self.ivars().phase.get())),
         );
-        self.add_info(menu, &daemon_status_line());
+        self.add_info(menu, &format!("Daemon: {}", daemon_summary()));
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 
         let history = recent_history(HISTORY_SHOWN);
@@ -144,6 +150,7 @@ impl MenuController {
         self.ivars().history.replace(history);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 
+        self.add_action(menu, "Settings…", sel!(openSettings:));
         let auto = self.add_action(menu, "Start at Login", sel!(toggleAutostart:));
         if autostart::is_enabled() {
             auto.setState(NSControlStateValueOn);
@@ -200,10 +207,10 @@ fn menu_title(text: &str) -> String {
     title
 }
 
-/// One line summarizing the daemon from its status.json (see
+/// Summarizes the daemon from its status.json (see
 /// `diktafon_protocol::status_path`); the pid check guards against a stale
-/// file left by a crashed daemon.
-fn daemon_status_line() -> String {
+/// file left by a crashed daemon. Shared with the settings window.
+pub fn daemon_summary() -> String {
     let path = diktafon_protocol::status_path();
     let Ok(raw) = std::fs::read_to_string(&path) else {
         // A daemon from before the status file exists only in the pidfile.
@@ -212,24 +219,24 @@ fn daemon_status_line() -> String {
             .and_then(|pid| pid.trim().parse().ok())
             .unwrap_or(0);
         return if pid_is_diktafond(pid) {
-            "Daemon: running".into()
+            "running".into()
         } else {
-            "Daemon: not running".into()
+            "not running".into()
         };
     };
     let Ok(status) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return "Daemon: unknown".into();
+        return "unknown".into();
     };
     let pid = status["pid"].as_u64().unwrap_or(0);
     if !pid_is_diktafond(pid) {
-        return "Daemon: not running".into();
+        return "not running".into();
     }
     let asr = status["asr_model"].as_str().unwrap_or("asr");
     let llm = status["llm_model"].as_str().unwrap_or("llm");
     if status["models_loaded"].as_bool().unwrap_or(false) {
-        format!("Daemon: {asr} + {llm} loaded")
+        format!("{asr} + {llm} loaded")
     } else {
-        "Daemon: running, models unloaded".into()
+        "running, models unloaded".into()
     }
 }
 
@@ -305,7 +312,11 @@ fn stop_daemon() {
 
 /// Create the status item and keep it (and its controller) alive for the
 /// app's lifetime via the phase observer's clone.
-pub fn install(cx: &mut App, dictation: &Entity<Dictation>) {
+pub fn install(
+    cx: &mut App,
+    dictation: &Entity<Dictation>,
+    settings: std::sync::Arc<std::sync::Mutex<crate::config::SessionSettings>>,
+) {
     let mtm = MainThreadMarker::new().expect("not on the main thread");
     let (actions_tx, mut actions_rx) = unbounded();
     let controller = MenuController::new(mtm, actions_tx);
@@ -327,12 +338,24 @@ pub fn install(cx: &mut App, dictation: &Entity<Dictation>) {
     .detach();
 
     cx.spawn(async move |cx| {
+        let mut settings_window = None;
         while let Some(action) = actions_rx.next().await {
-            if let MenuAction::QuitDaemonToo = action {
-                crate::transport::disable_daemon_spawn();
-                stop_daemon();
+            match action {
+                MenuAction::OpenSettings => {
+                    let settings = settings.clone();
+                    cx.update(|cx| {
+                        settings_window = crate::settings::open(settings_window, settings, cx);
+                    });
+                }
+                MenuAction::QuitDaemonToo => {
+                    crate::transport::disable_daemon_spawn();
+                    stop_daemon();
+                    cx.update(|cx| cx.quit());
+                }
+                MenuAction::Quit => {
+                    cx.update(|cx| cx.quit());
+                }
             }
-            cx.update(|cx| cx.quit());
         }
     })
     .detach();

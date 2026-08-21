@@ -1765,8 +1765,10 @@ dependencies = [
  "raw-window-handle",
  "rodio",
  "rustfft",
+ "serde",
  "serde_json",
  "transcribe-rs",
+ "unicode-segmentation",
 ]
 
 [[package]]
