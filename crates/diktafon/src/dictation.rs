@@ -1,6 +1,6 @@
 //! GPUI-side state of the dictation pipeline, driven by events from the
 //! hotkey/capture thread and the daemon transport. The pill overlay renders
-//! from this entity; until it lands, an observer logs transitions.
+//! from this entity.
 
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::StreamExt;

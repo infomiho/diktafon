@@ -1,6 +1,7 @@
 mod capture;
 mod dictation;
 mod paste;
+mod pill;
 mod transport;
 
 use anyhow::{Context, Result};
@@ -67,7 +68,7 @@ fn daemon_bin() -> Option<PathBuf> {
 /// App-scoped GPUI state (cadence's AppServices pattern); keeps the entities
 /// alive for windows to consume later.
 struct AppServices {
-    #[expect(dead_code, reason = "the pill window will read it; observers log it today")]
+    #[expect(dead_code, reason = "keeps the entity alive; windows receive their own clones")]
     dictation: Entity<Dictation>,
 }
 
@@ -91,6 +92,23 @@ fn main() -> Result<()> {
     let manager = GlobalHotKeyManager::new().context("registering global hotkey manager")?;
     manager.register(HotKey::new(Some(Modifiers::ALT), Code::Space))?;
 
+    // Scripted phase walk for developing the pill without dictating:
+    // `DIKTAFON_PILL_DEMO=1 diktafon`.
+    if std::env::var_os("DIKTAFON_PILL_DEMO").is_some() {
+        let demo = phase_tx.clone();
+        thread::spawn(move || {
+            let step = |event, secs| {
+                let _ = demo.unbounded_send(event);
+                thread::sleep(std::time::Duration::from_secs(secs));
+            };
+            thread::sleep(std::time::Duration::from_secs(2));
+            step(PhaseEvent::RecordingStarted, 4);
+            step(PhaseEvent::RecordingStopped, 3);
+            step(PhaseEvent::PolishingStarted, 3);
+            step(PhaseEvent::SessionEnded { error: None }, 0);
+        });
+    }
+
     let (event_tx, event_rx) = mpsc::channel::<HotKeyState>();
     thread::spawn(move || control_loop(recorder, daemon, event_rx, phase_tx));
 
@@ -113,6 +131,7 @@ fn main() -> Result<()> {
                 println!("[phase] {:?}", dictation.read(cx).phase);
             })
             .detach();
+            pill::manage(cx, dictation.clone());
             cx.set_global(AppServices { dictation });
             println!("Ready. Hold Option+Space to dictate, release to paste.");
         });
