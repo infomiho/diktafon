@@ -13,10 +13,10 @@
 use crate::capture::LevelBars;
 use crate::dictation::{Dictation, Phase};
 use gpui::{
-    div, ease_in_out, ease_out_quint, point, pulsating_between, px, rgb, rgba, size, Animation,
-    AnimationExt, AnyElement, App, AppContext, Bounds, Context, Entity, IntoElement, ParentElement,
-    Pixels, Render, Styled, Window, WindowBackgroundAppearance, WindowBounds, WindowHandle,
-    WindowKind, WindowOptions,
+    Animation, AnimationExt, AnyElement, App, AppContext, Bounds, Context, Entity, IntoElement,
+    ParentElement, Pixels, Render, Styled, Window, WindowBackgroundAppearance, WindowBounds,
+    WindowHandle, WindowKind, WindowOptions, div, ease_in_out, ease_out_quint, point,
+    pulsating_between, px, rgb, rgba, size,
 };
 use objc2::MainThreadMarker;
 use std::time::Duration;
@@ -56,7 +56,9 @@ pub fn manage(cx: &mut App, dictation: Entity<Dictation>, levels: LevelBars) {
                 // fading one is gone within EXIT, so the overlap is brief.
                 open = None;
                 cx.spawn(async move |cx| {
-                    cx.background_executor().timer(EXIT + Duration::from_millis(40)).await;
+                    cx.background_executor()
+                        .timer(EXIT + Duration::from_millis(40))
+                        .await;
                     cx.update(|cx| {
                         let _ = handle.update(cx, |_, window, _| window.remove_window());
                     });
@@ -160,7 +162,12 @@ impl Pill {
             }
         })
         .detach();
-        Self { dictation, levels, closing: false, last_active: Phase::Recording }
+        Self {
+            dictation,
+            levels,
+            closing: false,
+            last_active: Phase::Recording,
+        }
     }
 
     fn bars(&self) -> AnyElement {
@@ -179,7 +186,6 @@ impl Pill {
             }))
             .into_any_element()
     }
-
 }
 
 fn dot(phase: Phase, breathing: bool) -> AnyElement {
@@ -195,7 +201,9 @@ fn dot(phase: Phase, breathing: bool) -> AnyElement {
     if breathing {
         dot.with_animation(
             "dot-breath",
-            Animation::new(DOT_BREATH).repeat().with_easing(pulsating_between(0.4, 1.0)),
+            Animation::new(DOT_BREATH)
+                .repeat()
+                .with_easing(pulsating_between(0.4, 1.0)),
             |dot, level| dot.opacity(level),
         )
         .into_any_element()
@@ -224,7 +232,11 @@ impl Render for Pill {
             self.last_active = phase;
         }
         // The exit fade freezes the last active content instead of blanking.
-        let display = if phase == Phase::Idle { self.last_active } else { phase };
+        let display = if phase == Phase::Idle {
+            self.last_active
+        } else {
+            phase
+        };
         let label = match display {
             Phase::Arming => "starting",
             Phase::Transcribing => "transcribing",
@@ -234,7 +246,11 @@ impl Render for Pill {
         let content = if display == Phase::Recording {
             self.bars()
         } else {
-            div().text_sm().text_color(rgba(0xFFFFFFD9)).child(label).into_any_element()
+            div()
+                .text_sm()
+                .text_color(rgba(0xFFFFFFD9))
+                .child(label)
+                .into_any_element()
         };
 
         let pill = div()

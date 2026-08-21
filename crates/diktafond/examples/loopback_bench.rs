@@ -6,7 +6,7 @@
 //! `cargo run --release -p diktafond --example loopback_bench`
 
 use diktafon_protocol::{
-    read_frame, write_frame, ClientMsg, DaemonMsg, Msg, PROTOCOL_VERSION, TARGET_RATE,
+    ClientMsg, DaemonMsg, Msg, PROTOCOL_VERSION, TARGET_RATE, read_frame, write_frame,
 };
 use diktafond::Inference;
 use std::io::BufReader;
@@ -51,8 +51,10 @@ fn main() {
     let models_dir = diktafon_protocol::models_dir();
     let clip = diktafon_protocol::data_dir().join("eval-own/01.wav");
     let samples = wav_samples(&clip);
-    let chunks: Vec<Vec<f32>> =
-        samples.chunks(TARGET_RATE as usize * CHUNK_SECS).map(|c| c.to_vec()).collect();
+    let chunks: Vec<Vec<f32>> = samples
+        .chunks(TARGET_RATE as usize * CHUNK_SECS)
+        .map(|c| c.to_vec())
+        .collect();
     println!("clip: {} chunks of ≤{CHUNK_SECS}s", chunks.len());
 
     // In-process baseline.
@@ -61,7 +63,10 @@ fn main() {
     {
         let inference = Inference::spawn(&models_dir, None).expect("loading models");
         // Warm up Metal shaders and caches.
-        inference.chunk_tx.send(Msg::Chunk(chunks[0].clone())).unwrap();
+        inference
+            .chunk_tx
+            .send(Msg::Chunk(chunks[0].clone()))
+            .unwrap();
         wait_partial_inproc(&inference);
         inference.chunk_tx.send(Msg::Cancel).unwrap();
         wait_aborted_inproc(&inference);
@@ -114,9 +119,18 @@ fn main() {
     let stream = UnixStream::connect(&socket).unwrap();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut writer = stream;
-    write_frame(&mut writer, &ClientMsg::Hello { version: PROTOCOL_VERSION }).unwrap();
+    write_frame(
+        &mut writer,
+        &ClientMsg::Hello {
+            version: PROTOCOL_VERSION,
+        },
+    )
+    .unwrap();
     loop {
-        match read_frame::<DaemonMsg>(&mut reader).unwrap().expect("daemon closed") {
+        match read_frame::<DaemonMsg>(&mut reader)
+            .unwrap()
+            .expect("daemon closed")
+        {
             DaemonMsg::Ready => break,
             _ => {}
         }

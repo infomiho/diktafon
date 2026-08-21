@@ -64,7 +64,11 @@ impl Polisher {
             if self.model.is_eog_token(token) {
                 break;
             }
-            out.push_str(&self.model.token_to_piece(token, &mut decoder, false, None)?);
+            out.push_str(
+                &self
+                    .model
+                    .token_to_piece(token, &mut decoder, false, None)?,
+            );
             batch.clear();
             batch.add(token, n_cur, &[0], true)?;
             ctx.decode(&mut batch)?;

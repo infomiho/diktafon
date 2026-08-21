@@ -1,5 +1,5 @@
 use diktafon_protocol::{
-    read_frame, write_frame, ClientMsg, DaemonMsg, SessionConfig, PROTOCOL_VERSION,
+    ClientMsg, DaemonMsg, PROTOCOL_VERSION, SessionConfig, read_frame, write_frame,
 };
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -18,7 +18,9 @@ fn wait_for_socket(path: &Path, child: &mut Child) {
 }
 
 fn read_daemon_msg(stream: &mut UnixStream) -> DaemonMsg {
-    read_frame::<DaemonMsg>(stream).unwrap().expect("daemon closed the stream")
+    read_frame::<DaemonMsg>(stream)
+        .unwrap()
+        .expect("daemon closed the stream")
 }
 
 /// The daemon sends Ready after the handshake: instantly on a warm start, or
@@ -46,14 +48,28 @@ fn daemon_serves_sessions_over_the_socket() {
     wait_for_socket(&socket, &mut daemon);
 
     let mut stream = UnixStream::connect(&socket).unwrap();
-    write_frame(&mut stream, &ClientMsg::Hello { version: PROTOCOL_VERSION }).unwrap();
-    assert_eq!(read_daemon_msg(&mut stream), DaemonMsg::Hello { version: PROTOCOL_VERSION });
+    write_frame(
+        &mut stream,
+        &ClientMsg::Hello {
+            version: PROTOCOL_VERSION,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        read_daemon_msg(&mut stream),
+        DaemonMsg::Hello {
+            version: PROTOCOL_VERSION
+        }
+    );
     wait_for_ready(&mut stream);
 
     // An empty session skips ASR and polish entirely and finishes instantly.
     write_frame(&mut stream, &ClientMsg::Start(SessionConfig::default())).unwrap();
     write_frame(&mut stream, &ClientMsg::Flush).unwrap();
-    assert_eq!(read_daemon_msg(&mut stream), DaemonMsg::Final(String::new()));
+    assert_eq!(
+        read_daemon_msg(&mut stream),
+        DaemonMsg::Final(String::new())
+    );
 
     write_frame(&mut stream, &ClientMsg::Start(SessionConfig::default())).unwrap();
     write_frame(&mut stream, &ClientMsg::Cancel).unwrap();
@@ -62,15 +78,35 @@ fn daemon_serves_sessions_over_the_socket() {
     // A second Hello on a new connection must work after the first disconnects.
     drop(stream);
     let mut stream = UnixStream::connect(&socket).unwrap();
-    write_frame(&mut stream, &ClientMsg::Hello { version: PROTOCOL_VERSION }).unwrap();
-    assert_eq!(read_daemon_msg(&mut stream), DaemonMsg::Hello { version: PROTOCOL_VERSION });
+    write_frame(
+        &mut stream,
+        &ClientMsg::Hello {
+            version: PROTOCOL_VERSION,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        read_daemon_msg(&mut stream),
+        DaemonMsg::Hello {
+            version: PROTOCOL_VERSION
+        }
+    );
     wait_for_ready(&mut stream);
 
     // A version mismatch is answered with Error.
     let mut mismatched = UnixStream::connect(&socket).unwrap();
     drop(stream);
-    write_frame(&mut mismatched, &ClientMsg::Hello { version: PROTOCOL_VERSION + 1 }).unwrap();
-    assert!(matches!(read_daemon_msg(&mut mismatched), DaemonMsg::Error(_)));
+    write_frame(
+        &mut mismatched,
+        &ClientMsg::Hello {
+            version: PROTOCOL_VERSION + 1,
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        read_daemon_msg(&mut mismatched),
+        DaemonMsg::Error(_)
+    ));
 
     // A second daemon on the same socket must refuse to start instead of
     // binding over the live one.
@@ -78,8 +114,14 @@ fn daemon_serves_sessions_over_the_socket() {
         .env("DIKTAFOND_SOCKET", &socket)
         .output()
         .unwrap();
-    assert!(!second.status.success(), "second daemon should refuse to start");
-    assert!(socket.exists(), "live socket must survive the refused start");
+    assert!(
+        !second.status.success(),
+        "second daemon should refuse to start"
+    );
+    assert!(
+        socket.exists(),
+        "live socket must survive the refused start"
+    );
 
     // SIGTERM removes the socket file on the way out.
     Command::new("kill")

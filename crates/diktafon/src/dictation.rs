@@ -2,8 +2,8 @@
 //! hotkey/capture thread and the daemon transport. The pill overlay renders
 //! from this entity.
 
-use futures::channel::mpsc::UnboundedReceiver;
 use futures::StreamExt;
+use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{App, AppContext, Entity};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,7 +24,9 @@ pub enum PhaseEvent {
     RecordingStopped,
     PolishingStarted,
     /// The session produced a final text, an error, or nothing.
-    SessionEnded { error: Option<String> },
+    SessionEnded {
+        error: Option<String>,
+    },
 }
 
 pub struct Dictation {
@@ -38,7 +40,10 @@ impl Dictation {
     /// async channel means no idle wakeups and one observer effect per event,
     /// so even brief phases are observable.
     pub fn spawn(cx: &mut App, mut events: UnboundedReceiver<PhaseEvent>) -> Entity<Dictation> {
-        let entity = cx.new(|_| Dictation { phase: Phase::Idle, last_error: None });
+        let entity = cx.new(|_| Dictation {
+            phase: Phase::Idle,
+            last_error: None,
+        });
         cx.spawn({
             let entity = entity.clone();
             async move |cx| {

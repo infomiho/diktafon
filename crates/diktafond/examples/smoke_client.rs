@@ -4,8 +4,8 @@
 //! `DIKTAFOND_SOCKET=/tmp/d.sock cargo run -p diktafond --example smoke_client <wav>`
 
 use diktafon_protocol::{
-    read_frame, socket_path, write_frame, ClientMsg, DaemonMsg, SessionConfig, PROTOCOL_VERSION,
-    TARGET_RATE,
+    ClientMsg, DaemonMsg, PROTOCOL_VERSION, SessionConfig, TARGET_RATE, read_frame, socket_path,
+    write_frame,
 };
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -37,7 +37,13 @@ fn main() {
         .unwrap_or_else(socket_path);
     let mut stream = UnixStream::connect(socket).expect("connecting to daemon");
 
-    write_frame(&mut stream, &ClientMsg::Hello { version: PROTOCOL_VERSION }).unwrap();
+    write_frame(
+        &mut stream,
+        &ClientMsg::Hello {
+            version: PROTOCOL_VERSION,
+        },
+    )
+    .unwrap();
     match read_frame::<DaemonMsg>(&mut stream).unwrap() {
         Some(DaemonMsg::Hello { .. }) => {}
         other => panic!("handshake failed: {other:?}"),
@@ -45,7 +51,11 @@ fn main() {
     loop {
         match read_frame::<DaemonMsg>(&mut stream).unwrap() {
             Some(DaemonMsg::Ready) => break,
-            Some(DaemonMsg::DownloadProgress { model, downloaded_bytes, total_bytes }) => {
+            Some(DaemonMsg::DownloadProgress {
+                model,
+                downloaded_bytes,
+                total_bytes,
+            }) => {
                 println!("daemon downloading {model}: {downloaded_bytes}/{total_bytes}")
             }
             other => panic!("expected Ready, got {other:?}"),

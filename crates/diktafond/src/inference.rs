@@ -1,12 +1,12 @@
-use anyhow::{anyhow, Context, Result};
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use anyhow::{Context, Result, anyhow};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Mutex};
+use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
-use transcribe_rs::onnx::cohere::{CohereModel, CohereParams};
 use transcribe_rs::onnx::Quantization;
+use transcribe_rs::onnx::cohere::{CohereModel, CohereParams};
 
 use diktafon_protocol::{DaemonMsg, Msg, SessionConfig, TARGET_RATE};
 
@@ -72,8 +72,8 @@ impl Inference {
             let loaded = (|| -> Result<(CohereModel, Polisher)> {
                 let asr = CohereModel::load(&models_dir.join("cohere-int8"), &Quantization::Int8)
                     .context("loading ASR model")?;
-                let polisher =
-                    Polisher::load(&models_dir.join("s1-mini-q4_k_m.gguf")).context("loading LLM")?;
+                let polisher = Polisher::load(&models_dir.join("s1-mini-q4_k_m.gguf"))
+                    .context("loading LLM")?;
                 Ok((asr, polisher))
             })();
             let (mut asr, polisher) = match loaded {
@@ -115,7 +115,12 @@ impl Inference {
                         });
                         match result {
                             Ok(r) => {
-                                println!("  chunk {:>4.1}s, ASR {:.2?}: {}", secs, start.elapsed(), r.text);
+                                println!(
+                                    "  chunk {:>4.1}s, ASR {:.2?}: {}",
+                                    secs,
+                                    start.elapsed(),
+                                    r.text
+                                );
                                 audio_secs += secs;
                                 asr_ms += start.elapsed().as_millis() as u64;
                                 let _ = events_tx.send(DaemonMsg::Partial(r.text.clone()));
@@ -133,12 +138,13 @@ impl Inference {
                         } else {
                             let _ = events_tx.send(DaemonMsg::Polishing);
                             let start = Instant::now();
-                            let polished =
-                                catch_panic("polish", || polisher.polish(&raw, &config.control_line))
-                                    .unwrap_or_else(|e| {
-                                        eprintln!("polish error, using raw text: {e}");
-                                        raw.clone()
-                                    });
+                            let polished = catch_panic("polish", || {
+                                polisher.polish(&raw, &config.control_line)
+                            })
+                            .unwrap_or_else(|e| {
+                                eprintln!("polish error, using raw text: {e}");
+                                raw.clone()
+                            });
                             polish_ms = start.elapsed().as_millis() as u64;
                             println!("  polish {:.2?}", start.elapsed());
                             polished
@@ -172,14 +178,23 @@ impl Inference {
             }
         });
 
-        ready_rx.recv().context("inference thread died during load")??;
-        Ok(Self { chunk_tx, events_rx: Mutex::new(events_rx), stale_finals: AtomicUsize::new(0) })
+        ready_rx
+            .recv()
+            .context("inference thread died during load")??;
+        Ok(Self {
+            chunk_tx,
+            events_rx: Mutex::new(events_rx),
+            stale_finals: AtomicUsize::new(0),
+        })
     }
 
     /// Receive the next worker event, for callers that relay `Partial`s as they
     /// arrive. Must not be mixed with `finish` on the same instance.
     pub fn recv_event(&self, timeout: Duration) -> Result<DaemonMsg, mpsc::RecvTimeoutError> {
-        self.events_rx.lock().expect("event receiver poisoned").recv_timeout(timeout)
+        self.events_rx
+            .lock()
+            .expect("event receiver poisoned")
+            .recv_timeout(timeout)
     }
 
     /// Wait for the session flushed by `Session::stop` to finish transcribing

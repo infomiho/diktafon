@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::fetch::{fetch, RemoteFile};
+use crate::fetch::{RemoteFile, fetch};
 
 struct ModelFile {
     /// Path relative to the models dir, e.g. "cohere-int8/tokens.txt".
@@ -76,9 +76,17 @@ fn ensure_files(
         if let Some(dir) = target.parent() {
             fs::create_dir_all(dir)?;
         }
-        println!("downloading {} ({} MB)...", file.dest, file.size / 1_000_000);
+        println!(
+            "downloading {} ({} MB)...",
+            file.dest,
+            file.size / 1_000_000
+        );
         fetch(
-            &RemoteFile { url: file.url.to_string(), size: file.size, sha256: file.sha256.to_string() },
+            &RemoteFile {
+                url: file.url.to_string(),
+                size: file.size,
+                sha256: file.sha256.to_string(),
+            },
             &target,
             &mut |done, total| progress(file.dest, done, total),
         )
@@ -127,10 +135,15 @@ fn promote_completed_directories(
             continue;
         }
         let prefix = format!("{dir}/");
-        let members: Vec<_> = files.iter().filter(|f| f.dest.starts_with(&prefix)).collect();
+        let members: Vec<_> = files
+            .iter()
+            .filter(|f| f.dest.starts_with(&prefix))
+            .collect();
         // A directory model with no manifest members is drift, not "complete".
-        let complete =
-            !members.is_empty() && members.iter().all(|f| staging.join(&f.dest[prefix.len()..]).exists());
+        let complete = !members.is_empty()
+            && members
+                .iter()
+                .all(|f| staging.join(&f.dest[prefix.len()..]).exists());
         if complete {
             fs::rename(&staging, &final_dir)
                 .with_context(|| format!("promoting completed {dir}"))?;
@@ -142,7 +155,7 @@ fn promote_completed_directories(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fetch::test_server::{serve, test_body, Behavior};
+    use crate::fetch::test_server::{Behavior, serve, test_body};
     use sha2::{Digest, Sha256};
 
     fn models_dir(name: &str) -> PathBuf {

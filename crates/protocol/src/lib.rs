@@ -9,7 +9,7 @@
 //! `Partial` transcripts), and a `Flush` answered with the `Final` polished
 //! text.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use bincode::{Decode, Encode};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -44,7 +44,9 @@ pub fn data_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("DIKTAFON_DATA_DIR") {
         return PathBuf::from(dir);
     }
-    dirs::data_dir().expect("no platform data directory").join("diktafon")
+    dirs::data_dir()
+        .expect("no platform data directory")
+        .join("diktafon")
 }
 
 pub fn models_dir() -> PathBuf {
@@ -121,7 +123,11 @@ pub enum DaemonMsg {
     Aborted,
     /// The daemon is fetching a model it is missing; sent between `Hello` and
     /// `Ready` while the client waits. (v2)
-    DownloadProgress { model: String, downloaded_bytes: u64, total_bytes: u64 },
+    DownloadProgress {
+        model: String,
+        downloaded_bytes: u64,
+        total_bytes: u64,
+    },
     /// Startup is complete and the connection now serves sessions. Sent once
     /// after the handshake: immediately on a warm daemon, or after the last
     /// `DownloadProgress` on a cold one. (v2)
@@ -167,9 +173,11 @@ pub fn read_frame<T: Decode<()>>(reader: &mut impl Read) -> Result<Option<T>> {
         bail!("frame length {len} exceeds MAX_FRAME_LEN, stream is desynced");
     }
     let mut payload = vec![0u8; len as usize];
-    reader.read_exact(&mut payload).context("reading frame payload")?;
-    let (msg, consumed) =
-        bincode::decode_from_slice(&payload, bincode::config::standard()).context("decoding frame")?;
+    reader
+        .read_exact(&mut payload)
+        .context("reading frame payload")?;
+    let (msg, consumed) = bincode::decode_from_slice(&payload, bincode::config::standard())
+        .context("decoding frame")?;
     if consumed != payload.len() {
         bail!("frame has {} trailing bytes", payload.len() - consumed);
     }
@@ -190,7 +198,9 @@ mod tests {
     #[test]
     fn client_messages_roundtrip() {
         let msgs = vec![
-            ClientMsg::Hello { version: PROTOCOL_VERSION },
+            ClientMsg::Hello {
+                version: PROTOCOL_VERSION,
+            },
             ClientMsg::Start(SessionConfig {
                 language: "en".into(),
                 control_line: "[Styling: semi-formal]".into(),
@@ -207,7 +217,9 @@ mod tests {
     #[test]
     fn daemon_messages_roundtrip() {
         let msgs = vec![
-            DaemonMsg::Hello { version: PROTOCOL_VERSION },
+            DaemonMsg::Hello {
+                version: PROTOCOL_VERSION,
+            },
             DaemonMsg::Partial("hello world".into()),
             DaemonMsg::Final("Hello, world.".into()),
             DaemonMsg::Error("model exploded".into()),
@@ -224,8 +236,14 @@ mod tests {
         write_frame(&mut buf, &ClientMsg::Chunk(vec![1.0; 1000])).unwrap();
         write_frame(&mut buf, &ClientMsg::Flush).unwrap();
         let mut cursor = Cursor::new(buf);
-        assert!(matches!(read_frame::<ClientMsg>(&mut cursor).unwrap(), Some(ClientMsg::Chunk(_))));
-        assert_eq!(read_frame::<ClientMsg>(&mut cursor).unwrap(), Some(ClientMsg::Flush));
+        assert!(matches!(
+            read_frame::<ClientMsg>(&mut cursor).unwrap(),
+            Some(ClientMsg::Chunk(_))
+        ));
+        assert_eq!(
+            read_frame::<ClientMsg>(&mut cursor).unwrap(),
+            Some(ClientMsg::Flush)
+        );
         assert_eq!(read_frame::<ClientMsg>(&mut cursor).unwrap(), None);
     }
 

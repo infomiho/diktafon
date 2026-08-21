@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use transcribe_rs::vad::{SileroVad, SmoothedVad, Vad};
@@ -45,7 +45,13 @@ fn default_input() -> Result<InputDevice> {
     let channels = config.channels() as usize;
     let rate = config.sample_rate().0;
     let name = device.name().unwrap_or_else(|_| "unknown".into());
-    Ok(InputDevice { device, config, channels, rate, name })
+    Ok(InputDevice {
+        device,
+        config,
+        channels,
+        rate,
+        name,
+    })
 }
 
 pub struct Recorder {
@@ -94,7 +100,10 @@ impl Recorder {
     }
 
     pub fn describe(&self) -> String {
-        format!("{} ({} Hz, {} ch)", self.input.name, self.input.rate, self.input.channels)
+        format!(
+            "{} ({} Hz, {} ch)",
+            self.input.name, self.input.rate, self.input.channels
+        )
     }
 
     /// Reopen the input when the stream died or the system default moved
@@ -105,8 +114,9 @@ impl Recorder {
         let default_name = cpal::default_host()
             .default_input_device()
             .and_then(|d| d.name().ok());
-        let default_changed =
-            default_name.as_ref().is_some_and(|name| *name != self.input.name);
+        let default_changed = default_name
+            .as_ref()
+            .is_some_and(|name| *name != self.input.name);
         if !(failed || default_changed) {
             return;
         }
@@ -192,7 +202,13 @@ impl Recorder {
             }
         });
 
-        Ok(Session { stream, stop, cancelled, monitor, live_rx })
+        Ok(Session {
+            stream,
+            stop,
+            cancelled,
+            monitor,
+            live_rx,
+        })
     }
 
     fn build_stream(
@@ -301,8 +317,7 @@ impl VadChunker {
                 // The prefill ring also filled during the previous segment's
                 // hangover, so its oldest frames may already have been emitted;
                 // re-adding them would duplicate audio.
-                let overlap_frames =
-                    (PREFILL_FRAMES - 1).saturating_sub(self.frames_since_speech);
+                let overlap_frames = (PREFILL_FRAMES - 1).saturating_sub(self.frames_since_speech);
                 let skip = (overlap_frames * self.frame_size()).min(prefill.len());
                 self.pending.extend_from_slice(&prefill[skip..]);
             }
@@ -357,7 +372,11 @@ impl LevelMeter {
     fn new() -> Self {
         let fft = rustfft::FftPlanner::new().plan_fft_forward(FFT_WINDOW);
         let hann = (0..FFT_WINDOW)
-            .map(|i| (std::f32::consts::PI * i as f32 / FFT_WINDOW as f32).sin().powi(2))
+            .map(|i| {
+                (std::f32::consts::PI * i as f32 / FFT_WINDOW as f32)
+                    .sin()
+                    .powi(2)
+            })
             .collect();
         Self {
             fft,
@@ -403,7 +422,10 @@ impl LevelMeter {
             let hi = LEVEL_FREQ_MIN * span_ratio.powf((i + 1) as f32 / LEVEL_BAR_COUNT as f32);
             let lo_bin = (lo / bin_hz) as usize;
             let hi_bin = ((hi / bin_hz) as usize).clamp(lo_bin + 1, FFT_WINDOW / 2);
-            let mean = spectrum[lo_bin..hi_bin].iter().map(|c| c.norm()).sum::<f32>()
+            let mean = spectrum[lo_bin..hi_bin]
+                .iter()
+                .map(|c| c.norm())
+                .sum::<f32>()
                 / (hi_bin - lo_bin) as f32
                 / (FFT_WINDOW as f32 / 2.0);
             let db = 20.0 * mean.max(1e-9).log10();
@@ -411,7 +433,11 @@ impl LevelMeter {
             *bar = (norm * LEVEL_GAIN).min(1.0).powf(LEVEL_POWER);
         }
         for (smoothed, raw) in self.smoothed.iter_mut().zip(bars) {
-            *smoothed = if raw > *smoothed { raw } else { *smoothed * LEVEL_DECAY };
+            *smoothed = if raw > *smoothed {
+                raw
+            } else {
+                *smoothed * LEVEL_DECAY
+            };
             if *smoothed < 0.01 {
                 *smoothed = 0.0;
             }
@@ -429,7 +455,10 @@ struct StreamResampler {
 
 impl StreamResampler {
     fn new(from: u32, to: u32) -> Self {
-        Self { ratio: from as f64 / to as f64, produced: 0 }
+        Self {
+            ratio: from as f64 / to as f64,
+            produced: 0,
+        }
     }
 
     /// Resample everything available in `src` that has not been produced yet.
@@ -521,7 +550,10 @@ mod tests {
         // frames of non-overlapping prefill. With the overlap re-emitted it
         // would be ~109 frames.
         let frames = chunks[1].len() / frame;
-        assert!((95..=100).contains(&frames), "second chunk has {frames} frames");
+        assert!(
+            (95..=100).contains(&frames),
+            "second chunk has {frames} frames"
+        );
     }
 
     #[test]
@@ -535,14 +567,23 @@ mod tests {
     fn level_meter_tracks_a_tone_and_silence() {
         let mut meter = LevelMeter::new();
         let tone: Vec<f32> = (0..FFT_WINDOW)
-            .map(|i| (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / TARGET_RATE as f32).sin() * 0.5)
+            .map(|i| {
+                (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / TARGET_RATE as f32).sin() * 0.5
+            })
             .collect();
         meter.push(&tone);
         let bars = meter.compute();
-        let loudest =
-            bars.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i).unwrap();
+        let loudest = bars
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .map(|(i, _)| i)
+            .unwrap();
         // 1 kHz lands in log bucket 6 of 400..4000 Hz across 16 buckets.
-        assert!((5..=7).contains(&loudest), "loudest bucket {loudest}: {bars:?}");
+        assert!(
+            (5..=7).contains(&loudest),
+            "loudest bucket {loudest}: {bars:?}"
+        );
         assert!(bars[loudest] > 0.5, "{bars:?}");
 
         let mut silent = LevelMeter::new();
@@ -563,7 +604,11 @@ mod tests {
 
         assert_eq!(out, expected);
         let expected_len = src.len() / 6;
-        assert!(expected.len().abs_diff(expected_len) <= 1, "{} samples", expected.len());
+        assert!(
+            expected.len().abs_diff(expected_len) <= 1,
+            "{} samples",
+            expected.len()
+        );
     }
 }
 
@@ -598,7 +643,10 @@ mod silero_tests {
             .collect();
         chunks.extend(chunker.finish(&[]));
 
-        assert!(!chunks.is_empty(), "no speech detected in a 21s spoken clip");
+        assert!(
+            !chunks.is_empty(),
+            "no speech detected in a 21s spoken clip"
+        );
         let speech_secs: f32 =
             chunks.iter().map(|c| c.len() as f32).sum::<f32>() / TARGET_RATE as f32;
         assert!(

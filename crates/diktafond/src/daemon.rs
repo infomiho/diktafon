@@ -1,7 +1,5 @@
-use anyhow::{bail, Context, Result};
-use diktafon_protocol::{
-    read_frame, write_frame, ClientMsg, DaemonMsg, Msg, PROTOCOL_VERSION,
-};
+use anyhow::{Context, Result, bail};
+use diktafon_protocol::{ClientMsg, DaemonMsg, Msg, PROTOCOL_VERSION, read_frame, write_frame};
 use std::io::{BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
@@ -47,8 +45,8 @@ pub fn run(models_dir: &Path, socket: &Path) -> Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     ensure_sole_daemon(socket)?;
-    let listener = UnixListener::bind(socket)
-        .with_context(|| format!("binding {}", socket.display()))?;
+    let listener =
+        UnixListener::bind(socket).with_context(|| format!("binding {}", socket.display()))?;
     remove_socket_on_termination(socket);
     println!("diktafond listening on {}", socket.display());
 
@@ -71,7 +69,11 @@ pub fn run(models_dir: &Path, socket: &Path) -> Result<()> {
     }
 }
 
-fn finish_connection(inference: &Inference, counts: &ServeCounts, result: Result<()>) -> Result<()> {
+fn finish_connection(
+    inference: &Inference,
+    counts: &ServeCounts,
+    result: Result<()>,
+) -> Result<()> {
     if let Err(e) = result {
         eprintln!("connection ended: {e}");
     }
@@ -228,7 +230,10 @@ fn serve_startup_client(
 
 fn is_read_timeout(error: &anyhow::Error) -> bool {
     error.downcast_ref::<std::io::Error>().is_some_and(|io| {
-        matches!(io.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
+        matches!(
+            io.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        )
     })
 }
 
@@ -252,8 +257,8 @@ fn ensure_sole_daemon(socket: &Path) -> Result<()> {
 fn remove_socket_on_termination(socket: &Path) {
     use signal_hook::consts::{SIGINT, SIGTERM};
     let socket = socket.to_path_buf();
-    let mut signals = signal_hook::iterator::Signals::new([SIGTERM, SIGINT])
-        .expect("registering signal handler");
+    let mut signals =
+        signal_hook::iterator::Signals::new([SIGTERM, SIGINT]).expect("registering signal handler");
     thread::spawn(move || {
         if signals.forever().next().is_some() {
             let _ = std::fs::remove_file(&socket);
@@ -317,9 +322,12 @@ impl ServeCounts {
 
 fn handshake(reader: &mut impl Read, writer: &mut impl Write) -> Result<()> {
     match read_frame::<ClientMsg>(reader).context("reading handshake")? {
-        Some(ClientMsg::Hello { version }) if version == PROTOCOL_VERSION => {
-            write_frame(writer, &DaemonMsg::Hello { version: PROTOCOL_VERSION })
-        }
+        Some(ClientMsg::Hello { version }) if version == PROTOCOL_VERSION => write_frame(
+            writer,
+            &DaemonMsg::Hello {
+                version: PROTOCOL_VERSION,
+            },
+        ),
         Some(ClientMsg::Hello { version }) => {
             let error =
                 format!("protocol version mismatch: client {version}, daemon {PROTOCOL_VERSION}");
@@ -352,7 +360,10 @@ fn forward_client_frames(
             Some(ClientMsg::Hello { .. }) => bail!("unexpected Hello after handshake"),
             None => return Ok(()),
         };
-        inference.chunk_tx.send(msg).context("inference worker is gone")?;
+        inference
+            .chunk_tx
+            .send(msg)
+            .context("inference worker is gone")?;
     }
 }
 
@@ -389,7 +400,10 @@ fn relay_events(
 /// unacked `Cancel`s arrive first (FIFO, one ack per `Cancel`), so this drains
 /// those before treating an `Aborted` as the reset's barrier.
 fn reset_worker(inference: &Inference, unacked_cancels: usize) -> Result<()> {
-    inference.chunk_tx.send(Msg::Cancel).context("inference worker is gone")?;
+    inference
+        .chunk_tx
+        .send(Msg::Cancel)
+        .context("inference worker is gone")?;
     let deadline = Instant::now() + RESET_TIMEOUT;
     let mut aborteds_to_drain = unacked_cancels + 1;
     loop {

@@ -8,10 +8,10 @@ mod transport;
 use anyhow::{Context, Result};
 use capture::{Recorder, Session};
 use dictation::{Dictation, PhaseEvent};
-use diktafon_protocol::{socket_path, Msg, SessionConfig};
-use gpui::{Entity, Global};
+use diktafon_protocol::{Msg, SessionConfig, socket_path};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use gpui::{Entity, Global};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
@@ -69,7 +69,10 @@ fn daemon_bin() -> Option<PathBuf> {
 /// App-scoped GPUI state (cadence's AppServices pattern); keeps the entities
 /// alive for windows to consume later.
 struct AppServices {
-    #[expect(dead_code, reason = "keeps the entity alive; windows receive their own clones")]
+    #[expect(
+        dead_code,
+        reason = "keeps the entity alive; windows receive their own clones"
+    )]
     dictation: Entity<Dictation>,
 }
 
@@ -117,7 +120,10 @@ fn main() -> Result<()> {
     }
 
     let (event_tx, event_rx) = mpsc::channel::<GlobalHotKeyEvent>();
-    let hotkeys = Hotkeys { record: record_key.id(), escape: escape_key.id() };
+    let hotkeys = Hotkeys {
+        record: record_key.id(),
+        escape: escape_key.id(),
+    };
     thread::spawn(move || control_loop(recorder, daemon, event_rx, phase_tx, hotkeys));
 
     let receiver = GlobalHotKeyEvent::receiver();
@@ -141,8 +147,10 @@ fn main() -> Result<()> {
             cx.observe(&dictation, move |dictation, cx| {
                 let phase = dictation.read(cx).phase;
                 println!("[phase] {phase:?}");
-                let cancellable =
-                    matches!(phase, dictation::Phase::Arming | dictation::Phase::Recording);
+                let cancellable = matches!(
+                    phase,
+                    dictation::Phase::Arming | dictation::Phase::Recording
+                );
                 if cancellable != escape_registered {
                     let result = if cancellable {
                         manager.register(escape_key)
@@ -236,7 +244,8 @@ fn control_loop(
                                 session = Some(s);
                                 let _ = phases.unbounded_send(PhaseEvent::RecordingStarted);
                             } else {
-                                let error = "microphone produced no samples; is another app holding it?";
+                                let error =
+                                    "microphone produced no samples; is another app holding it?";
                                 eprintln!("{error}");
                                 // stop() flushes the (empty) session to the
                                 // daemon; consume its result so it cannot be

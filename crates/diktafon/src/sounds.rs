@@ -35,7 +35,10 @@ impl Sounds {
         };
         Ok(Self {
             start: decode("start.mp3", include_bytes!("../resources/sounds/start.mp3"))?,
-            cancel: decode("cancel.mp3", include_bytes!("../resources/sounds/cancel.mp3"))?,
+            cancel: decode(
+                "cancel.mp3",
+                include_bytes!("../resources/sounds/cancel.mp3"),
+            )?,
             error: decode("error.mp3", include_bytes!("../resources/sounds/error.mp3"))?,
             stream,
         })

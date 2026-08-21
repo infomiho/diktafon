@@ -1,13 +1,13 @@
 use crate::dictation::PhaseEvent;
-use anyhow::{anyhow, bail, Context, Result};
-use diktafon_protocol::{read_frame, write_frame, ClientMsg, DaemonMsg, Msg, PROTOCOL_VERSION};
+use anyhow::{Context, Result, anyhow, bail};
+use diktafon_protocol::{ClientMsg, DaemonMsg, Msg, PROTOCOL_VERSION, read_frame, write_frame};
 use std::cell::Cell;
 use std::io::BufReader;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -64,10 +64,17 @@ impl DaemonClient {
     ) -> Self {
         let (chunk_tx, cmd_rx) = mpsc::channel::<Msg>();
         let (results_tx, results_rx) = mpsc::channel();
-        let ledger =
-            Arc::new(FlushLedger { results_tx, pending_flushes: Mutex::new(0), phase_tx });
+        let ledger = Arc::new(FlushLedger {
+            results_tx,
+            pending_flushes: Mutex::new(0),
+            phase_tx,
+        });
         thread::spawn(move || Transport::new(socket, daemon_bin, ledger).run(cmd_rx));
-        Self { chunk_tx, results_rx, stale_results: Cell::new(0) }
+        Self {
+            chunk_tx,
+            results_rx,
+            stale_results: Cell::new(0),
+        }
     }
 
     /// Wait for the session flushed by `Session::stop` to finish transcribing
@@ -130,7 +137,9 @@ impl FlushLedger {
         let mut pending = self.pending_flushes.lock().unwrap();
         while *pending > 0 {
             *pending -= 1;
-            let _ = self.results_tx.send(SessionResult::Failed(reason.to_string()));
+            let _ = self
+                .results_tx
+                .send(SessionResult::Failed(reason.to_string()));
         }
     }
 }
@@ -184,7 +193,10 @@ impl Supervisor {
         // goes to a log file next to the socket for the same reason.
         use std::os::unix::process::CommandExt;
         let log_path = socket.with_extension("log");
-        let log = std::fs::File::options().create(true).append(true).open(&log_path);
+        let log = std::fs::File::options()
+            .create(true)
+            .append(true)
+            .open(&log_path);
         let (stdout, stderr) = match log {
             Ok(f) => match f.try_clone() {
                 Ok(clone) => (Stdio::from(clone), Stdio::from(f)),
@@ -239,7 +251,11 @@ impl Transport {
         Self {
             socket,
             ledger,
-            supervisor: Supervisor { bin: daemon_bin, child: None, last_spawn: None },
+            supervisor: Supervisor {
+                bin: daemon_bin,
+                child: None,
+                last_spawn: None,
+            },
             conn: None,
             backoff: INITIAL_BACKOFF,
             next_attempt: Instant::now(),
@@ -288,7 +304,9 @@ impl Transport {
                 "{dropped} audio chunk(s) were lost while diktafond was unreachable"
             )));
         } else if !self.send(&ClientMsg::Flush) {
-            self.ledger.deliver(SessionResult::Failed("diktafond is unavailable".to_string()));
+            self.ledger.deliver(SessionResult::Failed(
+                "diktafond is unavailable".to_string(),
+            ));
         }
     }
 
@@ -326,7 +344,10 @@ impl Transport {
                 None => return self.schedule_retry(),
             }
         }
-        eprintln!("connecting to diktafond failed: {failure}; next attempt in {:.2?}", self.backoff);
+        eprintln!(
+            "connecting to diktafond failed: {failure}; next attempt in {:.2?}",
+            self.backoff
+        );
         self.schedule_retry()
     }
 
@@ -369,9 +390,12 @@ impl Transport {
     fn connect(&self) -> Result<UnixStream, ConnectFailure> {
         let stream = UnixStream::connect(&self.socket).map_err(ConnectFailure::NoDaemon)?;
         self.handshake(&stream).map_err(ConnectFailure::Rejected)?;
-        self.await_ready(&stream).map_err(ConnectFailure::Rejected)?;
+        self.await_ready(&stream)
+            .map_err(ConnectFailure::Rejected)?;
         spawn_reader(
-            stream.try_clone().map_err(|e| ConnectFailure::Rejected(e.into()))?,
+            stream
+                .try_clone()
+                .map_err(|e| ConnectFailure::Rejected(e.into()))?,
             self.ledger.clone(),
         );
         Ok(stream)
@@ -379,7 +403,12 @@ impl Transport {
 
     fn handshake(&self, stream: &UnixStream) -> Result<()> {
         stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
-        write_frame(&mut &*stream, &ClientMsg::Hello { version: PROTOCOL_VERSION })?;
+        write_frame(
+            &mut &*stream,
+            &ClientMsg::Hello {
+                version: PROTOCOL_VERSION,
+            },
+        )?;
         match read_frame::<DaemonMsg>(&mut &*stream)? {
             Some(DaemonMsg::Hello { .. }) => Ok(()),
             Some(DaemonMsg::Error(e)) => bail!("daemon refused the connection: {e}"),
@@ -403,7 +432,11 @@ impl Transport {
                     stream.set_read_timeout(None)?;
                     return Ok(());
                 }
-                Some(DaemonMsg::DownloadProgress { model, downloaded_bytes, total_bytes }) => {
+                Some(DaemonMsg::DownloadProgress {
+                    model,
+                    downloaded_bytes,
+                    total_bytes,
+                }) => {
                     if last_print.elapsed() >= Duration::from_secs(1) {
                         println!(
                             "  daemon is downloading {model}: {}/{} MB",
@@ -451,7 +484,9 @@ fn spawn_reader(stream: UnixStream, ledger: Arc<FlushLedger>) {
                     | DaemonMsg::DownloadProgress { .. },
                 )) => {}
                 Ok(None) => return ledger.fail_pending("diktafond closed the connection"),
-                Err(e) => return ledger.fail_pending(&format!("connection to diktafond lost: {e}")),
+                Err(e) => {
+                    return ledger.fail_pending(&format!("connection to diktafond lost: {e}"));
+                }
             }
         }
     });
@@ -471,7 +506,13 @@ mod tests {
         let mut writer = stream;
         match read_frame::<ClientMsg>(&mut reader) {
             Ok(Some(ClientMsg::Hello { .. })) => {
-                write_frame(&mut writer, &DaemonMsg::Hello { version: PROTOCOL_VERSION }).unwrap();
+                write_frame(
+                    &mut writer,
+                    &DaemonMsg::Hello {
+                        version: PROTOCOL_VERSION,
+                    },
+                )
+                .unwrap();
                 write_frame(&mut writer, &DaemonMsg::Ready).unwrap();
             }
             other => panic!("expected Hello, got {other:?}"),
@@ -481,7 +522,8 @@ mod tests {
             match read_frame::<ClientMsg>(&mut reader) {
                 Ok(Some(ClientMsg::Chunk(_))) => chunks += 1,
                 Ok(Some(ClientMsg::Flush)) => {
-                    write_frame(&mut writer, &DaemonMsg::Final(format!("{chunks} chunks"))).unwrap();
+                    write_frame(&mut writer, &DaemonMsg::Final(format!("{chunks} chunks")))
+                        .unwrap();
                     chunks = 0;
                     flushes -= 1;
                 }
@@ -498,7 +540,10 @@ mod tests {
     }
 
     fn run_session(client: &DaemonClient, chunks: usize) -> Result<String> {
-        client.chunk_tx.send(Msg::Start(SessionConfig::default())).unwrap();
+        client
+            .chunk_tx
+            .send(Msg::Start(SessionConfig::default()))
+            .unwrap();
         for _ in 0..chunks {
             client.chunk_tx.send(Msg::Chunk(vec![0.0; 160])).unwrap();
         }
@@ -550,7 +595,10 @@ mod tests {
         let client = DaemonClient::spawn(test_socket("absent"), None, None);
         let start = Instant::now();
         assert!(run_session(&client, 0).is_err());
-        assert!(start.elapsed() < FINISH_TIMEOUT / 2, "should not wait out the full timeout");
+        assert!(
+            start.elapsed() < FINISH_TIMEOUT / 2,
+            "should not wait out the full timeout"
+        );
     }
 
     /// A daemon binary that exits immediately must fail the session quickly
@@ -564,7 +612,11 @@ mod tests {
         );
         let start = Instant::now();
         assert!(run_session(&client, 0).is_err());
-        assert!(start.elapsed() < Duration::from_secs(10), "took {:?}", start.elapsed());
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "took {:?}",
+            start.elapsed()
+        );
     }
 
     /// Spawns the real daemon (real models); needs `cargo build -p diktafond`
@@ -574,7 +626,10 @@ mod tests {
     fn auto_spawns_the_real_daemon() {
         let socket = test_socket("autospawn");
         let bin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/diktafond");
-        assert!(bin.exists(), "build diktafond first: cargo build -p diktafond");
+        assert!(
+            bin.exists(),
+            "build diktafond first: cargo build -p diktafond"
+        );
         let client = DaemonClient::spawn(socket.clone(), Some(bin), None);
         assert_eq!(run_session(&client, 0).unwrap(), "");
 
@@ -587,7 +642,10 @@ mod tests {
         let own_pid = std::process::id().to_string();
         for pid in String::from_utf8_lossy(&lsof.stdout).split_whitespace() {
             if pid != own_pid {
-                std::process::Command::new("kill").args(["-TERM", pid]).status().unwrap();
+                std::process::Command::new("kill")
+                    .args(["-TERM", pid])
+                    .status()
+                    .unwrap();
             }
         }
     }

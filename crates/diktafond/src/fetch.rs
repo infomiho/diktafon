@@ -3,7 +3,7 @@
 //! with Range resume, the manifest's sha256 as the trust anchor, and an
 //! atomic rename at the end.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
@@ -15,11 +15,17 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[cfg(not(test))]
-const RETRY_DELAYS: [Duration; 3] =
-    [Duration::from_secs(1), Duration::from_secs(2), Duration::from_secs(4)];
+const RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+];
 #[cfg(test)]
-const RETRY_DELAYS: [Duration; 3] =
-    [Duration::from_millis(10), Duration::from_millis(10), Duration::from_millis(10)];
+const RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_millis(10),
+    Duration::from_millis(10),
+    Duration::from_millis(10),
+];
 
 pub struct RemoteFile {
     pub url: String,
@@ -49,7 +55,9 @@ pub fn fetch(file: &RemoteFile, dest: &Path, progress: &mut dyn FnMut(u64, u64))
         .enable_all()
         .build()
         .context("building fetch runtime")?;
-    let client = reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT).build()?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()?;
     runtime.block_on(async {
         let mut last_error = None;
         for delay in std::iter::once(Duration::ZERO).chain(RETRY_DELAYS) {
@@ -119,7 +127,11 @@ async fn fetch_once(
         }
         _ => {
             let error = anyhow::anyhow!("unexpected HTTP status {status}");
-            return Err(if (400..500).contains(&status) { error.context(Permanent) } else { error });
+            return Err(if (400..500).contains(&status) {
+                error.context(Permanent)
+            } else {
+                error
+            });
         }
     };
 
@@ -219,7 +231,10 @@ pub(crate) mod test_server {
     /// Serves one file at any path; records the Range offset of every request.
     pub fn serve(body: Vec<u8>, behavior: Behavior) -> (String, Arc<Mutex<Vec<Option<u64>>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://127.0.0.1:{}/file.bin", listener.local_addr().unwrap().port());
+        let url = format!(
+            "http://127.0.0.1:{}/file.bin",
+            listener.local_addr().unwrap().port()
+        );
         let requests = Arc::new(Mutex::new(Vec::new()));
         let log = requests.clone();
         thread::spawn(move || {
@@ -254,18 +269,23 @@ pub(crate) mod test_server {
                         ),
                         &body[..],
                     ),
-                    (Behavior::RangeNotSatisfiable, Some(_)) => {
-                        ("HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\n".into(), &[][..])
-                    }
-                    (Behavior::NotFound, _) => {
-                        ("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n".into(), &[][..])
-                    }
+                    (Behavior::RangeNotSatisfiable, Some(_)) => (
+                        "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\n".into(),
+                        &[][..],
+                    ),
+                    (Behavior::NotFound, _) => (
+                        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n".into(),
+                        &[][..],
+                    ),
                     (Behavior::Oversend, _) => (
                         format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n", len + 64),
                         // Payload extended below.
                         &body[..],
                     ),
-                    _ => (format!("HTTP/1.1 200 OK\r\nContent-Length: {len}\r\n"), &body[..]),
+                    _ => (
+                        format!("HTTP/1.1 200 OK\r\nContent-Length: {len}\r\n"),
+                        &body[..],
+                    ),
                 };
                 let _ = stream.write_all(head.as_bytes());
                 let _ = stream.write_all(b"Connection: close\r\n\r\n");
@@ -285,7 +305,7 @@ pub(crate) mod test_server {
 
 #[cfg(test)]
 mod tests {
-    use super::test_server::{serve, test_body, Behavior};
+    use super::test_server::{Behavior, serve, test_body};
     use super::*;
 
     fn remote(url: String, body: &[u8]) -> RemoteFile {
