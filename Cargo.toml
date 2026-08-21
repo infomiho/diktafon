@@ -9,7 +9,6 @@ edition = "2024"
 [workspace.dependencies]
 anyhow = "1"
 diktafon-protocol = { path = "crates/protocol" }
-diktafond = { path = "crates/diktafond" }
 
 [profile.dev.package."*"]
 opt-level = 2

@@ -10,6 +10,3 @@ arboard = "3"
 enigo = "0.6"
 anyhow.workspace = true
 diktafon-protocol.workspace = true
-# Temporary in-process use of the daemon crate until the Unix socket transport
-# lands (M2); the client will then talk to diktafond over the protocol only.
-diktafond.workspace = true

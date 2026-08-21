@@ -446,7 +446,6 @@ dependencies = [
  "arboard",
  "cpal",
  "diktafon-protocol",
- "diktafond",
  "enigo",
  "global-hotkey",
 ]

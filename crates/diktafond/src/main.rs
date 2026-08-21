@@ -7,9 +7,5 @@ fn models_dir() -> PathBuf {
 }
 
 fn main() -> Result<()> {
-    let socket = match std::env::var_os("DIKTAFOND_SOCKET") {
-        Some(path) => PathBuf::from(path),
-        None => diktafon_protocol::socket_path(),
-    };
-    diktafond::daemon::run(&models_dir(), &socket)
+    diktafond::daemon::run(&models_dir(), &diktafon_protocol::socket_path())
 }

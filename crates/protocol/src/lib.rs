@@ -23,9 +23,8 @@ pub const TARGET_RATE: u32 = 16_000;
 /// garbage length prefix from a desynced stream.
 pub const MAX_FRAME_LEN: u32 = 64 * 1024 * 1024;
 
-/// In-process seam between the capture side and the inference worker. Replaced
-/// by [`ClientMsg`]/[`DaemonMsg`] once the client talks to the daemon over a
-/// socket.
+/// In-process seam on both sides of the socket: capture feeds the client's
+/// transport with it, and the daemon feeds its inference worker with it.
 pub enum Msg {
     Start(SessionConfig),
     Chunk(Vec<f32>),
@@ -34,8 +33,12 @@ pub enum Msg {
 }
 
 /// Where the daemon listens locally; shared so client and daemon agree without
-/// the client depending on the daemon crate.
+/// the client depending on the daemon crate. `DIKTAFOND_SOCKET` overrides it,
+/// mainly for tests.
 pub fn socket_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("DIKTAFOND_SOCKET") {
+        return PathBuf::from(path);
+    }
     PathBuf::from(std::env::var("HOME").expect("HOME not set"))
         .join("Library/Application Support/diktafon/diktafond.sock")
 }
