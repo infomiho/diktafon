@@ -184,6 +184,7 @@ impl Pill {
 
 fn dot(phase: Phase, breathing: bool) -> AnyElement {
     let color = match phase {
+        Phase::Arming => rgb(0x8F8F94),
         Phase::Recording => rgb(0xE5484D),
         Phase::Transcribing => rgb(0xF0B429),
         Phase::Polishing => rgb(0x46A758),
@@ -211,6 +212,7 @@ fn phase_key(phase: Phase) -> u64 {
         Phase::Recording => 1,
         Phase::Transcribing => 2,
         Phase::Polishing => 3,
+        Phase::Arming => 4,
     }
 }
 
@@ -224,6 +226,7 @@ impl Render for Pill {
         // The exit fade freezes the last active content instead of blanking.
         let display = if phase == Phase::Idle { self.last_active } else { phase };
         let label = match display {
+            Phase::Arming => "starting",
             Phase::Transcribing => "transcribing",
             Phase::Polishing => "polishing",
             _ => "",

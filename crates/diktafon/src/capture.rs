@@ -42,6 +42,25 @@ pub struct Session {
     stream: cpal::Stream,
     stop: Arc<AtomicBool>,
     monitor: JoinHandle<()>,
+    live_rx: mpsc::Receiver<()>,
+}
+
+/// One-shot fired from the first audio callback of a session.
+/// `Stream::play()` returning does not mean samples are flowing; Bluetooth and
+/// USB mics can take hundreds of milliseconds to actually deliver.
+struct FirstSampleSignal {
+    signaled: AtomicBool,
+    tx: Mutex<Option<mpsc::Sender<()>>>,
+}
+
+impl FirstSampleSignal {
+    fn fire(&self) {
+        if !self.signaled.swap(true, Ordering::Relaxed)
+            && let Some(tx) = self.tx.lock().unwrap().take()
+        {
+            let _ = tx.send(());
+        }
+    }
 }
 
 impl Recorder {
@@ -73,7 +92,12 @@ impl Recorder {
         let mut resampler = StreamResampler::new(self.rate, TARGET_RATE);
 
         let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
-        let stream = self.build_stream(buffer.clone())?;
+        let (live_tx, live_rx) = mpsc::channel();
+        let live = Arc::new(FirstSampleSignal {
+            signaled: AtomicBool::new(false),
+            tx: Mutex::new(Some(live_tx)),
+        });
+        let stream = self.build_stream(buffer.clone(), live)?;
         stream.play()?;
 
         let stop = Arc::new(AtomicBool::new(false));
@@ -112,23 +136,31 @@ impl Recorder {
             }
         });
 
-        Ok(Session { stream, stop, monitor })
+        Ok(Session { stream, stop, monitor, live_rx })
     }
 
-    fn build_stream(&self, buffer: Arc<Mutex<Vec<f32>>>) -> Result<cpal::Stream> {
+    fn build_stream(
+        &self,
+        buffer: Arc<Mutex<Vec<f32>>>,
+        live: Arc<FirstSampleSignal>,
+    ) -> Result<cpal::Stream> {
         let err_fn = |e| eprintln!("stream error: {e}");
         let stream_config: cpal::StreamConfig = self.config.clone().into();
         let channels = self.channels;
         let stream = match self.config.sample_format() {
             cpal::SampleFormat::F32 => self.device.build_input_stream(
                 &stream_config,
-                move |data: &[f32], _| push_mono(&buffer, data, channels),
+                move |data: &[f32], _| {
+                    live.fire();
+                    push_mono(&buffer, data, channels);
+                },
                 err_fn,
                 None,
             )?,
             cpal::SampleFormat::I16 => self.device.build_input_stream(
                 &stream_config,
                 move |data: &[i16], _| {
+                    live.fire();
                     let floats: Vec<f32> = data.iter().map(|&s| s as f32 / 32768.0).collect();
                     push_mono(&buffer, &floats, channels);
                 },
@@ -142,6 +174,11 @@ impl Recorder {
 }
 
 impl Session {
+    /// Block until the mic delivered its first samples, or the timeout passed.
+    pub fn wait_until_live(&self, timeout: Duration) -> bool {
+        self.live_rx.recv_timeout(timeout).is_ok()
+    }
+
     pub fn stop(self) {
         self.stop.store(true, Ordering::Relaxed);
         self.monitor.join().ok();

@@ -14,7 +14,7 @@ use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use transport::DaemonClient;
 
 /// Ships inside the binary (1.8MB, mirroring Handy bundling the same file) so
@@ -103,6 +103,7 @@ fn main() -> Result<()> {
                 thread::sleep(std::time::Duration::from_secs(secs));
             };
             thread::sleep(std::time::Duration::from_secs(2));
+            step(PhaseEvent::RecordingArmed, 1);
             step(PhaseEvent::RecordingStarted, 4);
             step(PhaseEvent::RecordingStopped, 3);
             step(PhaseEvent::PolishingStarted, 3);
@@ -150,6 +151,10 @@ fn hide_from_dock() {
         .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 }
 
+/// How long a mic may take to deliver its first samples; Bluetooth devices
+/// can need hundreds of milliseconds.
+const MIC_READY_TIMEOUT: Duration = Duration::from_millis(1500);
+
 fn control_loop(
     recorder: Recorder,
     daemon: DaemonClient,
@@ -164,9 +169,26 @@ fn control_loop(
                     let _ = daemon.chunk_tx.send(Msg::Start(SessionConfig::default()));
                     match recorder.start(daemon.chunk_tx.clone()) {
                         Ok(s) => {
-                            println!("recording...");
-                            session = Some(s);
-                            let _ = phases.unbounded_send(PhaseEvent::RecordingStarted);
+                            let _ = phases.unbounded_send(PhaseEvent::RecordingArmed);
+                            // Stream::play() returning does not mean samples
+                            // flow yet; wait so slow mics don't eat first
+                            // words. A queued Released is handled right after.
+                            if s.wait_until_live(MIC_READY_TIMEOUT) {
+                                println!("recording...");
+                                session = Some(s);
+                                let _ = phases.unbounded_send(PhaseEvent::RecordingStarted);
+                            } else {
+                                let error = "microphone produced no samples; is another app holding it?";
+                                eprintln!("{error}");
+                                // stop() flushes the (empty) session to the
+                                // daemon; consume its result so it cannot be
+                                // misdelivered to the next session.
+                                s.stop();
+                                let _ = daemon.finish();
+                                let _ = phases.unbounded_send(PhaseEvent::SessionEnded {
+                                    error: Some(error.into()),
+                                });
+                            }
                         }
                         Err(e) => eprintln!("failed to start recording: {e}"),
                     }

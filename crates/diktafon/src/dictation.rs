@@ -9,6 +9,8 @@ use gpui::{App, AppContext, Entity};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     Idle,
+    /// Hotkey pressed; waiting for the mic to actually deliver samples.
+    Arming,
     Recording,
     /// Hotkey released; remaining chunks are being transcribed.
     Transcribing,
@@ -17,6 +19,7 @@ pub enum Phase {
 }
 
 pub enum PhaseEvent {
+    RecordingArmed,
     RecordingStarted,
     RecordingStopped,
     PolishingStarted,
@@ -53,6 +56,7 @@ impl Dictation {
 
     fn apply(&mut self, event: PhaseEvent) {
         self.phase = match event {
+            PhaseEvent::RecordingArmed => Phase::Arming,
             PhaseEvent::RecordingStarted => Phase::Recording,
             PhaseEvent::RecordingStopped => Phase::Transcribing,
             // Only a live session's polish matters; a stale frame from a
