@@ -164,7 +164,13 @@ fn main() -> Result<()> {
             );
             step(PhaseEvent::RecordingStopped, 3);
             step(PhaseEvent::PolishingStarted, 3);
-            step(PhaseEvent::SessionEnded { error: None }, 0);
+            step(
+                PhaseEvent::SessionEnded {
+                    error: None,
+                    cancelled: false,
+                },
+                0,
+            );
         });
     }
 
@@ -298,7 +304,10 @@ fn control_loop(
                 s.cancel();
                 play(sounds::Cue::Cancel);
                 println!("cancelled");
-                let _ = phases.unbounded_send(PhaseEvent::SessionEnded { error: None });
+                let _ = phases.unbounded_send(PhaseEvent::SessionEnded {
+                    error: None,
+                    cancelled: true,
+                });
             }
             continue;
         }
@@ -335,6 +344,7 @@ fn control_loop(
                                 let _ = daemon.finish();
                                 let _ = phases.unbounded_send(PhaseEvent::SessionEnded {
                                     error: Some(error.into()),
+                                    cancelled: false,
                                 });
                             }
                         }
@@ -367,7 +377,10 @@ fn control_loop(
                             Some(format!("{e:#}"))
                         }
                     };
-                    let _ = phases.unbounded_send(PhaseEvent::SessionEnded { error });
+                    let _ = phases.unbounded_send(PhaseEvent::SessionEnded {
+                        error,
+                        cancelled: false,
+                    });
                 }
             }
         }

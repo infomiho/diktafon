@@ -28,6 +28,7 @@ pub enum PhaseEvent {
     /// The session produced a final text, an error, or nothing.
     SessionEnded {
         error: Option<String>,
+        cancelled: bool,
     },
     /// The daemon is still fetching a model (first run); sessions wait on it.
     DownloadProgress {
@@ -38,11 +39,19 @@ pub enum PhaseEvent {
     DownloadFinished,
 }
 
+/// How the last session ended; drives the pill's closing beat.
+#[derive(Clone, PartialEq)]
+pub enum Outcome {
+    Pasted,
+    Cancelled,
+    Failed(String),
+}
+
 pub struct Dictation {
     pub phase: Phase,
     /// Transcribed text accumulated so far in the current session.
     pub partial: String,
-    pub last_error: Option<String>,
+    pub outcome: Option<Outcome>,
     /// Model download underway on the daemon, shown instead of the session
     /// content so a first run does not look like a hang.
     pub download: Option<Download>,
@@ -63,7 +72,7 @@ impl Dictation {
         let entity = cx.new(|_| Dictation {
             phase: Phase::Idle,
             partial: String::new(),
-            last_error: None,
+            outcome: None,
             download: None,
         });
         cx.spawn({
@@ -83,7 +92,10 @@ impl Dictation {
 
     fn apply(&mut self, event: PhaseEvent) {
         self.phase = match event {
-            PhaseEvent::RecordingArmed => Phase::Arming,
+            PhaseEvent::RecordingArmed => {
+                self.outcome = None;
+                Phase::Arming
+            }
             PhaseEvent::RecordingStarted => {
                 self.partial.clear();
                 Phase::Recording
@@ -100,8 +112,12 @@ impl Dictation {
             // timed-out session must not flip Idle or a new Recording.
             PhaseEvent::PolishingStarted if self.phase == Phase::Transcribing => Phase::Polishing,
             PhaseEvent::PolishingStarted => self.phase,
-            PhaseEvent::SessionEnded { error } => {
-                self.last_error = error;
+            PhaseEvent::SessionEnded { error, cancelled } => {
+                self.outcome = Some(match error {
+                    Some(error) => Outcome::Failed(error),
+                    None if cancelled => Outcome::Cancelled,
+                    None => Outcome::Pasted,
+                });
                 Phase::Idle
             }
             PhaseEvent::DownloadProgress { model, percent } => {

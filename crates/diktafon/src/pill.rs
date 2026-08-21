@@ -11,7 +11,7 @@
 //! needs an explicit gate.
 
 use crate::capture::LevelBars;
-use crate::dictation::{Dictation, Phase};
+use crate::dictation::{Dictation, Outcome, Phase};
 use crate::theme;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, AppContext, Bounds, BoxShadow, Context, Entity,
@@ -43,6 +43,10 @@ const DOT_BREATH: Duration = Duration::from_millis(1100);
 /// Aurora glow floor while recording: the wash never goes fully dark, so
 /// quiet moments read as embers rather than the effect blinking off.
 const AURORA_BASELINE: f32 = 0.22;
+/// How long a failed session's error stays readable before the fade.
+const ERROR_HOLD: Duration = Duration::from_millis(2400);
+/// Length of the success bloom the orbit plays while the pill fades.
+const BLOOM: Duration = Duration::from_millis(350);
 
 /// Open the pill while a session is active; on idle, play the exit animation
 /// and then close it.
@@ -53,14 +57,22 @@ pub fn manage(cx: &mut App, dictation: Entity<Dictation>, levels: LevelBars) {
         match (&open, idle) {
             (Some(handle), true) => {
                 let handle = *handle;
-                let _ = handle.update(cx, |pill, _, cx| {
-                    pill.closing = true;
-                    cx.notify();
-                });
+                // A failed session lingers so the error is readable; anything
+                // else fades right away.
+                let failed = matches!(dictation.read(cx).outcome, Some(Outcome::Failed(_)));
+                let hold = if failed { ERROR_HOLD } else { Duration::ZERO };
                 // A session starting during the fade opens a fresh pill; the
                 // fading one is gone within EXIT, so the overlap is brief.
                 open = None;
                 cx.spawn(async move |cx| {
+                    cx.background_executor().timer(hold).await;
+                    cx.update(|cx| {
+                        let _ = handle.update(cx, |pill, _, cx| {
+                            pill.closing = true;
+                            pill.closing_since = Some(std::time::Instant::now());
+                            cx.notify();
+                        });
+                    });
                     cx.background_executor()
                         .timer(EXIT + Duration::from_millis(40))
                         .await;
@@ -161,10 +173,20 @@ fn pill_bounds() -> Option<Bounds<Pixels>> {
 /// Repaint cadence for the live level bars; matches the meter's update rate.
 const BAR_FRAME: Duration = Duration::from_millis(33);
 
+/// What the orbit should show this frame; ending beats outrank the phase.
+enum OrbitView {
+    Phase(Phase),
+    Error,
+    Bloom,
+    Quiet,
+}
+
 pub struct Pill {
     dictation: Entity<Dictation>,
     levels: LevelBars,
     closing: bool,
+    /// When the exit fade began; times the success bloom.
+    closing_since: Option<std::time::Instant>,
     /// What the fading pill keeps showing after the phase already went Idle.
     last_active: Phase,
     /// When this session's recording began, for the elapsed-time readout.
@@ -196,6 +218,7 @@ impl Pill {
             dictation,
             levels,
             closing: false,
+            closing_since: None,
             last_active: Phase::Recording,
             recording_since: None,
             opened_at: std::time::Instant::now(),
@@ -289,9 +312,28 @@ impl Pill {
     /// live signal; see docs/design.md). Red and voice-driven while
     /// recording; a soft white highlight slowly circling while transcribing;
     /// a magenta ring breathing (contracting and growing) while polishing; a
-    /// quiet muted ring otherwise.
-    fn orbital_meter(&self, display: Phase, reduce_motion: bool) -> AnyElement {
+    /// quiet muted ring otherwise. Session endings get their own beats: a
+    /// steady red ring for an error, a white bloom for a paste, quiet for a
+    /// cancel.
+    fn orbital_meter(&self, view: OrbitView, reduce_motion: bool) -> AnyElement {
         let t = self.opened_at.elapsed().as_secs_f32();
+        let display = match view {
+            OrbitView::Error => {
+                return self.satellite_ring(theme::SIGNAL_RED, [0.35; SATELLITES]);
+            }
+            OrbitView::Quiet => {
+                return self.satellite_ring(theme::RING_IDLE, [0.; SATELLITES]);
+            }
+            OrbitView::Bloom => {
+                let fade = self
+                    .closing_since
+                    .map(|since| since.elapsed().as_secs_f32() / BLOOM.as_secs_f32())
+                    .unwrap_or(1.);
+                let level = (1. - fade).max(0.) * 0.7;
+                return self.satellite_ring(theme::SIGNAL_WHITE, [level; SATELLITES]);
+            }
+            OrbitView::Phase(phase) => phase,
+        };
         let (base_color, levels): (u32, [f32; SATELLITES]) = match display {
             Phase::Recording => (theme::SIGNAL_RED, *self.levels.lock().unwrap()),
             Phase::Transcribing if reduce_motion => (theme::SIGNAL_WHITE, [0.3; SATELLITES]),
@@ -309,6 +351,10 @@ impl Pill {
             ),
             _ => (theme::RING_IDLE, [0.; SATELLITES]),
         };
+        self.satellite_ring(base_color, levels)
+    }
+
+    fn satellite_ring(&self, base_color: u32, levels: [f32; SATELLITES]) -> AnyElement {
         let center = METER_BOX / 2.;
         let satellites = (0..SATELLITES).map(move |i| {
             let level = levels[i];
@@ -412,14 +458,35 @@ impl Render for Pill {
         if display == Phase::Recording && self.recording_since.is_none() {
             self.recording_since = Some(std::time::Instant::now());
         }
-        let aurora_bands = (display == Phase::Recording).then(|| self.aurora_bands());
+        let aurora_bands =
+            (display == Phase::Recording && !self.closing).then(|| self.aurora_bands());
         let elapsed = self.recording_since.filter(|_| display == Phase::Recording);
+        let outcome = self.dictation.read(cx).outcome.clone();
+        let error = match (&outcome, phase) {
+            (Some(Outcome::Failed(message)), Phase::Idle) => Some(message.clone()),
+            _ => None,
+        };
+        let orbit = if error.is_some() {
+            OrbitView::Error
+        } else if self.closing {
+            match outcome {
+                Some(Outcome::Pasted) => OrbitView::Bloom,
+                Some(Outcome::Cancelled) => OrbitView::Quiet,
+                _ => OrbitView::Phase(display),
+            }
+        } else {
+            OrbitView::Phase(display)
+        };
         let download = self.dictation.read(cx).download.clone();
-        let content = match &download {
+        let content = match &error {
+            Some(message) => label(message.clone(), false),
             // A first-run model download outranks the session content: the
             // session is stalled on it and would otherwise look like a hang.
-            Some(download) => label(
-                format!("Downloading models {}%", download.percent),
+            None if download.is_some() => label(
+                format!(
+                    "Downloading models {}%",
+                    download.as_ref().map(|d| d.percent).unwrap_or(0)
+                ),
                 !reduce_motion,
             ),
             None => match display {
@@ -454,14 +521,16 @@ impl Render for Pill {
                     .unwrap_or_default(),
             )
             .children(aurora_bands.map(|bands| self.aurora_wash(bands, reduce_motion)))
-            .child(self.orbital_meter(display, reduce_motion))
+            .child(self.orbital_meter(orbit, reduce_motion))
             .child(
                 // Cross-fade the content on phase changes; the changing key
                 // restarts the fade.
                 div().flex_1().child(content).with_animation(
                     (
                         "content-fade",
-                        phase_key(display) * 2 + u64::from(download.is_some()),
+                        phase_key(display) * 4
+                            + u64::from(error.is_some()) * 2
+                            + u64::from(download.is_some()),
                     ),
                     Animation::new(CONTENT_FADE).with_easing(ease_out_quint()),
                     |el, delta| el.opacity(delta),
