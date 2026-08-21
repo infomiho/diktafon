@@ -218,6 +218,7 @@ fn main() -> Result<()> {
         .run(move |cx| {
             hide_from_dock();
             gpui_component::init(cx);
+            theme::apply_settings_theme(cx);
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.bind_keys([
                 gpui::KeyBinding::new("cmd-q", Quit, None),

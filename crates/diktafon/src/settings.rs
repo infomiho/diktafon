@@ -147,6 +147,7 @@ pub fn open(
                 ..Default::default()
             },
             |window, cx| {
+                force_dark_titlebar(window);
                 let view = cx.new(|cx| SettingsWindow::new(settings, window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             },
@@ -154,6 +155,26 @@ pub fn open(
         .ok()?;
     cx.activate(true);
     Some(handle)
+}
+
+/// The window content is Signal-dark regardless of system appearance (see
+/// theme::apply_settings_theme), so the native titlebar must match or it
+/// renders as a light strip over the dark pane.
+fn force_dark_titlebar(window: &Window) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    if let RawWindowHandle::AppKit(appkit) = handle.as_raw() {
+        let ns_view = appkit.ns_view.as_ptr() as *mut objc2::runtime::AnyObject;
+        let appearance = objc2_app_kit::NSAppearance::appearanceNamed(unsafe {
+            objc2_app_kit::NSAppearanceNameDarkAqua
+        });
+        unsafe {
+            let ns_window: *mut objc2::runtime::AnyObject = objc2::msg_send![&*ns_view, window];
+            let _: () = objc2::msg_send![&*ns_window, setAppearance: appearance.as_deref()];
+        }
+    }
 }
 
 impl SettingsWindow {
