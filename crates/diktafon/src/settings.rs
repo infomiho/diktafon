@@ -11,27 +11,22 @@ use gpui::{
     App, AppContext, Bounds, Context, Entity, ParentElement, Render, SharedString, TitlebarOptions,
     Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px, rgba, size,
 };
-use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::form::{field, v_form};
-use gpui_component::input::{Input, InputState};
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::label::Label;
 use gpui_component::searchable_list::SearchableVec;
-use gpui_component::select::{Select, SelectState};
+use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::switch::Switch;
 use gpui_component::{
     ActiveTheme, Icon, IconName, IndexPath, Root, Sizable, StyledExt, h_flex, v_flex,
 };
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 const WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(720.), px(500.));
 /// One control height for the whole window: the kit's Large inputs and
 /// selects are 40px, but its Large button keeps the 32px Medium height, so
 /// the button gets the height explicitly to stay coherent.
 const CONTROL_HEIGHT: gpui::Pixels = px(40.);
-/// How long the "Saved" confirmation stays visible.
-const SAVED_FLASH: Duration = Duration::from_secs(2);
-
 /// ISO 639-1 codes the language dropdown offers; a configured code outside
 /// this list is appended so it stays selectable.
 const LANGUAGES: &[(&str, &str)] = &[
@@ -84,14 +79,6 @@ impl Section {
         }
     }
 
-    fn description(self) -> &'static str {
-        match self {
-            Section::General => "How diktafon starts and how you talk to it.",
-            Section::Dictation => "What happens to your words after you stop speaking.",
-            Section::Advanced => "Model residency and daemon state.",
-        }
-    }
-
     fn icon(self) -> IconName {
         match self {
             Section::General => IconName::Settings,
@@ -117,7 +104,6 @@ pub struct SettingsWindow {
     autostart: bool,
     /// Cached at open: reading it does file IO and must not run per render.
     daemon_status: DaemonStatus,
-    saved_at: Option<Instant>,
 }
 
 /// Open the settings window, or bring the existing one to the front.
@@ -258,6 +244,30 @@ impl SettingsWindow {
         })
         .detach();
 
+        // Settings apply as they change, macOS-style; there is no Save button.
+        cx.subscribe(&control_input, |view, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                view.save(cx);
+            }
+        })
+        .detach();
+        cx.subscribe(
+            &language_select,
+            |view, _, event: &SelectEvent<SearchableVec<SharedString>>, cx| {
+                let SelectEvent::Confirm(_) = event;
+                view.save(cx);
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &idle_select,
+            |view, _, event: &SelectEvent<SearchableVec<SharedString>>, cx| {
+                let SelectEvent::Confirm(_) = event;
+                view.save(cx);
+            },
+        )
+        .detach();
+
         Self {
             settings,
             section: Section::General,
@@ -268,7 +278,6 @@ impl SettingsWindow {
             idle_values,
             autostart: false,
             daemon_status: statusbar::daemon_status(),
-            saved_at: None,
         }
     }
 
@@ -303,14 +312,6 @@ impl SettingsWindow {
             return;
         }
         *self.settings.lock().unwrap() = updated;
-        self.saved_at = Some(Instant::now());
-        cx.notify();
-        // Let the confirmation fade back out.
-        cx.spawn(async move |view, cx| {
-            cx.background_executor().timer(SAVED_FLASH).await;
-            let _ = view.update(cx, |_, cx| cx.notify());
-        })
-        .detach();
     }
 
     /// Optimistic flip, reverted if the change fails; failure is the normal
@@ -388,6 +389,27 @@ impl SettingsWindow {
             .child(control)
     }
 
+    /// The hotkey as keycap chips.
+    fn keycaps(keys: &'static [&'static str]) -> impl IntoElement {
+        h_flex().gap_1p5().children(keys.iter().map(|key| {
+            div()
+                .h(px(28.))
+                .min_w(px(28.))
+                .px(px(10.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .bg(rgba(theme::SURFACE_RAISED | 0xFF))
+                .border_1()
+                .border_b_2()
+                .border_color(rgba(theme::HAIRLINE | 0x22))
+                .text_size(px(13.))
+                .font_medium()
+                .child(*key)
+        }))
+    }
+
     fn general_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_8()
@@ -405,7 +427,7 @@ impl SettingsWindow {
             .child(Self::control_row(
                 "Hotkey",
                 "Hold to dictate, release to paste",
-                Label::new("⌥ Space"),
+                Self::keycaps(&["⌥", "Space"]),
                 cx,
             ))
     }
@@ -472,10 +494,11 @@ impl SettingsWindow {
             .border_color(cx.theme().border)
             .bg(rgba(theme::SURFACE | 0xFF))
             .p_4()
-            .gap_3()
+            .gap_2()
             .child(
                 h_flex()
                     .gap_2()
+                    .mb_1()
                     .items_center()
                     .child(div().size(px(8.)).rounded_full().bg(dot))
                     .child(Label::new(word).font_medium())
@@ -509,18 +532,12 @@ impl SettingsWindow {
                     )
                     .child(Select::new(&self.idle_select).large()),
             )
-            .child(
-                field()
-                    .label("Daemon")
-                    .description("The resident inference process")
-                    .child(self.daemon_card(cx)),
-            )
+            .child(field().label("Daemon").child(self.daemon_card(cx)))
     }
 }
 
 impl Render for SettingsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let saved = self.saved_at.is_some_and(|at| at.elapsed() < SAVED_FLASH);
         let section = self.section;
         let theme = cx.theme();
         let sidebar = v_flex()
@@ -551,7 +568,10 @@ impl Render for SettingsWindow {
         h_flex()
             .size_full()
             .bg(cx.theme().background)
-            .on_action(cx.listener(|_, _: &crate::CloseWindow, window, _| {
+            // A pending prompt edit would be lost on Cmd+W: Blur never fires
+            // for a closing window.
+            .on_action(cx.listener(|view, _: &crate::CloseWindow, window, cx| {
+                view.save(cx);
                 window.remove_window();
             }))
             .child(sidebar)
@@ -563,37 +583,14 @@ impl Render for SettingsWindow {
                     .min_w_0()
                     .h_full()
                     .p_8()
-                    .gap_2()
-                    .child(div().text_2xl().font_semibold().child(section.title()))
                     .child(
-                        Label::new(section.description())
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground),
+                        div()
+                            .font_family(theme::FONT_DISPLAY)
+                            .text_2xl()
+                            .font_semibold()
+                            .child(section.title()),
                     )
-                    .child(div().mt_6().child(pane))
-                    .child(
-                        // No divider: the mt_auto gap separates the footer
-                        // on its own, and a border here reads as clutter.
-                        h_flex()
-                            .mt_auto()
-                            .justify_end()
-                            .items_center()
-                            .gap_4()
-                            .child(
-                                Label::new(if saved { "Saved" } else { "" })
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground),
-                            )
-                            .child(
-                                Button::new("save")
-                                    .primary()
-                                    .large()
-                                    .h(CONTROL_HEIGHT)
-                                    .px_5()
-                                    .label("Save")
-                                    .on_click(cx.listener(|view, _, _, cx| view.save(cx))),
-                            ),
-                    ),
+                    .child(div().mt_8().child(pane)),
             )
     }
 }

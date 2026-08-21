@@ -1,38 +1,38 @@
 ---
 name: "Signal"
 colors:
-  background: "#0E102C"        # window ground; the deep void
-  surface: "#14163A"           # pill glass, input/card ground
-  surface-raised: "#1C1F52"    # hover fills, active nav, popovers
-  surface-sunken: "#0B0D24"    # sidebar; deepest step
+  background: "#101229"        # window ground; the deep void
+  surface: "#171934"           # pill glass, input/card ground
+  surface-raised: "#242849"    # hover fills, active nav, popovers
+  surface-sunken: "#0B0D20"    # sidebar; deepest step
   on-surface: "#F1F2FF"        # words and labels; cool white
   on-surface-muted: "#AAACD6"  # descriptions, secondary readouts
   outline: "#9B9DFF"           # hairline borders; violet-tinted, at ~13% alpha
-  accent: "#CE5CFF"            # interactive emphasis: primary buttons, focus ring, links
-  accent-hover: "#D878FF"
-  accent-active: "#BB3EF2"
-  on-accent: "#0E102C"
-  selection: "#CE5CFF" # at ~25% alpha
+  accent: "#9843C0"            # the polishing magenta deepened for fills; buttons, focus ring, links
+  accent-hover: "#A853D1"
+  accent-active: "#8835AE"
+  on-accent: "#F1F2FF"        # white on accent passes AA (4.8:1)
+  selection: "#9843C0"         # accent at ~25% alpha
   signal-red: "#FF3B4D"        # recording; doubles as danger
   signal-white: "#FFFFFF"      # transcribing; doubles as success/completion
-  signal-magenta: "#CE5CFF"    # polishing; doubles as accent
+  signal-magenta: "#CE5CFF"    # polishing; the accent is this hue deepened
   ring-idle: "#8E90BE"         # orbit at rest; muted, never glows
   aurora-ember: "#FF5A36"      # recording wash companion; doubles as warning
   aurora-rose: "#E0459E"       # recording wash companion
 typography:
   display:                     # pane titles
-    fontFamily: Inter          # embedded in the binary (Regular/Medium/SemiBold)
+    fontFamily: Chakra Petch   # embedded in the binary (SemiBold)
     fontSize: 24px
     fontWeight: 600
     lineHeight: 1.2
   body:                        # control labels, input text
-    fontFamily: Inter
-    fontSize: 16px
+    fontFamily: system
+    fontSize: 15px
     fontWeight: 400
     lineHeight: 1.5
   label:                       # descriptions, pill text, secondary lines
-    fontFamily: Inter
-    fontSize: 14px
+    fontFamily: system
+    fontSize: 13px
     fontWeight: 400
     lineHeight: 1.4
   mono:                        # technical values: model names, paths
@@ -41,7 +41,7 @@ typography:
     fontWeight: 400
     lineHeight: 1.4
   readout:                     # numeric readouts; each glyph in a fixed-width cell
-    fontFamily: Inter
+    fontFamily: system
     fontSize: 11px
     fontWeight: 400
     lineHeight: 1.0
@@ -72,7 +72,7 @@ components:
     borderColor: "{outline} @ 13%"
     focusRing: "{accent}"
   switch:
-    trackColor: "#3A3E7C"      # own lighter step; raised surface vanishes at track size
+    trackColor: "#5A6086"      # own lighter step; raised surface vanishes at track size
     checkedColor: "{accent}"
   nav-item:
     height: 40px
@@ -83,7 +83,13 @@ components:
     sidebarWidth: 200px
     titlebar: hidden           # transparent full-size content; traffic lights float over the sidebar
     sidebarTopPadding: 48px    # clears the floating traffic lights
-    footer: no divider         # the mt-auto gap separates it; a border reads as clutter
+    saving: auto-apply         # macOS-style; no Save button, no footer
+  keycap:
+    height: 28px
+    backgroundColor: "{surface-raised}"
+    borderColor: "{outline} @ 13%"
+    borderBottom: 2px          # reads as a physical key
+    rounded: "{rounded.md}"
   status-card:                 # structured state display (daemon); never raw text lines
     backgroundColor: "{surface}"
     borderColor: "{outline} @ 13%"
@@ -129,8 +135,12 @@ Chrome, text, and containers never glow.
   a paste completes with a white bloom, and any future "saved / done" state
   is white, not green).
 - Magenta is the single interactive accent: primary buttons, focus rings,
-  selection, links. It deliberately doubles as the polishing color; both
-  mean "diktafon is acting".
+  selection, links. It is the polishing hue deepened for large fills
+  (white text passes AA on it); both mean "diktafon is acting". The vivid
+  SIGNAL_MAGENTA stays reserved for the pill's glowing orbit.
+- The palette is designed in OKLCH: every surface step sits on hue 277 with
+  restrained chroma (large fills never exceed C 0.06); saturation is spent
+  on signal, not on chrome.
 - Text is never tinted by phase or accent color: the orbit carries the
   color, text carries the words.
 
@@ -151,10 +161,13 @@ a fourth level ("material") without changing the rules above.
 
 ## Type
 
-- Inter everywhere (embedded, so the bundle needs no installed fonts), Menlo
-  for technical values. Steps: display 24/600 (pane titles), body 16/400
-  (controls), label 14/400 (descriptions, pill text), mono 13 (model names,
-  paths), readout 11 (numerics).
+- Chakra Petch SemiBold for titles only (embedded, so the bundle needs no
+  installed fonts); the system font for everything else; Menlo for technical
+  values. Steps: display 24/600 (pane titles), body 15/400 (controls), label
+  13/400 (descriptions, pill text), mono 13 (model names, paths), readout 11
+  (numerics).
+- No pane subtitles: the title and the controls say it; anything more is
+  fluff.
 - Technical values (model names, file paths) render in mono inside
   structured components - a status card with label/value rows - never as raw
   prose that can overflow.

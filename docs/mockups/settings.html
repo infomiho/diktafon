@@ -1,0 +1,260 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Diktafon Settings mock</title>
+<style>
+  @font-face { font-family: "Chakra Petch"; src: url("../../crates/diktafon/assets/fonts/ChakraPetch-SemiBold.ttf"); font-weight: 600; }
+  :root {
+    --background: #101229;
+    --surface: #171934;
+    --surface-raised: #242849;
+    --surface-sunken: #0B0D20;
+    --on-surface: #F1F2FF;
+    --on-surface-muted: #AAACD6;
+    --outline: rgba(155, 157, 255, 0.13);
+    --accent: #9843C0;
+    --on-accent: #F1F2FF;
+    --ring-idle: #8E90BE;
+    --switch-track: #5A6086;
+    --font-display: "Chakra Petch", sans-serif;
+    --font-ui: system-ui, sans-serif;
+    --font-mono: "Menlo", monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 48px;
+    padding: 48px 0;
+    font-family: var(--font-ui);
+    color: var(--on-surface);
+    font-size: 15px;
+    line-height: 1.5;
+  }
+
+  .specimen {
+    width: 720px;
+    background: var(--background);
+    border-radius: 12px;
+    padding: 24px 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .specimen .row { display: flex; align-items: baseline; gap: 24px; }
+  .specimen .name { width: 130px; font-size: 12px; color: var(--on-surface-muted); }
+  .specimen .sample { font-size: 24px; font-weight: 600; }
+
+  .window {
+    width: 720px;
+    height: 500px;
+    background: var(--background);
+    border-radius: 12px;
+    display: flex;
+    overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.6);
+  }
+  .sidebar {
+    width: 200px;
+    flex-shrink: 0;
+    background: var(--surface-sunken);
+    border-right: 1px solid var(--outline);
+    padding: 48px 12px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    position: relative;
+  }
+  .traffic { position: absolute; top: 16px; left: 16px; display: flex; gap: 8px; }
+  .traffic span { width: 12px; height: 12px; border-radius: 50%; background: #43465e; }
+  .traffic span:first-child { background: #ff5f57; }
+  .nav-item {
+    height: 40px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 12px;
+    border-radius: 8px;
+    color: var(--on-surface-muted);
+    font-size: 15px;
+  }
+  .nav-item.active { background: var(--surface-raised); color: var(--on-surface); }
+  .nav-item .icon { width: 16px; text-align: center; opacity: 0.8; }
+  .pane {
+    flex: 1;
+    min-width: 0;
+    padding: 32px;
+    display: flex;
+    flex-direction: column;
+  }
+  .pane h1 { font-family: var(--font-display); font-size: 24px; font-weight: 600; line-height: 1.2; letter-spacing: 0.01em; }
+  .content { margin-top: 32px; display: flex; flex-direction: column; gap: 32px; }
+
+  .field-label { font-size: 15px; font-weight: 500; }
+  .field .control { margin-top: 8px; }
+  .field .help { font-size: 13px; color: var(--on-surface-muted); margin-top: 8px; }
+
+  .control-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+  .control-row .text .field-label { display: block; }
+  .control-row .text .help { font-size: 13px; color: var(--on-surface-muted); margin-top: 4px; }
+
+  .select, .input {
+    height: 40px;
+    border: 1px solid var(--outline);
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px;
+    background: var(--surface);
+    font-size: 15px;
+  }
+  .input .placeholder { color: var(--ring-idle); opacity: 0.6; }
+  .select .chev { color: var(--on-surface-muted); }
+
+  .switch { width: 44px; height: 26px; border-radius: 13px; background: var(--switch-track); position: relative; flex-shrink: 0; }
+  .switch .thumb { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: var(--on-surface); opacity: 0.9; }
+  .switch.on { background: var(--accent); }
+  .switch.on .thumb { left: auto; right: 3px; opacity: 1; }
+
+  .keycaps { display: flex; gap: 6px; }
+  .key {
+    height: 28px;
+    min-width: 28px;
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--surface-raised);
+    border: 1px solid var(--outline);
+    border-bottom-width: 2px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .card {
+    border: 1px solid var(--outline);
+    border-radius: 8px;
+    background: var(--surface);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .card .status-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .card .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--on-surface); }
+  .card .dot.off { background: var(--ring-idle); opacity: 0.5; }
+  .card .status-word { font-weight: 500; font-size: 15px; }
+  .card .residency { margin-left: auto; font-size: 13px; color: var(--on-surface-muted); }
+  .card .row { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+  .card .row .label { font-size: 13px; color: var(--on-surface-muted); }
+  .card .row .value {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+</style>
+</head>
+<body>
+
+  <!-- General -->
+  <div class="window">
+    <div class="sidebar">
+      <div class="traffic"><span></span><span></span><span></span></div>
+      <div class="nav-item active"><span class="icon">⚙</span>General</div>
+      <div class="nav-item"><span class="icon">Aa</span>Dictation</div>
+      <div class="nav-item"><span class="icon">▣</span>Advanced</div>
+    </div>
+    <div class="pane">
+      <h1>General</h1>
+      <div class="content">
+        <div class="control-row">
+          <div class="text">
+            <span class="field-label">Start at Login</span>
+            <div class="help">Launch diktafon when you log in</div>
+          </div>
+          <div class="switch on"><div class="thumb"></div></div>
+        </div>
+        <div class="control-row">
+          <div class="text">
+            <span class="field-label">Hotkey</span>
+            <div class="help">Hold to dictate, release to paste</div>
+          </div>
+          <div class="keycaps"><span class="key">⌥</span><span class="key">Space</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dictation -->
+  <div class="window">
+    <div class="sidebar">
+      <div class="traffic"><span></span><span></span><span></span></div>
+      <div class="nav-item"><span class="icon">⚙</span>General</div>
+      <div class="nav-item active"><span class="icon">Aa</span>Dictation</div>
+      <div class="nav-item"><span class="icon">▣</span>Advanced</div>
+    </div>
+    <div class="pane">
+      <h1>Dictation</h1>
+      <div class="content">
+        <div class="field">
+          <div class="field-label">Post-processing prompt</div>
+          <div class="control input"><span class="placeholder">[Styling: ...] [Structure: ...] [Context: ...]</span></div>
+          <div class="help">S1-mini control line; applies to the next dictation</div>
+        </div>
+        <div class="field">
+          <div class="field-label">Language</div>
+          <div class="control select"><span>English (en)</span><span class="chev">⌄</span></div>
+          <div class="help">Hint for the speech recognizer</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Advanced -->
+  <div class="window">
+    <div class="sidebar">
+      <div class="traffic"><span></span><span></span><span></span></div>
+      <div class="nav-item"><span class="icon">⚙</span>General</div>
+      <div class="nav-item"><span class="icon">Aa</span>Dictation</div>
+      <div class="nav-item active"><span class="icon">▣</span>Advanced</div>
+    </div>
+    <div class="pane">
+      <h1>Advanced</h1>
+      <div class="content">
+        <div class="field">
+          <div class="field-label">Unload models when idle</div>
+          <div class="control select"><span>After 1 minute</span><span class="chev">⌄</span></div>
+          <div class="help">Frees a few GB of RAM; models reload on the next dictation. Applies when the daemon restarts.</div>
+        </div>
+        <div class="field">
+          <div class="field-label">Daemon</div>
+          <div class="control card">
+            <div class="status-row">
+              <span class="dot"></span>
+              <span class="status-word">Running</span>
+              <span class="residency">Models idle</span>
+            </div>
+            <div class="row">
+              <span class="label">Speech model</span>
+              <span class="value">cohere-transcribe-int8</span>
+            </div>
+            <div class="row">
+              <span class="label">Polish model</span>
+              <span class="value">s1-mini-q4_k_m</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

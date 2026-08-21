@@ -6,13 +6,13 @@
 // Surfaces: one indigo hue stepped by lightness; depth is a step plus a
 // hairline, never a shadow.
 /// Window ground; the deep void.
-pub const BACKGROUND: u32 = 0x0E102C00;
+pub const BACKGROUND: u32 = 0x10122900;
 /// Pill glass, input and card ground.
-pub const SURFACE: u32 = 0x14163A00;
+pub const SURFACE: u32 = 0x17193400;
 /// Hover fills, active nav, popovers.
-pub const SURFACE_RAISED: u32 = 0x1C1F5200;
+pub const SURFACE_RAISED: u32 = 0x24284900;
 /// Sidebar; the deepest step.
-pub const SURFACE_SUNKEN: u32 = 0x0B0D2400;
+pub const SURFACE_SUNKEN: u32 = 0x0B0D2000;
 /// Borders: violet-tinted hairline, ~13% alpha at the call site.
 pub const HAIRLINE: u32 = 0x9B9DFF00;
 
@@ -38,32 +38,32 @@ pub const RING_IDLE: u32 = 0x8E90BE00;
 pub const AURORA_EMBER: u32 = 0xFF5A3600;
 pub const AURORA_ROSE: u32 = 0xE0459E00;
 
-// The single interactive accent; deliberately the polishing magenta, so
-// buttons and focus rings speak the same "diktafon is acting" color.
-pub const ACCENT: u32 = SIGNAL_MAGENTA;
-const ACCENT_HOVER: u32 = 0xD878FF00;
-const ACCENT_ACTIVE: u32 = 0xBB3EF200;
-const RAISED_HOVER: u32 = 0x23265E00;
-const RAISED_ACTIVE: u32 = 0x171A4500;
+// The single interactive accent: the polishing magenta deepened for large
+// fills (white text passes AA on it), so buttons and focus rings speak the
+// same "diktafon is acting" hue as the pill without going neon.
+pub const ACCENT: u32 = 0x9843C000;
+const ACCENT_HOVER: u32 = 0xA853D100;
+const ACCENT_ACTIVE: u32 = 0x8835AE00;
+const RAISED_HOVER: u32 = 0x2B2F5100;
+const RAISED_ACTIVE: u32 = 0x1D213F00;
 /// Off-state switch track: the raised surface is invisible against the
 /// window ground at track size, so it gets its own clearly lighter step.
-const SWITCH_TRACK: u32 = 0x3A3E7C00;
+const SWITCH_TRACK: u32 = 0x5A608600;
 
-/// The UI face; embedded via [`install_fonts`] so the bundle needs no
-/// installed fonts. Menlo (always present on macOS) covers mono readouts.
-pub const FONT_UI: &str = "Inter";
+/// The display face for titles, embedded via [`install_fonts`] so the
+/// bundle needs no installed fonts. Body text is the system font; Menlo
+/// (always present on macOS) covers mono readouts.
+pub const FONT_DISPLAY: &str = "Chakra Petch";
 pub const FONT_MONO: &str = "Menlo";
 
-/// Register the embedded Inter faces with the text system; must run before
+/// Register the embedded display face with the text system; must run before
 /// any window renders.
 pub fn install_fonts(cx: &gpui::App) {
-    let fonts = vec![
-        std::borrow::Cow::Borrowed(&include_bytes!("../assets/fonts/Inter-Regular.ttf")[..]),
-        std::borrow::Cow::Borrowed(&include_bytes!("../assets/fonts/Inter-Medium.ttf")[..]),
-        std::borrow::Cow::Borrowed(&include_bytes!("../assets/fonts/Inter-SemiBold.ttf")[..]),
-    ];
+    let fonts = vec![std::borrow::Cow::Borrowed(
+        &include_bytes!("../assets/fonts/ChakraPetch-SemiBold.ttf")[..],
+    )];
     if let Err(e) = cx.text_system().add_fonts(fonts) {
-        eprintln!("embedding Inter failed, falling back to the system font: {e:#}");
+        eprintln!("embedding Chakra Petch failed, titles fall back to the system font: {e:#}");
     }
 }
 
@@ -102,7 +102,7 @@ fn signal_theme_config() -> gpui_component::ThemeConfig {
         ("primary.background", hex(ACCENT)),
         ("primary.hover.background", hex(ACCENT_HOVER)),
         ("primary.active.background", hex(ACCENT_ACTIVE)),
-        ("primary.foreground", hex(BACKGROUND)),
+        ("primary.foreground", hex(TEXT_PRIMARY)),
         ("secondary.background", hex(SURFACE_RAISED)),
         ("secondary.hover.background", hex(RAISED_HOVER)),
         ("secondary.active.background", hex(RAISED_ACTIVE)),
@@ -138,7 +138,7 @@ fn signal_theme_config() -> gpui_component::ThemeConfig {
     let config = serde_json::json!({
         "name": "Signal Dark",
         "mode": "dark",
-        "font.family": FONT_UI,
+        "font.size": 15,
         "mono_font.family": FONT_MONO,
         "radius": 6,
         "radius_lg": 8,
