@@ -33,6 +33,9 @@ objc2-app-kit = { version = "0.3", features = [
     "NSControl",
     "NSView",
     "NSCell",
+    "NSBezierPath",
+    "NSColor",
+    "block2",
 ] }
 objc2-foundation = "0.3"
 objc2-av-foundation = { version = "0.3", features = ["AVCaptureDevice", "AVMediaFormat"] }

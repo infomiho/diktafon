@@ -96,24 +96,10 @@ impl MenuController {
 
     fn set_phase(&self, phase: Phase) {
         self.ivars().phase.set(phase);
-        // Abstract marks echoing the pill's orbit; deliberately not the mic
-        // glyphs, which read as macOS's own mic-in-use indicator. Fallbacks
-        // cover older SF Symbols sets.
-        let candidates: &[&str] = match phase {
-            Phase::Idle => &["circle.dotted", "circle"],
-            Phase::Arming | Phase::Recording => &["record.circle", "largecircle.fill.circle"],
-            Phase::Transcribing | Phase::Polishing => &["waveform.circle", "ellipsis.circle"],
-        };
         if let Some(item) = self.ivars().status_item.get()
             && let Some(button) = item.button(self.mtm())
         {
-            let image = candidates.iter().find_map(|symbol| {
-                NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                    &NSString::from_str(symbol),
-                    None,
-                )
-            });
-            button.setImage(image.as_deref());
+            button.setImage(Some(&orbit_icon(phase)));
         }
     }
 
@@ -180,6 +166,53 @@ fn refresh_autostart_cache(cache: &std::sync::Arc<std::sync::atomic::AtomicBool>
             std::sync::atomic::Ordering::Relaxed,
         );
     });
+}
+
+/// The app's mark, drawn instead of shipped: the pill's satellite orbit as a
+/// ring of dots, rendered as a template image so the menu bar recolors it for
+/// light/dark and for the pressed state. The phase modulates the ring the
+/// same way the pill does: a center dot while recording, alternating dot
+/// sizes while processing.
+fn orbit_icon(phase: Phase) -> Retained<NSImage> {
+    const SIZE: f64 = 18.;
+    const DOTS: usize = 8;
+    const RING_RADIUS: f64 = 6.4;
+    let handler = block2::RcBlock::new(move |_rect| {
+        objc2_app_kit::NSColor::blackColor().set();
+        let dot = |x: f64, y: f64, radius: f64| {
+            let rect = objc2_foundation::NSRect::new(
+                objc2_foundation::NSPoint::new(x - radius, y - radius),
+                objc2_foundation::NSSize::new(radius * 2., radius * 2.),
+            );
+            objc2_app_kit::NSBezierPath::bezierPathWithOvalInRect(rect).fill();
+        };
+        let center = SIZE / 2.;
+        for i in 0..DOTS {
+            let angle = i as f64 * std::f64::consts::TAU / DOTS as f64;
+            let radius = match phase {
+                // Alternating dot sizes read as "working".
+                Phase::Transcribing | Phase::Polishing if i % 2 == 0 => 1.7,
+                Phase::Transcribing | Phase::Polishing => 1.1,
+                _ => 1.4,
+            };
+            dot(
+                center + angle.cos() * RING_RADIUS,
+                center + angle.sin() * RING_RADIUS,
+                radius,
+            );
+        }
+        if matches!(phase, Phase::Arming | Phase::Recording) {
+            dot(center, center, 2.4);
+        }
+        objc2::runtime::Bool::YES
+    });
+    let image = NSImage::imageWithSize_flipped_drawingHandler(
+        objc2_foundation::NSSize::new(SIZE, SIZE),
+        false,
+        &handler,
+    );
+    image.setTemplate(true);
+    image
 }
 
 fn phase_label(phase: Phase) -> &'static str {
