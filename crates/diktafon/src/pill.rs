@@ -202,6 +202,30 @@ impl Pill {
     }
 }
 
+/// Single-line pill text; pulses gently while `busy` to signal activity.
+fn label(text: String, busy: bool) -> AnyElement {
+    let text_el = div()
+        .text_sm()
+        .text_color(rgba(0xFFFFFFD9))
+        .whitespace_nowrap()
+        .overflow_hidden()
+        .max_w(px(200.))
+        .child(text);
+    if busy {
+        text_el
+            .with_animation(
+                "label-pulse",
+                Animation::new(DOT_BREATH)
+                    .repeat()
+                    .with_easing(pulsating_between(0.5, 1.0)),
+                |el, level| el.opacity(level),
+            )
+            .into_any_element()
+    } else {
+        text_el.into_any_element()
+    }
+}
+
 fn dot(phase: Phase, breathing: bool) -> AnyElement {
     let color = match phase {
         Phase::Arming => rgb(0x8F8F94),
@@ -262,25 +286,16 @@ impl Render for Pill {
             phase
         };
         let partial = self.dictation.read(cx).partial.clone();
-        let label: String = match display {
-            Phase::Arming => "starting".into(),
-            // Show the transcript so far instead of a static label once any
-            // text exists; the dot color still names the phase.
-            Phase::Transcribing | Phase::Polishing if !partial.is_empty() => tail(&partial, 34),
-            Phase::Transcribing => "transcribing".into(),
-            Phase::Polishing => "polishing".into(),
-            _ => String::new(),
-        };
-        let content = if display == Phase::Recording {
-            self.bars()
-        } else {
-            div()
-                .text_sm()
-                .text_color(rgba(0xFFFFFFD9))
-                .max_w(px(210.))
-                .overflow_hidden()
-                .child(label)
-                .into_any_element()
+        let content = match display {
+            // Bars until the first words arrive, then the words rolling in.
+            Phase::Recording if partial.is_empty() => self.bars(),
+            Phase::Recording => label(tail(&partial, 26), false),
+            Phase::Arming => label("starting".into(), false),
+            // The words themselves are about to be pasted; the label just has
+            // to feel alive, so it pulses.
+            Phase::Transcribing => label("transcribing".into(), !reduce_motion),
+            Phase::Polishing => label("polishing".into(), !reduce_motion),
+            Phase::Idle => label(String::new(), false),
         };
 
         let pill = div()
@@ -298,10 +313,13 @@ impl Render for Pill {
             .border_color(rgba(0xFFFFFF14))
             .child(dot(display, phase == Phase::Recording && !reduce_motion))
             .child(
-                // Cross-fade the content on each phase change; the changing
-                // key restarts the fade.
+                // Cross-fade the content on phase changes and on the bars ->
+                // words swap; the changing key restarts the fade.
                 div().child(content).with_animation(
-                    ("content-fade", phase_key(display)),
+                    (
+                        "content-fade",
+                        phase_key(display) * 2 + u64::from(!partial.is_empty()),
+                    ),
                     Animation::new(CONTENT_FADE).with_easing(ease_out_quint()),
                     |el, delta| el.opacity(delta),
                 ),
