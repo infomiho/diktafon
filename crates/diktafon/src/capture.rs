@@ -1,23 +1,34 @@
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use transcribe_rs::vad::{SileroVad, SmoothedVad, Vad};
 
 use diktafon_protocol::{Msg, TARGET_RATE};
 
-const FRAME_MS: usize = 30;
-const SILENCE_MS: usize = 500;
-const MIN_CHUNK_MS: usize = 1500;
-const RMS_THRESHOLD: f32 = 0.01;
 const MONITOR_TICK: Duration = Duration::from_millis(100);
+
+// Handy's tuned Silero setup: 30ms frames, onset after 2 speech frames, 450ms
+// of pre-onset audio kept, 450ms hangover before a speech segment is declared
+// over.
+const SPEECH_THRESHOLD: f32 = 0.3;
+const ONSET_FRAMES: usize = 2;
+const PREFILL_FRAMES: usize = 15;
+const HANGOVER_FRAMES: usize = 15;
+
+/// Segments shorter than this are held and merged with the next speech segment
+/// instead of paying a per-chunk ASR roundtrip.
+const MIN_CHUNK_SAMPLES: usize = TARGET_RATE as usize * 3 / 2;
 
 pub struct Recorder {
     device: cpal::Device,
     config: cpal::SupportedStreamConfig,
     channels: usize,
     rate: u32,
+    vad_model: PathBuf,
 }
 
 pub struct Session {
@@ -27,14 +38,14 @@ pub struct Session {
 }
 
 impl Recorder {
-    pub fn new() -> Result<Self> {
+    pub fn new(vad_model: PathBuf) -> Result<Self> {
         let device = cpal::default_host()
             .default_input_device()
             .context("no input device")?;
         let config = device.default_input_config()?;
         let channels = config.channels() as usize;
         let rate = config.sample_rate().0;
-        Ok(Self { device, config, channels, rate })
+        Ok(Self { device, config, channels, rate, vad_model })
     }
 
     pub fn describe(&self) -> String {
@@ -47,6 +58,13 @@ impl Recorder {
     }
 
     pub fn start(&self, chunk_tx: mpsc::Sender<Msg>) -> Result<Session> {
+        // Fresh VAD per session: Silero keeps LSTM state across frames, and
+        // loading the 1.8MB model is fast enough to not delay recording.
+        let silero = SileroVad::new(&self.vad_model, SPEECH_THRESHOLD)
+            .with_context(|| format!("loading VAD model {}", self.vad_model.display()))?;
+        let mut chunker = VadChunker::new(Box::new(silero));
+        let mut resampler = StreamResampler::new(self.rate, TARGET_RATE);
+
         let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
         let stream = self.build_stream(buffer.clone())?;
         stream.play()?;
@@ -55,29 +73,24 @@ impl Recorder {
         let monitor = thread::spawn({
             let buffer = buffer.clone();
             let stop = stop.clone();
-            let rate = self.rate;
             move || {
-                let mut start = 0usize;
+                let mut frame_tail: Vec<f32> = Vec::new();
                 loop {
                     thread::sleep(MONITOR_TICK);
                     let done = stop.load(Ordering::Relaxed);
-                    let chunk = {
-                        let buf = buffer.lock().unwrap();
-                        if done {
-                            buf[start..].to_vec()
-                        } else if let Some(cut) = find_cut(&buf[start..], rate) {
-                            let chunk = buf[start..start + cut].to_vec();
-                            start += cut;
-                            chunk
-                        } else {
-                            continue;
+                    frame_tail.extend(resampler.drain(&buffer.lock().unwrap()));
+                    let frame_size = chunker.frame_size();
+                    let mut frames = frame_tail.chunks_exact(frame_size);
+                    for frame in &mut frames {
+                        if let Some(chunk) = chunker.push_frame(frame) {
+                            let _ = chunk_tx.send(Msg::Chunk(chunk));
                         }
-                    };
-                    if has_speech(&chunk, rate) {
-                        let trimmed = trim_trailing_silence(&chunk, rate);
-                        let _ = chunk_tx.send(Msg::Chunk(resample_linear(trimmed, rate, TARGET_RATE)));
                     }
+                    frame_tail = frames.remainder().to_vec();
                     if done {
+                        if let Some(chunk) = chunker.finish(&frame_tail) {
+                            let _ = chunk_tx.send(Msg::Chunk(chunk));
+                        }
                         let _ = chunk_tx.send(Msg::Flush);
                         break;
                     }
@@ -130,132 +143,237 @@ fn push_mono(buffer: &Arc<Mutex<Vec<f32>>>, data: &[f32], channels: usize) {
     );
 }
 
-/// Find a cut point: the chunk must contain speech, span at least
-/// MIN_CHUNK_MS, and end in at least SILENCE_MS of silence.
-fn find_cut(samples: &[f32], rate: u32) -> Option<usize> {
-    let frame = rate as usize * FRAME_MS / 1000;
-    if frame == 0 {
-        return None;
+/// Cuts the sample stream into speech chunks using a smoothed VAD: a chunk is
+/// pre-onset prefill + speech + hangover, emitted when the VAD leaves speech.
+/// Silence between speech segments never reaches the ASR model, which
+/// hallucinates phrases like "Thank you." on it.
+struct VadChunker {
+    vad: SmoothedVad,
+    pending: Vec<f32>,
+    /// Frames processed since the VAD last left speech; saturated when it never
+    /// was in speech. Bounds how much of the next onset's prefill is new audio.
+    frames_since_speech: usize,
+}
+
+impl VadChunker {
+    fn new(inner: Box<dyn Vad>) -> Self {
+        Self {
+            vad: SmoothedVad::new(inner, PREFILL_FRAMES, HANGOVER_FRAMES, ONSET_FRAMES),
+            pending: Vec::new(),
+            frames_since_speech: usize::MAX,
+        }
     }
-    let need_silent = SILENCE_MS / FRAME_MS;
-    let min_frames = MIN_CHUNK_MS / FRAME_MS;
-    let mut seen_speech = false;
-    let mut silent_run = 0;
-    for (i, f) in samples.chunks_exact(frame).enumerate() {
-        let rms = (f.iter().map(|s| s * s).sum::<f32>() / frame as f32).sqrt();
-        if rms < RMS_THRESHOLD {
-            silent_run += 1;
+
+    fn frame_size(&self) -> usize {
+        self.vad.frame_size()
+    }
+
+    /// Feed one frame; returns a finished chunk when a long-enough speech
+    /// segment just ended. Short segments are held to merge with the next one.
+    fn push_frame(&mut self, frame: &[f32]) -> Option<Vec<f32>> {
+        let was_in_speech = self.vad.in_speech();
+        let in_speech = self.vad.is_speech(frame).unwrap_or_else(|e| {
+            eprintln!("VAD error: {e}");
+            was_in_speech
+        });
+        if in_speech {
+            if !was_in_speech {
+                let prefill = self.vad.drain_prefill();
+                // The prefill ring also filled during the previous segment's
+                // hangover, so its oldest frames may already have been emitted;
+                // re-adding them would duplicate audio.
+                let overlap_frames =
+                    (PREFILL_FRAMES - 1).saturating_sub(self.frames_since_speech);
+                let skip = (overlap_frames * self.frame_size()).min(prefill.len());
+                self.pending.extend_from_slice(&prefill[skip..]);
+            }
+            self.pending.extend_from_slice(frame);
+            return None;
+        }
+        if was_in_speech {
+            self.frames_since_speech = 0;
+            if self.pending.len() >= MIN_CHUNK_SAMPLES {
+                return Some(std::mem::take(&mut self.pending));
+            }
         } else {
-            seen_speech = true;
-            silent_run = 0;
+            self.frames_since_speech = self.frames_since_speech.saturating_add(1);
         }
-        if seen_speech && silent_run >= need_silent && i + 1 >= min_frames {
-            return Some((i + 1) * frame);
-        }
+        None
     }
-    None
+
+    /// End of session: emit whatever speech is pending, including a partial
+    /// frame the stream ended on.
+    fn finish(&mut self, frame_tail: &[f32]) -> Option<Vec<f32>> {
+        let mut pending = std::mem::take(&mut self.pending);
+        if self.vad.in_speech() {
+            pending.extend_from_slice(frame_tail);
+        }
+        (!pending.is_empty()).then_some(pending)
+    }
 }
 
-/// Trim trailing silence, keeping a short pad. Silence fed to the ASR model
-/// makes it hallucinate phrases like "Thank you."
-fn trim_trailing_silence(samples: &[f32], rate: u32) -> &[f32] {
-    let frame = (rate as usize * FRAME_MS / 1000).max(1);
-    let pad = rate as usize / 5;
-    let mut end = samples.len();
-    while end >= frame {
-        let f = &samples[end - frame..end];
-        let rms = (f.iter().map(|s| s * s).sum::<f32>() / frame as f32).sqrt();
-        if rms >= RMS_THRESHOLD {
-            break;
-        }
-        end -= frame;
-    }
-    &samples[..(end + pad).min(samples.len())]
+/// Incremental linear resampler over a growing source buffer; output position
+/// is tracked globally so successive `drain` calls stay continuous.
+struct StreamResampler {
+    ratio: f64,
+    produced: usize,
 }
 
-fn has_speech(samples: &[f32], rate: u32) -> bool {
-    let frame = rate as usize * FRAME_MS / 1000;
-    samples
-        .chunks_exact(frame.max(1))
-        .any(|f| (f.iter().map(|s| s * s).sum::<f32>() / f.len() as f32).sqrt() >= RMS_THRESHOLD)
-}
-
-fn resample_linear(input: &[f32], from: u32, to: u32) -> Vec<f32> {
-    if from == to || input.is_empty() {
-        return input.to_vec();
+impl StreamResampler {
+    fn new(from: u32, to: u32) -> Self {
+        Self { ratio: from as f64 / to as f64, produced: 0 }
     }
-    let ratio = from as f64 / to as f64;
-    let out_len = (input.len() as f64 / ratio) as usize;
-    (0..out_len)
-        .map(|i| {
-            let pos = i as f64 * ratio;
+
+    /// Resample everything available in `src` that has not been produced yet.
+    fn drain(&mut self, src: &[f32]) -> Vec<f32> {
+        let mut out = Vec::new();
+        loop {
+            let pos = self.produced as f64 * self.ratio;
             let idx = pos as usize;
+            if idx + 1 >= src.len() {
+                return out;
+            }
             let frac = (pos - idx as f64) as f32;
-            let a = input[idx.min(input.len() - 1)];
-            let b = input[(idx + 1).min(input.len() - 1)];
-            a + (b - a) * frac
-        })
-        .collect()
+            out.push(src[idx] + (src[idx + 1] - src[idx]) * frac);
+            self.produced += 1;
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use transcribe_rs::vad::EnergyVad;
 
-    fn noise(secs: f32, rate: u32) -> Vec<f32> {
-        (0..(secs * rate as f32) as usize)
+    /// Chunker driven by the RMS-based EnergyVad, so the smoothing and cut
+    /// logic is testable without the Silero model file.
+    fn test_chunker() -> VadChunker {
+        VadChunker::new(Box::new(EnergyVad::new(480, 0.01)))
+    }
+
+    fn noise(secs: f32) -> Vec<f32> {
+        (0..(secs * TARGET_RATE as f32) as usize)
             .map(|i| if i % 2 == 0 { 0.1 } else { -0.1 })
             .collect()
     }
 
-    #[test]
-    fn cuts_at_silence_after_speech() {
-        let rate = 48_000;
-        let mut samples = noise(2.0, rate);
-        samples.extend(vec![0.0f32; rate as usize]);
-        samples.extend(noise(2.0, rate));
-        let cut = find_cut(&samples, rate).expect("should cut");
-        let cut_secs = cut as f32 / rate as f32;
-        assert!((2.4..=3.1).contains(&cut_secs), "cut at {cut_secs}s");
-        assert!(find_cut(&samples[cut..], rate).is_none());
-        assert!(has_speech(&samples[cut..], rate));
+    fn silence(secs: f32) -> Vec<f32> {
+        vec![0.0; (secs * TARGET_RATE as f32) as usize]
+    }
+
+    fn feed(chunker: &mut VadChunker, samples: &[f32]) -> Vec<Vec<f32>> {
+        samples
+            .chunks_exact(chunker.frame_size())
+            .filter_map(|frame| chunker.push_frame(frame))
+            .collect()
     }
 
     #[test]
-    fn no_cut_without_speech() {
-        let rate = 48_000;
-        assert!(find_cut(&vec![0.0f32; rate as usize * 3], rate).is_none());
+    fn cuts_after_speech_ends() {
+        let mut chunker = test_chunker();
+        let mut samples = noise(2.0);
+        samples.extend(silence(1.0));
+        samples.extend(noise(2.0));
+        let chunks = feed(&mut chunker, &samples);
+        assert_eq!(chunks.len(), 1);
+        let secs = chunks[0].len() as f32 / TARGET_RATE as f32;
+        // Speech plus up to prefill (well under one second here) and hangover.
+        assert!((2.0..=2.7).contains(&secs), "chunk of {secs}s");
+        // The trailing speech has no silence after it yet; finish flushes it.
+        assert!(chunker.finish(&[]).is_some());
     }
 
     #[test]
-    fn no_cut_mid_speech() {
-        let rate = 48_000;
-        assert!(find_cut(&noise(3.0, rate), rate).is_none());
+    fn short_segment_is_held_and_merged() {
+        let mut chunker = test_chunker();
+        let mut samples = noise(0.5);
+        samples.extend(silence(1.0));
+        samples.extend(noise(1.5));
+        samples.extend(silence(1.0));
+        let chunks = feed(&mut chunker, &samples);
+        assert_eq!(chunks.len(), 1);
+        let secs = chunks[0].len() as f32 / TARGET_RATE as f32;
+        assert!(secs >= 2.0, "merged chunk of {secs}s");
+        assert!(chunker.finish(&[]).is_none());
+    }
+
+    /// Speech resuming shortly after a segment ended must not re-emit the
+    /// previous segment's hangover audio through the new onset's prefill.
+    #[test]
+    fn quick_resume_does_not_duplicate_hangover_audio() {
+        let frame = 480;
+        let mut chunker = test_chunker();
+        let mut samples = noise(80.0 * frame as f32 / TARGET_RATE as f32);
+        samples.extend(vec![0.0; 17 * frame]);
+        samples.extend(noise(80.0 * frame as f32 / TARGET_RATE as f32));
+        samples.extend(vec![0.0; 40 * frame]);
+        let chunks = feed(&mut chunker, &samples);
+        assert_eq!(chunks.len(), 2);
+        // Second chunk: 80 speech frames + 15 hangover + the few silence
+        // frames of non-overlapping prefill. With the overlap re-emitted it
+        // would be ~109 frames.
+        let frames = chunks[1].len() / frame;
+        assert!((95..=100).contains(&frames), "second chunk has {frames} frames");
+    }
+
+    #[test]
+    fn silence_yields_nothing() {
+        let mut chunker = test_chunker();
+        assert!(feed(&mut chunker, &silence(3.0)).is_empty());
+        assert!(chunker.finish(&[]).is_none());
+    }
+
+    #[test]
+    fn resampler_is_continuous_across_drains() {
+        let src: Vec<f32> = (0..96_000).map(|i| i as f32).collect();
+        let mut all_at_once = StreamResampler::new(96_000, TARGET_RATE);
+        let expected = all_at_once.drain(&src);
+
+        let mut incremental = StreamResampler::new(96_000, TARGET_RATE);
+        let mut out = incremental.drain(&src[..10_000]);
+        out.extend(incremental.drain(&src[..50_000]));
+        out.extend(incremental.drain(&src));
+
+        assert_eq!(out, expected);
+        let expected_len = src.len() / 6;
+        assert!(expected.len().abs_diff(expected_len) <= 1, "{} samples", expected.len());
     }
 }
 
 #[cfg(test)]
-mod trim_tests {
+mod silero_tests {
     use super::*;
 
+    /// Needs the real model and eval clips in Application Support; run with
+    /// `cargo test -p diktafon -- --ignored`.
     #[test]
-    fn trims_trailing_silence_keeps_pad() {
-        let rate = 48_000u32;
-        let mut samples: Vec<f32> = (0..rate as usize)
-            .map(|i| if i % 2 == 0 { 0.1 } else { -0.1 })
-            .collect();
-        samples.extend(vec![0.0f32; rate as usize * 2]);
-        let trimmed = trim_trailing_silence(&samples, rate);
-        let secs = trimmed.len() as f32 / rate as f32;
-        assert!((1.0..=1.35).contains(&secs), "trimmed to {secs}s");
-    }
+    #[ignore = "loads the real Silero model"]
+    fn detects_speech_segments_in_eval_clip() {
+        let support = PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Library/Application Support/diktafon");
+        let silero =
+            SileroVad::new(support.join("models/silero_vad_v4.onnx"), SPEECH_THRESHOLD).unwrap();
+        let mut chunker = VadChunker::new(Box::new(silero));
 
-    #[test]
-    fn keeps_speech_untouched() {
-        let rate = 48_000u32;
-        let samples: Vec<f32> = (0..rate as usize)
-            .map(|i| if i % 2 == 0 { 0.1 } else { -0.1 })
+        let wav = std::fs::read(support.join("eval-own/01.wav")).unwrap();
+        let samples: Vec<f32> = wav[44..]
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
             .collect();
-        assert_eq!(trim_trailing_silence(&samples, rate).len(), samples.len());
+        let clip_secs = samples.len() as f32 / TARGET_RATE as f32;
+
+        let mut chunks: Vec<Vec<f32>> = samples
+            .chunks_exact(chunker.frame_size())
+            .filter_map(|frame| chunker.push_frame(frame))
+            .collect();
+        chunks.extend(chunker.finish(&[]));
+
+        assert!(!chunks.is_empty(), "no speech detected in a 21s spoken clip");
+        let speech_secs: f32 =
+            chunks.iter().map(|c| c.len() as f32).sum::<f32>() / TARGET_RATE as f32;
+        assert!(
+            speech_secs > clip_secs * 0.5 && speech_secs <= clip_secs,
+            "{speech_secs}s of speech in a {clip_secs}s clip"
+        );
     }
 }

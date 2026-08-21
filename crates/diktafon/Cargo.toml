@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 cpal = "0.16"
+transcribe-rs = { version = "0.3.11", default-features = false, features = ["vad-silero"] }
 global-hotkey = "0.8"
 arboard = "3"
 enigo = "0.6"

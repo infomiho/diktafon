@@ -448,6 +448,7 @@ dependencies = [
  "diktafon-protocol",
  "enigo",
  "global-hotkey",
+ "transcribe-rs",
 ]
 
 [[package]]

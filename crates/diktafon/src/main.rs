@@ -7,6 +7,7 @@ use capture::{Recorder, Session};
 use diktafon_protocol::{socket_path, Msg, SessionConfig};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
@@ -17,6 +18,11 @@ use transport::DaemonClient;
 #[link(name = "Carbon", kind = "framework")]
 unsafe extern "C" {
     fn RunApplicationEventLoop();
+}
+
+fn vad_model_path() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").expect("HOME not set"))
+        .join("Library/Application Support/diktafon/models/silero_vad_v4.onnx")
 }
 
 fn main() -> Result<()> {
@@ -30,7 +36,7 @@ fn main() -> Result<()> {
         return paste::insert(&text);
     }
 
-    let recorder = Recorder::new()?;
+    let recorder = Recorder::new(vad_model_path())?;
     println!("Mic: {}", recorder.describe());
 
     let manager = GlobalHotKeyManager::new().context("registering global hotkey manager")?;
