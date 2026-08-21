@@ -12,6 +12,37 @@ use diktafon_protocol::{DaemonMsg, Msg, SessionConfig, TARGET_RATE};
 
 use crate::llm::Polisher;
 
+/// How often the worker wakes to check for idleness.
+const IDLE_POLL: Duration = Duration::from_secs(30);
+
+/// The resident models cost gigabytes of RAM; after this long without any
+/// message they are dropped and reloaded on demand (`DIKTAFOND_IDLE_SECS`
+/// overrides, mainly for testing).
+const IDLE_UNLOAD: Duration = Duration::from_secs(5 * 60);
+
+fn idle_unload_after() -> Duration {
+    std::env::var("DIKTAFOND_IDLE_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(IDLE_UNLOAD)
+}
+
+struct Models {
+    asr: CohereModel,
+    polisher: Polisher,
+}
+
+fn load_models(models_dir: &Path) -> Result<Models> {
+    let start = Instant::now();
+    let asr = CohereModel::load(&models_dir.join("cohere-int8"), &Quantization::Int8)
+        .context("loading ASR model")?;
+    let polisher =
+        Polisher::load(&models_dir.join("s1-mini-q4_k_m.gguf")).context("loading LLM")?;
+    println!("models loaded in {:.2?}", start.elapsed());
+    Ok(Models { asr, polisher })
+}
+
 /// Upper bound on transcribing the queued chunks plus one polish pass. Hit when
 /// the worker thread died or is far behind; `finish` errors instead of blocking
 /// forever, and a late reply from a slow worker is discarded, not misdelivered.
@@ -69,37 +100,68 @@ impl Inference {
         let models_dir = models_dir.to_path_buf();
 
         thread::spawn(move || {
-            let loaded = (|| -> Result<(CohereModel, Polisher)> {
-                let asr = CohereModel::load(&models_dir.join("cohere-int8"), &Quantization::Int8)
-                    .context("loading ASR model")?;
-                let polisher = Polisher::load(&models_dir.join("s1-mini-q4_k_m.gguf"))
-                    .context("loading LLM")?;
-                Ok((asr, polisher))
-            })();
-            let (mut asr, polisher) = match loaded {
+            let mut models = match load_models(&models_dir) {
                 Ok(models) => {
                     let _ = ready_tx.send(Ok(()));
-                    models
+                    Some(models)
                 }
                 Err(e) => {
                     let _ = ready_tx.send(Err(e));
                     return;
                 }
             };
+            let idle_unload = idle_unload_after();
+            let idle_poll = IDLE_POLL.min(idle_unload);
+            let mut last_activity = Instant::now();
+            let mut in_session = false;
 
             let mut config = SessionConfig::default();
             let mut parts: Vec<String> = Vec::new();
             let mut audio_secs = 0.0f32;
             let mut asr_ms = 0u64;
-            for msg in chunk_rx {
+            loop {
+                let msg = match chunk_rx.recv_timeout(idle_poll) {
+                    Ok(msg) => msg,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        // Never unload mid-session, however long the pause.
+                        if models.is_some() && !in_session && last_activity.elapsed() >= idle_unload
+                        {
+                            models = None;
+                            println!("models unloaded after {idle_unload:?} idle");
+                        }
+                        continue;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                };
+                last_activity = Instant::now();
+                // Reload on any session traffic; Start arrives at hotkey press,
+                // so a cold reload overlaps with the user speaking.
+                if models.is_none() && !matches!(msg, Msg::Cancel) {
+                    match load_models(&models_dir) {
+                        Ok(loaded) => models = Some(loaded),
+                        Err(e) => {
+                            eprintln!("reloading models failed: {e:#}");
+                            if let Msg::Flush = msg {
+                                // One result per Flush, but as the error it is,
+                                // not as silence.
+                                let _ = events_tx.send(DaemonMsg::Error(format!(
+                                    "reloading models failed: {e:#}"
+                                )));
+                            }
+                            continue;
+                        }
+                    }
+                }
                 match msg {
                     Msg::Start(new_config) => {
+                        in_session = true;
                         parts.clear();
                         audio_secs = 0.0;
                         asr_ms = 0;
                         config = new_config;
                     }
                     Msg::Chunk(mut samples) => {
+                        let asr = &mut models.as_mut().expect("loaded above").asr;
                         pad_short_clip(&mut samples);
                         let secs = samples.len() as f32 / TARGET_RATE as f32;
                         let start = Instant::now();
@@ -138,6 +200,7 @@ impl Inference {
                         } else {
                             let _ = events_tx.send(DaemonMsg::Polishing);
                             let start = Instant::now();
+                            let polisher = &models.as_ref().expect("loaded above").polisher;
                             let polished = catch_panic("polish", || {
                                 polisher.polish(&raw, &config.control_line)
                             })
@@ -165,9 +228,11 @@ impl Inference {
                         }
                         audio_secs = 0.0;
                         asr_ms = 0;
+                        in_session = false;
                         let _ = events_tx.send(DaemonMsg::Final(text));
                     }
                     Msg::Cancel => {
+                        in_session = false;
                         parts.clear();
                         audio_secs = 0.0;
                         asr_ms = 0;
