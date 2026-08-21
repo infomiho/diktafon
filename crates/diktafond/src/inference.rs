@@ -17,6 +17,17 @@ use crate::llm::Polisher;
 /// forever, and a late reply from a slow worker is discarded, not misdelivered.
 const FINISH_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Very short clips make ASR models invent text; Handy's guard zero-pads
+/// anything under [`MIN_CLIP`] out to [`PADDED_CLIP`] before transcription.
+const MIN_CLIP: usize = TARGET_RATE as usize;
+const PADDED_CLIP: usize = TARGET_RATE as usize * 5 / 4;
+
+fn pad_short_clip(samples: &mut Vec<f32>) {
+    if !samples.is_empty() && samples.len() < MIN_CLIP {
+        samples.resize(PADDED_CLIP, 0.0);
+    }
+}
+
 /// Native inference (ONNX, llama.cpp) can panic. Uncaught, that kills the
 /// worker thread and every later dictation hangs, so panics become errors.
 fn catch_panic<T>(what: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
@@ -82,7 +93,8 @@ impl Inference {
                         parts.clear();
                         config = new_config;
                     }
-                    Msg::Chunk(samples) => {
+                    Msg::Chunk(mut samples) => {
+                        pad_short_clip(&mut samples);
                         let secs = samples.len() as f32 / TARGET_RATE as f32;
                         let start = Instant::now();
                         let result = catch_panic("ASR", || {
@@ -161,5 +173,27 @@ impl Inference {
             self.stale_finals.fetch_sub(1, Ordering::Relaxed);
             eprintln!("discarding late result from a timed-out session");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_clips_are_padded_and_others_untouched() {
+        let mut short = vec![0.5; MIN_CLIP / 2];
+        pad_short_clip(&mut short);
+        assert_eq!(short.len(), PADDED_CLIP);
+        assert_eq!(short[0], 0.5);
+        assert_eq!(*short.last().unwrap(), 0.0);
+
+        let mut long = vec![0.5; MIN_CLIP * 2];
+        pad_short_clip(&mut long);
+        assert_eq!(long.len(), MIN_CLIP * 2);
+
+        let mut empty: Vec<f32> = Vec::new();
+        pad_short_clip(&mut empty);
+        assert!(empty.is_empty());
     }
 }
