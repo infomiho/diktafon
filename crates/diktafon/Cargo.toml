@@ -14,8 +14,25 @@ rodio = "0.22"
 rustfft = "6"
 objc2 = "0.6"
 raw-window-handle = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder", "NSScreen", "NSEvent"] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSApplication",
+    "NSResponder",
+    "NSScreen",
+    "NSEvent",
+    "NSStatusBar",
+    "NSStatusItem",
+    "NSStatusBarButton",
+    "NSMenu",
+    "NSMenuItem",
+    "NSImage",
+    "NSButton",
+    "NSControl",
+    "NSView",
+    "NSCell",
+] }
+objc2-foundation = "0.3"
 objc2-service-management = { version = "0.3", features = ["SMAppService"] }
+serde_json = "1"
 transcribe-rs = { version = "0.3.11", default-features = false, features = ["vad-silero"] }
 global-hotkey = "0.8"
 arboard = "3"

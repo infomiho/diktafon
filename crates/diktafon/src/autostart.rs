@@ -6,23 +6,36 @@
 use anyhow::{Context, Result, bail};
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 
-pub fn run(mode: &str) -> Result<()> {
+pub fn is_enabled() -> bool {
+    let status = unsafe { SMAppService::mainAppService().status() };
+    status == SMAppServiceStatus::Enabled
+}
+
+pub fn set(enabled: bool) -> Result<()> {
     let service = unsafe { SMAppService::mainAppService() };
+    if enabled {
+        unsafe { service.registerAndReturnError() }
+            .map_err(|e| anyhow::anyhow!("{e}"))
+            .context("registering the login item (run from diktafon.app, not a bare binary)")
+    } else {
+        unsafe { service.unregisterAndReturnError() }
+            .map_err(|e| anyhow::anyhow!("{e}"))
+            .context("unregistering the login item")
+    }
+}
+
+pub fn run(mode: &str) -> Result<()> {
     match mode {
         "on" => {
-            unsafe { service.registerAndReturnError() }
-                .map_err(|e| anyhow::anyhow!("{e}"))
-                .context("registering the login item (run from diktafon.app, not a bare binary)")?;
+            set(true)?;
             println!("autostart enabled");
         }
         "off" => {
-            unsafe { service.unregisterAndReturnError() }
-                .map_err(|e| anyhow::anyhow!("{e}"))
-                .context("unregistering the login item")?;
+            set(false)?;
             println!("autostart disabled");
         }
         "status" => {
-            let status = match unsafe { service.status() } {
+            let status = match unsafe { SMAppService::mainAppService().status() } {
                 SMAppServiceStatus::Enabled => "enabled",
                 SMAppServiceStatus::NotRegistered => "not registered",
                 SMAppServiceStatus::RequiresApproval => {

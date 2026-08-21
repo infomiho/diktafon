@@ -7,6 +7,7 @@ mod keymap;
 mod paste;
 mod pill;
 mod sounds;
+mod statusbar;
 mod theme;
 mod transport;
 
@@ -222,6 +223,7 @@ fn main() -> Result<()> {
             })
             .detach();
             pill::manage(cx, dictation.clone(), levels);
+            statusbar::install(cx, &dictation);
             cx.set_global(AppServices { dictation });
             println!("Ready. Hold Option+Space to dictate, release to paste.");
         });
