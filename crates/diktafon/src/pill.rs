@@ -19,6 +19,7 @@ use gpui::{
     pulsating_between, px, rgb, rgba, size,
 };
 use objc2::MainThreadMarker;
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::time::Duration;
 
 const PILL_WIDTH: Pixels = px(256.);
@@ -89,9 +90,27 @@ fn open_pill(
             window_background: WindowBackgroundAppearance::Transparent,
             ..Default::default()
         },
-        |_, cx| cx.new(|cx| Pill::new(dictation, levels, cx)),
+        |window, cx| {
+            disable_window_shadow(window);
+            cx.new(|cx| Pill::new(dictation, levels, cx))
+        },
     )
     .ok()
+}
+
+/// macOS outlines the whole (mostly transparent) window rect with its system
+/// shadow, which reads as a ghost rectangle around the pill; turn it off.
+fn disable_window_shadow(window: &Window) {
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    if let RawWindowHandle::AppKit(appkit) = handle.as_raw() {
+        let ns_view = appkit.ns_view.as_ptr() as *mut objc2::runtime::AnyObject;
+        unsafe {
+            let ns_window: *mut objc2::runtime::AnyObject = objc2::msg_send![&*ns_view, window];
+            let _: () = objc2::msg_send![&*ns_window, setHasShadow: false];
+        }
+    }
 }
 
 /// Bottom-centered on the screen containing the cursor, tracking the Dock via
@@ -260,7 +279,10 @@ impl Render for Pill {
         } else {
             div()
                 .text_sm()
+                .font_family("Helvetica")
                 .text_color(rgba(0xFFFFFFD9))
+                .max_w(px(210.))
+                .overflow_hidden()
                 .child(label)
                 .into_any_element()
         };

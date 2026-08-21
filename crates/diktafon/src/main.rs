@@ -117,6 +117,27 @@ fn main() -> Result<()> {
     let escape_key = HotKey::new(None, Code::Escape);
     manager.register(record_key)?;
 
+    // Freeze the pill in one phase for visual inspection:
+    // `DIKTAFON_PILL_HOLD=transcribing diktafon`.
+    if let Ok(hold) = std::env::var("DIKTAFON_PILL_HOLD") {
+        let demo = phase_tx.clone();
+        thread::spawn(move || {
+            thread::sleep(std::time::Duration::from_secs(2));
+            let _ = demo.unbounded_send(PhaseEvent::RecordingArmed);
+            let event = match hold.as_str() {
+                "arming" => None,
+                "recording" => Some(PhaseEvent::RecordingStarted),
+                "polishing" => Some(PhaseEvent::PolishingStarted),
+                _ => Some(PhaseEvent::RecordingStopped),
+            };
+            let _ = demo.unbounded_send(PhaseEvent::RecordingStarted);
+            let _ = demo.unbounded_send(PhaseEvent::Partial("penguin enterprises flagship".into()));
+            if let Some(event) = event {
+                let _ = demo.unbounded_send(event);
+            }
+        });
+    }
+
     // Scripted phase walk for developing the pill without dictating:
     // `DIKTAFON_PILL_DEMO=1 diktafon`.
     if std::env::var_os("DIKTAFON_PILL_DEMO").is_some() {
