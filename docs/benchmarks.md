@@ -27,3 +27,15 @@ Cohere int8 + s1-mini q4_k_m.
 - Memory plan: idle model unload/reload instead of a smaller ASR.
 - *Canary 1B v2's WER is inflated by its own ITN and editing being scored against verbatim ground truth. After polish it nearly matches Cohere: better number/compound formatting (SlideMaster, -60°C), slightly worse faithfulness (spelling of rare words, keeps asides). It is the designated runner-up at 1.6GB less RAM if memory ever outweighs fidelity.
 - Canary 180M was rejected on polished-output diffs: real content errors a user must hand-fix (PNG 91, PEC ice, Hasko for Haskell).
+
+## Client/daemon loopback overhead (2026-08-21)
+
+Measured with `cargo run --release -p diktafond --example loopback_bench`: eval clip 01 in five ≤5s chunks through the in-process worker versus a spawned diktafond over the Unix socket, identical audio, warmed ASR. The Cancel→Aborted roundtrip does no inference, so it isolates pure transport cost (framing + socket + worker channel + relay).
+
+| Metric | In-process | Unix socket |
+| --- | --- | --- |
+| chunk → Partial, median of 5 (5s audio, ~320KB frame) | 466.1ms | 447.7ms |
+| Flush → Final (single run) | 422.7ms | 770.7ms |
+| Cancel → Aborted, median of 200 (no inference) | 3.3µs | 14.6µs |
+
+The split costs ~11µs per roundtrip; per-chunk latency is inside run-to-run noise (the socket run even sampled faster). The Flush→Final gap is first-polish Metal warmup variance in each freshly started process, not transport, as the µs-scale roundtrip shows. Loopback overhead is invisible next to 200-560ms inference.
