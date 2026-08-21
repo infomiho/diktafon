@@ -27,6 +27,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 use transport::DaemonClient;
 
+// App-level actions, dispatched from any focused diktafon window (cadence's
+// bootstrap pattern): Cmd+Q quits, Cmd+W closes the window that has focus.
+gpui::actions!(diktafon, [Quit, CloseWindow]);
+
 /// Ships inside the binary (1.8MB, mirroring Handy bundling the same file) so
 /// the client needs no model downloads at all.
 const SILERO_VAD: &[u8] = include_bytes!("../resources/silero_vad_v4.onnx");
@@ -214,6 +218,11 @@ fn main() -> Result<()> {
         .run(move |cx| {
             hide_from_dock();
             gpui_component::init(cx);
+            cx.on_action(|_: &Quit, cx| cx.quit());
+            cx.bind_keys([
+                gpui::KeyBinding::new("cmd-q", Quit, None),
+                gpui::KeyBinding::new("cmd-w", CloseWindow, None),
+            ]);
             permissions::check_at_launch();
             let dictation = Dictation::spawn(cx, phase_rx);
             // The Carbon hotkey manager lives on this thread; register Escape

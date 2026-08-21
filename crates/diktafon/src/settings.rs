@@ -407,10 +407,16 @@ impl Render for SettingsWindow {
         h_flex()
             .size_full()
             .bg(cx.theme().background)
+            .on_action(cx.listener(|_, _: &crate::CloseWindow, window, _| {
+                window.remove_window();
+            }))
             .child(sidebar)
             .child(
                 v_flex()
                     .flex_1()
+                    // Without a min width the long descriptions push the pane
+                    // past the window's right edge.
+                    .min_w_0()
                     .h_full()
                     .p_6()
                     .gap_2()
