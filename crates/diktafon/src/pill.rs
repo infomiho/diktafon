@@ -98,7 +98,7 @@ fn open_pill(
             ..Default::default()
         },
         |window, cx| {
-            disable_window_shadow(window);
+            configure_overlay_window(window);
             cx.new(|cx| Pill::new(dictation, levels, cx))
         },
     )
@@ -106,8 +106,10 @@ fn open_pill(
 }
 
 /// macOS outlines the whole (mostly transparent) window rect with its system
-/// shadow, which reads as a ghost rectangle around the pill; turn it off.
-fn disable_window_shadow(window: &Window) {
+/// shadow, which reads as a ghost rectangle around the pill; turn it off. The
+/// pill is also a passive overlay, so let clicks pass through to whatever is
+/// underneath it.
+fn configure_overlay_window(window: &Window) {
     let Ok(handle) = HasWindowHandle::window_handle(window) else {
         return;
     };
@@ -116,6 +118,7 @@ fn disable_window_shadow(window: &Window) {
         unsafe {
             let ns_window: *mut objc2::runtime::AnyObject = objc2::msg_send![&*ns_view, window];
             let _: () = objc2::msg_send![&*ns_window, setHasShadow: false];
+            let _: () = objc2::msg_send![&*ns_window, setIgnoresMouseEvents: true];
         }
     }
 }
@@ -168,8 +171,6 @@ pub struct Pill {
     recording_since: Option<std::time::Instant>,
     /// Drives the comet orbit while transcribing/polishing.
     opened_at: std::time::Instant,
-    /// DIKTAFON_AURORA=1: voice-driven glow wash prototype while recording.
-    aurora: bool,
     /// Per-band smoothed aurora intensity (fast attack, slow decay), so the
     /// glow breathes with speech instead of flickering with the raw meter.
     aurora_smooth: [f32; 3],
@@ -198,7 +199,6 @@ impl Pill {
             last_active: Phase::Recording,
             recording_since: None,
             opened_at: std::time::Instant::now(),
-            aurora: std::env::var("DIKTAFON_AURORA").is_ok_and(|v| v != "0"),
             aurora_smooth: [0.; 3],
         }
     }
@@ -219,8 +219,8 @@ impl Pill {
         self.aurora_smooth
     }
 
-    /// Prototype (DIKTAFON_AURORA=1): a voice-driven glow wash behind the
-    /// pill content while recording, Siri-style. Three hue-shifted blobs
+    /// A voice-driven glow wash behind the pill content while recording,
+    /// Siri-style. Three hue-shifted blobs
     /// (ember, red, rose; lows left, highs right) drift inside the pill over
     /// a constant baseline glow, so the wash breathes with speech instead of
     /// flashing from black.
@@ -412,8 +412,7 @@ impl Render for Pill {
         if display == Phase::Recording && self.recording_since.is_none() {
             self.recording_since = Some(std::time::Instant::now());
         }
-        let aurora_bands =
-            (self.aurora && display == Phase::Recording).then(|| self.aurora_bands());
+        let aurora_bands = (display == Phase::Recording).then(|| self.aurora_bands());
         let elapsed = self.recording_since.filter(|_| display == Phase::Recording);
         let content = match display {
             // The orbit carries the liveness while recording; the label just

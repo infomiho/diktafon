@@ -44,7 +44,10 @@ Colors are `0xRRGGBB`; alpha is chosen at the call site. Defined in
 
 ## Motion
 
-- Signal-driven motion is 1:1 with the audio level (recording orbit).
+- Signal-driven motion is 1:1 with the audio level (recording orbit), and
+  the recording aurora (a Siri-style glow wash: spectrum-fed blobs inside the
+  pill plus hue-trading inset edge glow) rides a smoothed level with a
+  baseline floor, so it breathes rather than flashes.
 - Ambient motion (processing states) is slow and periodic: a soft highlight
   circling at ~0.25 rev/s (transcribing), a radius breath on a ~3s cycle
   (polishing). Nothing strobes; per-frame change stays small.
