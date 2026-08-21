@@ -62,6 +62,7 @@ pub fn run(models_dir: &Path, socket: &Path) -> Result<()> {
     let pid_file = socket.with_extension("pid");
     std::fs::write(&pid_file, std::process::id().to_string())
         .with_context(|| format!("writing {}", pid_file.display()))?;
+    crate::status::write(false);
     remove_socket_on_termination(socket);
     println!("diktafond listening on {}", socket.display());
 
@@ -145,7 +146,11 @@ fn start_up(listener: &UnixListener, models_dir: &Path) -> Result<(Inference, Ve
                 println!("Loading models...");
                 let load_start = Instant::now();
                 let history = diktafon_protocol::data_dir().join("history.jsonl");
-                let inference = Inference::spawn(&models_dir, Some(history));
+                let inference = Inference::spawn(
+                    &models_dir,
+                    Some(history),
+                    Some(Box::new(crate::status::write)),
+                );
                 if inference.is_ok() {
                     println!("Models loaded in {:.2?}", load_start.elapsed());
                 }
@@ -278,6 +283,7 @@ fn remove_socket_on_termination(socket: &Path) {
         if signals.forever().next().is_some() {
             let _ = std::fs::remove_file(socket.with_extension("pid"));
             let _ = std::fs::remove_file(&socket);
+            crate::status::remove();
             // _exit, not exit: atexit runs ggml's Metal destructor, which
             // asserts (and aborts) while the model is still resident.
             signal_hook::low_level::exit(0);

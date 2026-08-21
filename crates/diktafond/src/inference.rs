@@ -12,6 +12,10 @@ use diktafon_protocol::{DaemonMsg, Msg, SessionConfig, TARGET_RATE};
 
 use crate::llm::Polisher;
 
+/// Observer for model residency changes; the daemon points it at the status
+/// file, benchmarks and tests pass `None`.
+pub type Residency = Option<Box<dyn Fn(bool) + Send>>;
+
 /// How often the worker wakes to check for idleness.
 const IDLE_POLL: Duration = Duration::from_secs(30);
 
@@ -92,17 +96,28 @@ pub struct Inference {
 
 impl Inference {
     /// `history`: where finished sessions are appended for recovery; `None`
-    /// disables it (benchmarks, tests).
-    pub fn spawn(models_dir: &Path, history: Option<std::path::PathBuf>) -> Result<Self> {
+    /// disables it (benchmarks, tests). `residency` is told whenever the
+    /// models are loaded (true) or unloaded (false).
+    pub fn spawn(
+        models_dir: &Path,
+        history: Option<std::path::PathBuf>,
+        residency: Residency,
+    ) -> Result<Self> {
         let (chunk_tx, chunk_rx) = mpsc::channel::<Msg>();
         let (events_tx, events_rx) = mpsc::channel::<DaemonMsg>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<()>>();
         let models_dir = models_dir.to_path_buf();
 
         thread::spawn(move || {
+            let notify_residency = |loaded: bool| {
+                if let Some(callback) = &residency {
+                    callback(loaded);
+                }
+            };
             let mut models = match load_models(&models_dir) {
                 Ok(models) => {
                     let _ = ready_tx.send(Ok(()));
+                    notify_residency(true);
                     Some(models)
                 }
                 Err(e) => {
@@ -127,6 +142,7 @@ impl Inference {
                         if models.is_some() && !in_session && last_activity.elapsed() >= idle_unload
                         {
                             models = None;
+                            notify_residency(false);
                             println!("models unloaded after {idle_unload:?} idle");
                         }
                         continue;
@@ -138,7 +154,10 @@ impl Inference {
                 // so a cold reload overlaps with the user speaking.
                 if models.is_none() && !matches!(msg, Msg::Cancel) {
                     match load_models(&models_dir) {
-                        Ok(loaded) => models = Some(loaded),
+                        Ok(loaded) => {
+                            models = Some(loaded);
+                            notify_residency(true);
+                        }
                         Err(e) => {
                             eprintln!("reloading models failed: {e:#}");
                             if let Msg::Flush = msg {

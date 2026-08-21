@@ -61,7 +61,7 @@ fn main() {
     println!("\nin-process:");
     let mut chunk_times = Vec::new();
     {
-        let inference = Inference::spawn(&models_dir, None).expect("loading models");
+        let inference = Inference::spawn(&models_dir, None, None).expect("loading models");
         // Warm up Metal shaders and caches.
         inference
             .chunk_tx

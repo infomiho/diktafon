@@ -30,6 +30,14 @@ pub fn pid_path() -> PathBuf {
     socket_path().with_extension("pid")
 }
 
+/// Where the daemon mirrors its state (pid, model residency) as JSON for UI
+/// surfaces like the client's menu bar. A file rather than a protocol message:
+/// the daemon serves one connection at a time, and the client's own resident
+/// connection would make a second status connection queue forever.
+pub fn status_path() -> PathBuf {
+    socket_path().with_extension("status.json")
+}
+
 /// Sample rate of the audio chunks the client delivers and the daemon's ASR
 /// model expects.
 pub const TARGET_RATE: u32 = 16_000;
