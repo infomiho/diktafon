@@ -14,8 +14,7 @@ use std::time::Instant;
 use transport::DaemonClient;
 
 fn vad_model_path() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").expect("HOME not set"))
-        .join("Library/Application Support/diktafon/models/silero_vad_v4.onnx")
+    diktafon_protocol::models_dir().join("silero_vad_v4.onnx")
 }
 
 /// The diktafond binary to auto-spawn: `DIKTAFOND_BIN` override, or the one

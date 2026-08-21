@@ -32,15 +32,31 @@ pub enum Msg {
     Cancel,
 }
 
+/// Root for everything diktafon stores: models, socket, daemon log.
+/// `DIKTAFON_DATA_DIR` overrides it; otherwise the platform data dir
+/// (`~/Library/Application Support/diktafon` on macOS; `$XDG_DATA_HOME` else
+/// `~/.local/share`, plus `/diktafon`, on Linux).
+/// Deliberately a data dir, not a cache dir: macOS may purge caches
+/// under disk pressure, and multi-GB models should not be purgeable.
+pub fn data_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("DIKTAFON_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
+    dirs::data_dir().expect("no platform data directory").join("diktafon")
+}
+
+pub fn models_dir() -> PathBuf {
+    data_dir().join("models")
+}
+
 /// Where the daemon listens locally; shared so client and daemon agree without
-/// the client depending on the daemon crate. `DIKTAFOND_SOCKET` overrides it,
-/// mainly for tests.
+/// the client depending on the daemon crate. `DIKTAFOND_SOCKET` overrides it
+/// (winning even over a `DIKTAFON_DATA_DIR`-derived path), mainly for tests.
 pub fn socket_path() -> PathBuf {
     if let Some(path) = std::env::var_os("DIKTAFOND_SOCKET") {
         return PathBuf::from(path);
     }
-    PathBuf::from(std::env::var("HOME").expect("HOME not set"))
-        .join("Library/Application Support/diktafon/diktafond.sock")
+    data_dir().join("diktafond.sock")
 }
 
 /// Per-session settings the daemon forwards into the models.

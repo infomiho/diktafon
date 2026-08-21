@@ -349,13 +349,14 @@ mod silero_tests {
     #[test]
     #[ignore = "loads the real Silero model"]
     fn detects_speech_segments_in_eval_clip() {
-        let support = PathBuf::from(std::env::var("HOME").unwrap())
-            .join("Library/Application Support/diktafon");
-        let silero =
-            SileroVad::new(support.join("models/silero_vad_v4.onnx"), SPEECH_THRESHOLD).unwrap();
+        let silero = SileroVad::new(
+            diktafon_protocol::models_dir().join("silero_vad_v4.onnx"),
+            SPEECH_THRESHOLD,
+        )
+        .unwrap();
         let mut chunker = VadChunker::new(Box::new(silero));
 
-        let wav = std::fs::read(support.join("eval-own/01.wav")).unwrap();
+        let wav = std::fs::read(diktafon_protocol::data_dir().join("eval-own/01.wav")).unwrap();
         let samples: Vec<f32> = wav[44..]
             .as_chunks::<2>()
             .0
