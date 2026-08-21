@@ -66,6 +66,9 @@ components:
     backgroundColor: "{background}"
     borderColor: "{outline} @ 13%"
     focusRing: "{accent}"
+  switch:
+    trackColor: "#3A3E7C"      # own lighter step; raised surface vanishes at track size
+    checkedColor: "{accent}"
   nav-item:
     height: 40px
     rounded: "{rounded.lg}"
@@ -73,6 +76,8 @@ components:
   settings-window:
     size: 720x500px
     sidebarWidth: 200px
+    titlebar: hidden           # transparent full-size content; traffic lights float over the sidebar
+    sidebarTopPadding: 48px    # clears the floating traffic lights
   pill:
     size: 220x38px
     rounded: full

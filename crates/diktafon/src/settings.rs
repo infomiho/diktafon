@@ -8,7 +8,7 @@ use crate::config::SessionSettings;
 use crate::{autostart, statusbar};
 use gpui::{
     App, AppContext, Bounds, Context, Entity, ParentElement, Render, SharedString, TitlebarOptions,
-    Window, WindowBounds, WindowHandle, WindowOptions, div, prelude::*, px, size,
+    Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::form::{field, v_form};
@@ -138,9 +138,13 @@ pub fn open(
         .open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                // The titlebar is transparent and full-size-content: the pane
+                // extends to the window's top edge and the traffic lights
+                // float over the sidebar.
                 titlebar: Some(TitlebarOptions {
                     title: Some(SharedString::from("Diktafon Settings")),
-                    ..Default::default()
+                    appears_transparent: true,
+                    traffic_light_position: Some(point(px(16.), px(16.))),
                 }),
                 is_resizable: false,
                 is_minimizable: false,
@@ -455,7 +459,8 @@ impl Render for SettingsWindow {
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.sidebar_border)
-            .pt_8()
+            // Clears the traffic lights floating over the sidebar's top-left.
+            .pt(px(48.))
             .px_3()
             .gap_1p5()
             .children({

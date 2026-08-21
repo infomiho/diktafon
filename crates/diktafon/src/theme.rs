@@ -45,6 +45,9 @@ const ACCENT_HOVER: u32 = 0xD878FF00;
 const ACCENT_ACTIVE: u32 = 0xBB3EF200;
 const RAISED_HOVER: u32 = 0x23265E00;
 const RAISED_ACTIVE: u32 = 0x171A4500;
+/// Off-state switch track: the raised surface is invisible against the
+/// window ground at track size, so it gets its own clearly lighter step.
+const SWITCH_TRACK: u32 = 0x3A3E7C00;
 
 fn hex(color: u32) -> String {
     format!("#{:06x}", color >> 8)
@@ -101,7 +104,7 @@ fn signal_theme_config() -> gpui_component::ThemeConfig {
         ("ring", hex(ACCENT)),
         ("caret", hex(TEXT_PRIMARY)),
         ("link.foreground", hex(ACCENT)),
-        ("switch.background", hex(SURFACE_RAISED)),
+        ("switch.background", hex(SWITCH_TRACK)),
         ("scrollbar.thumb.background", hex_a(HAIRLINE, 0x50)),
         ("overlay", hex_a(SURFACE_SUNKEN, 0x80)),
         ("danger.background", hex(SIGNAL_RED)),
