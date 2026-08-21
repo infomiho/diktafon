@@ -185,37 +185,61 @@ fn phase_label(phase: Phase) -> &'static str {
     }
 }
 
-/// Summarizes the daemon from its status.json (see
+/// The daemon's state as read from its status.json, for structured display
+/// in the settings window.
+pub struct DaemonStatus {
+    pub running: bool,
+    pub models_loaded: bool,
+    pub asr: Option<String>,
+    pub llm: Option<String>,
+}
+
+/// Reads the daemon state from its status.json (see
 /// `diktafon_protocol::status_path`); the pid check guards against a stale
-/// file left by a crashed daemon. Shared with the settings window.
-pub fn daemon_summary() -> String {
-    let path = diktafon_protocol::status_path();
-    let Ok(raw) = std::fs::read_to_string(&path) else {
+/// file left by a crashed daemon.
+pub fn daemon_status() -> DaemonStatus {
+    let not_running = DaemonStatus {
+        running: false,
+        models_loaded: false,
+        asr: None,
+        llm: None,
+    };
+    let Ok(raw) = std::fs::read_to_string(diktafon_protocol::status_path()) else {
         // A daemon from before the status file exists only in the pidfile.
         let pid = std::fs::read_to_string(diktafon_protocol::pid_path())
             .ok()
             .and_then(|pid| pid.trim().parse().ok())
             .unwrap_or(0);
-        return if pid_alive(pid) {
-            "running".into()
-        } else {
-            "not running".into()
+        return DaemonStatus {
+            running: pid_alive(pid),
+            ..not_running
         };
     };
     let Ok(status) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return "unknown".into();
+        return not_running;
     };
-    let pid = status["pid"].as_u64().unwrap_or(0);
-    if !pid_alive(pid) {
+    if !pid_alive(status["pid"].as_u64().unwrap_or(0)) {
+        return not_running;
+    }
+    DaemonStatus {
+        running: true,
+        // Idle unload is by design; loads happen on the next dictation.
+        models_loaded: status["models_loaded"].as_bool().unwrap_or(false),
+        asr: status["asr_model"].as_str().map(str::to_string),
+        llm: status["llm_model"].as_str().map(str::to_string),
+    }
+}
+
+/// One-line form of [`daemon_status`] for the menu bar.
+pub fn daemon_summary() -> String {
+    let status = daemon_status();
+    if !status.running {
         return "not running".into();
     }
-    let asr = status["asr_model"].as_str().unwrap_or("asr");
-    let llm = status["llm_model"].as_str().unwrap_or("llm");
-    if status["models_loaded"].as_bool().unwrap_or(false) {
-        format!("running · {asr} + {llm} loaded")
-    } else {
-        // Idle unload is by design; loads happen on the next dictation.
-        "running · models idle".into()
+    match (&status.asr, &status.llm, status.models_loaded) {
+        (Some(asr), Some(llm), true) => format!("running · {asr} + {llm} loaded"),
+        (_, _, true) => "running · models loaded".into(),
+        _ => "running · models idle".into(),
     }
 }
 

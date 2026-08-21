@@ -21,22 +21,27 @@ colors:
   aurora-rose: "#E0459E"       # recording wash companion
 typography:
   display:                     # pane titles
-    fontFamily: system
+    fontFamily: Inter          # embedded in the binary (Regular/Medium/SemiBold)
     fontSize: 24px
     fontWeight: 600
     lineHeight: 1.2
   body:                        # control labels, input text
-    fontFamily: system
+    fontFamily: Inter
     fontSize: 16px
     fontWeight: 400
     lineHeight: 1.5
   label:                       # descriptions, pill text, secondary lines
-    fontFamily: system
+    fontFamily: Inter
     fontSize: 14px
     fontWeight: 400
     lineHeight: 1.4
+  mono:                        # technical values: model names, paths
+    fontFamily: Menlo
+    fontSize: 13px
+    fontWeight: 400
+    lineHeight: 1.4
   readout:                     # numeric readouts; each glyph in a fixed-width cell
-    fontFamily: system
+    fontFamily: Inter
     fontSize: 11px
     fontWeight: 400
     lineHeight: 1.0
@@ -78,6 +83,13 @@ components:
     sidebarWidth: 200px
     titlebar: hidden           # transparent full-size content; traffic lights float over the sidebar
     sidebarTopPadding: 48px    # clears the floating traffic lights
+    footer: no divider         # the mt-auto gap separates it; a border reads as clutter
+  status-card:                 # structured state display (daemon); never raw text lines
+    backgroundColor: "{surface}"
+    borderColor: "{outline} @ 13%"
+    rounded: "{rounded.lg}"
+    dot: 8px                   # white = alive, ring-idle = not; never glows
+    rows: muted label left, truncating mono value right
   pill:
     size: 220x38px
     rounded: full
@@ -139,9 +151,13 @@ a fourth level ("material") without changing the rules above.
 
 ## Type
 
-- System font everywhere; four steps: display 24/600 (pane titles), body
-  16/400 (controls), label 14/400 (descriptions, pill text), readout 11
-  (numerics).
+- Inter everywhere (embedded, so the bundle needs no installed fonts), Menlo
+  for technical values. Steps: display 24/600 (pane titles), body 16/400
+  (controls), label 14/400 (descriptions, pill text), mono 13 (model names,
+  paths), readout 11 (numerics).
+- Technical values (model names, file paths) render in mono inside
+  structured components - a status card with label/value rows - never as raw
+  prose that can overflow.
 - Numeric readouts render each glyph in a fixed-width cell so changing
   digits never shift the layout.
 

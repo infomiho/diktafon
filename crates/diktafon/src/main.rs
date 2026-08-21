@@ -217,6 +217,7 @@ fn main() -> Result<()> {
         .with_quit_mode(gpui::QuitMode::Explicit)
         .run(move |cx| {
             hide_from_dock();
+            theme::install_fonts(cx);
             gpui_component::init(cx);
             theme::apply_settings_theme(cx);
             cx.on_action(|_: &Quit, cx| cx.quit());

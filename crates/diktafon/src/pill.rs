@@ -403,6 +403,7 @@ impl Pill {
 /// Single-line pill text; pulses gently while `busy` to signal activity.
 fn label(text: String, busy: bool) -> AnyElement {
     let text_el = div()
+        .font_family(theme::FONT_UI)
         .text_sm()
         .text_color(rgba(theme::TEXT_PRIMARY | 0xF5))
         .whitespace_nowrap()
@@ -435,6 +436,7 @@ fn time_readout(since: std::time::Instant) -> AnyElement {
         .flex_none()
         .flex()
         .justify_end()
+        .font_family(theme::FONT_UI)
         .text_size(px(11.))
         .text_color(rgba(theme::TEXT_DIM | 0x8C))
         .children(text.chars().map(|c| {

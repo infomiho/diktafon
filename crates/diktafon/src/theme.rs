@@ -49,6 +49,24 @@ const RAISED_ACTIVE: u32 = 0x171A4500;
 /// window ground at track size, so it gets its own clearly lighter step.
 const SWITCH_TRACK: u32 = 0x3A3E7C00;
 
+/// The UI face; embedded via [`install_fonts`] so the bundle needs no
+/// installed fonts. Menlo (always present on macOS) covers mono readouts.
+pub const FONT_UI: &str = "Inter";
+pub const FONT_MONO: &str = "Menlo";
+
+/// Register the embedded Inter faces with the text system; must run before
+/// any window renders.
+pub fn install_fonts(cx: &gpui::App) {
+    let fonts = vec![
+        std::borrow::Cow::Borrowed(&include_bytes!("../assets/fonts/Inter-Regular.ttf")[..]),
+        std::borrow::Cow::Borrowed(&include_bytes!("../assets/fonts/Inter-Medium.ttf")[..]),
+        std::borrow::Cow::Borrowed(&include_bytes!("../assets/fonts/Inter-SemiBold.ttf")[..]),
+    ];
+    if let Err(e) = cx.text_system().add_fonts(fonts) {
+        eprintln!("embedding Inter failed, falling back to the system font: {e:#}");
+    }
+}
+
 fn hex(color: u32) -> String {
     format!("#{:06x}", color >> 8)
 }
@@ -120,6 +138,8 @@ fn signal_theme_config() -> gpui_component::ThemeConfig {
     let config = serde_json::json!({
         "name": "Signal Dark",
         "mode": "dark",
+        "font.family": FONT_UI,
+        "mono_font.family": FONT_MONO,
         "radius": 6,
         "radius_lg": 8,
         "shadow": false,

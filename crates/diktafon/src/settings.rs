@@ -5,10 +5,11 @@
 //! daemon restarts.
 
 use crate::config::SessionSettings;
-use crate::{autostart, statusbar};
+use crate::statusbar::DaemonStatus;
+use crate::{autostart, statusbar, theme};
 use gpui::{
     App, AppContext, Bounds, Context, Entity, ParentElement, Render, SharedString, TitlebarOptions,
-    Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px, size,
+    Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px, rgba, size,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::form::{field, v_form};
@@ -115,7 +116,7 @@ pub struct SettingsWindow {
     /// Loaded asynchronously: the SMAppService query is a blocking XPC call.
     autostart: bool,
     /// Cached at open: reading it does file IO and must not run per render.
-    daemon_summary: SharedString,
+    daemon_status: DaemonStatus,
     saved_at: Option<Instant>,
 }
 
@@ -266,7 +267,7 @@ impl SettingsWindow {
             idle_select,
             idle_values,
             autostart: false,
-            daemon_summary: statusbar::daemon_summary().into(),
+            daemon_status: statusbar::daemon_status(),
             saved_at: None,
         }
     }
@@ -426,6 +427,76 @@ impl SettingsWindow {
             )
     }
 
+    /// A muted label on the left, a truncating mono value on the right; the
+    /// row layout inside the daemon card.
+    fn daemon_row(label: &'static str, value: String, cx: &App) -> impl IntoElement {
+        h_flex()
+            .gap_6()
+            .items_center()
+            .justify_between()
+            .child(
+                Label::new(label)
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .font_family(theme::FONT_MONO)
+                    .text_size(px(13.))
+                    .truncate()
+                    .child(value),
+            )
+    }
+
+    /// The daemon as a status card: a liveness dot and word, model residency,
+    /// and the model names as label/value rows. Replaces the raw one-line
+    /// summary that overflowed the pane.
+    fn daemon_card(&self, cx: &App) -> impl IntoElement {
+        let status = &self.daemon_status;
+        // White = alive, muted = not; the dot never glows (glow means live
+        // signal, and a resident daemon is not one).
+        let (dot, word) = if status.running {
+            (rgba(theme::SIGNAL_WHITE | 0xE6), "Running")
+        } else {
+            (rgba(theme::RING_IDLE | 0x80), "Not running")
+        };
+        let residency = match (status.running, status.models_loaded) {
+            (false, _) => None,
+            (true, true) => Some("Models loaded"),
+            (true, false) => Some("Models idle"),
+        };
+        let card = v_flex()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(rgba(theme::SURFACE | 0xFF))
+            .p_4()
+            .gap_3()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().size(px(8.)).rounded_full().bg(dot))
+                    .child(Label::new(word).font_medium())
+                    .when_some(residency, |el, residency| {
+                        el.child(div().flex_1()).child(
+                            Label::new(residency)
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                    }),
+            );
+        let card = match &status.asr {
+            Some(asr) => card.child(Self::daemon_row("Speech model", asr.clone(), cx)),
+            None => card,
+        };
+        match &status.llm {
+            Some(llm) => card.child(Self::daemon_row("Polish model", llm.clone(), cx)),
+            None => card,
+        }
+    }
+
     fn advanced_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_8()
@@ -438,12 +509,12 @@ impl SettingsWindow {
                     )
                     .child(Select::new(&self.idle_select).large()),
             )
-            .child(Self::control_row(
-                "Daemon",
-                "The resident inference process",
-                Label::new(self.daemon_summary.clone()),
-                cx,
-            ))
+            .child(
+                field()
+                    .label("Daemon")
+                    .description("The resident inference process")
+                    .child(self.daemon_card(cx)),
+            )
     }
 }
 
@@ -501,11 +572,10 @@ impl Render for SettingsWindow {
                     )
                     .child(div().mt_6().child(pane))
                     .child(
+                        // No divider: the mt_auto gap separates the footer
+                        // on its own, and a border here reads as clutter.
                         h_flex()
                             .mt_auto()
-                            .pt_5()
-                            .border_t_1()
-                            .border_color(cx.theme().border)
                             .justify_end()
                             .items_center()
                             .gap_4()
