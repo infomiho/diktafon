@@ -7,6 +7,7 @@ mod keymap;
 mod paste;
 mod pill;
 mod sounds;
+mod theme;
 mod transport;
 
 use anyhow::{Context, Result};

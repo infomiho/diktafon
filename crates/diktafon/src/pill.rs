@@ -12,10 +12,11 @@
 
 use crate::capture::LevelBars;
 use crate::dictation::{Dictation, Phase};
+use crate::theme;
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, AppContext, Bounds, Context, Entity, IntoElement,
-    ParentElement, Pixels, Render, Styled, Window, WindowBackgroundAppearance, WindowBounds,
-    WindowHandle, WindowKind, WindowOptions, div, ease_in_out, ease_out_quint, point,
+    Animation, AnimationExt, AnyElement, App, AppContext, Bounds, BoxShadow, Context, Entity,
+    IntoElement, ParentElement, Pixels, Render, Styled, Window, WindowBackgroundAppearance,
+    WindowBounds, WindowHandle, WindowKind, WindowOptions, div, ease_in_out, ease_out_quint, point,
     pulsating_between, px, rgba, size,
 };
 use objc2::MainThreadMarker;
@@ -30,6 +31,11 @@ const SATELLITES: usize = 16;
 /// Trailing characters of the transcript the marquee shapes per frame; long
 /// dictations scroll through this window.
 const MARQUEE_CHARS: usize = 80;
+/// Base marquee crawl speed in px/s; deliberately slower than speech.
+const MARQUEE_SPEED: f32 = 24.;
+/// Extra crawl speed per px of backlog (per second), so a long pause's burst
+/// of text drains gradually instead of stalling the line forever.
+const MARQUEE_CATCHUP: f32 = 0.5;
 /// Vertical slide distance of the enter/exit transition.
 const TRAVEL: f32 = 8.;
 const TOP_PAD: f32 = 0.;
@@ -198,31 +204,30 @@ impl Pill {
         }
     }
 
-    /// The pill's identity element: the phase dot with the voice level as
-    /// satellites orbiting it. Present in every phase; the satellites rest on
-    /// a quiet ring when there is no signal.
     /// The pill's identity element: an orbit of satellites that IS the phase
-    /// indicator. Red and riding the voice while recording; a white comet
-    /// while transcribing; a white ring breathing in phase while polishing
-    /// (the text being condensed); a quiet gray ring otherwise.
+    /// indicator, with a neon glow that rides the signal level (glow means
+    /// live signal; see docs/design.md). Red and voice-driven while
+    /// recording; a soft white highlight slowly circling while transcribing;
+    /// a magenta ring breathing (contracting and growing) while polishing; a
+    /// quiet muted ring otherwise.
     fn orbital_meter(&self, display: Phase, reduce_motion: bool) -> AnyElement {
         let t = self.opened_at.elapsed().as_secs_f32();
         let (base_color, levels): (u32, [f32; SATELLITES]) = match display {
-            Phase::Recording => (0xE5484D00, *self.levels.lock().unwrap()),
-            Phase::Transcribing if reduce_motion => (0xFFFFFF00, [0.3; SATELLITES]),
-            Phase::Polishing if reduce_motion => (0xFFFFFF00, [0.3; SATELLITES]),
+            Phase::Recording => (theme::SIGNAL_RED, *self.levels.lock().unwrap()),
+            Phase::Transcribing if reduce_motion => (theme::SIGNAL_WHITE, [0.3; SATELLITES]),
+            Phase::Polishing if reduce_motion => (theme::SIGNAL_MAGENTA, [0.3; SATELLITES]),
             Phase::Transcribing => (
-                0xFFFFFF00,
+                theme::SIGNAL_WHITE,
                 std::array::from_fn(|i| {
                     let angle = i as f32 * std::f32::consts::TAU / SATELLITES as f32;
-                    (0.5 + 0.5 * (angle - t * 3.5).cos()).powi(3)
+                    0.18 + 0.32 * (0.5 + 0.5 * (angle - t * 1.6).cos()).powi(2)
                 }),
             ),
             Phase::Polishing => (
-                0xFFFFFF00,
-                [(0.5 + 0.5 * (t * 4.).cos()).powi(2) * 0.7; SATELLITES],
+                theme::SIGNAL_MAGENTA,
+                [0.15 + 0.3 * (0.5 + 0.5 * (t * 2.).sin()); SATELLITES],
             ),
-            _ => (0x8F8F9400, [0.; SATELLITES]),
+            _ => (theme::RING_IDLE, [0.; SATELLITES]),
         };
         let center = METER_BOX / 2.;
         let satellites = (0..SATELLITES).map(move |i| {
@@ -230,6 +235,7 @@ impl Pill {
             let angle = i as f32 * std::f32::consts::TAU / SATELLITES as f32;
             let radius = 7.5 + level * 5.;
             let size = 2.5;
+            let glow = rgba(base_color | (level * 112.) as u32);
             div()
                 .absolute()
                 .left(px(center + angle.cos() * radius - size / 2.))
@@ -237,6 +243,9 @@ impl Pill {
                 .size(px(size))
                 .rounded_full()
                 .bg(rgba(base_color | (0x60 + (level * 159.) as u32)))
+                .shadow(vec![
+                    BoxShadow::new(px(0.), px(0.), glow.into()).blur_radius(px(4.)),
+                ])
         });
         div()
             .relative()
@@ -247,8 +256,10 @@ impl Pill {
     }
 
     /// A single clipped line where recognized words appear left to right and
-    /// scroll left once the line fills. The offset eases toward its target on
-    /// every 30fps repaint, so per-chunk text jumps read as smooth motion.
+    /// scroll left once the line fills. The scroll crawls at a slow constant
+    /// speed (plus a gentle catch-up when far behind): it conveys that words
+    /// are flowing, not real-time position, so freshly recognized text glides
+    /// in from the right instead of snapping into view.
     fn marquee(&mut self, text: &str, width: f32, window: &mut Window) -> AnyElement {
         let total = text.chars().count();
         let shown: String = text
@@ -263,9 +274,13 @@ impl Pill {
             .shape_line(shown.clone().into(), font_size, &[run], None)
             .width;
         let target = (f32::from(measured) - width).max(0.);
-        self.marquee_offset += (target - self.marquee_offset) * 0.18;
-        if (target - self.marquee_offset).abs() < 0.5 {
+        let remaining = target - self.marquee_offset;
+        if remaining <= 0. {
             self.marquee_offset = target;
+        } else {
+            let speed = MARQUEE_SPEED + remaining * MARQUEE_CATCHUP;
+            let dt = BAR_FRAME.as_secs_f32();
+            self.marquee_offset += remaining.min(speed * dt);
         }
         div()
             .relative()
@@ -283,7 +298,7 @@ impl Pill {
                     .flex()
                     .items_center()
                     .text_size(font_size)
-                    .text_color(rgba(0xFFFFFFD9))
+                    .text_color(rgba(theme::TEXT_PRIMARY | 0xD9))
                     .whitespace_nowrap()
                     .child(shown),
             )
@@ -295,7 +310,7 @@ impl Pill {
 fn label(text: String, busy: bool) -> AnyElement {
     let text_el = div()
         .text_sm()
-        .text_color(rgba(0xFFFFFFD9))
+        .text_color(rgba(theme::TEXT_PRIMARY | 0xD9))
         .whitespace_nowrap()
         .overflow_hidden()
         .max_w(px(170.))
@@ -315,9 +330,28 @@ fn label(text: String, busy: bool) -> AnyElement {
     }
 }
 
-fn elapsed_readout(since: std::time::Instant) -> String {
+/// Elapsed time with every glyph in its own fixed-width cell: proportional
+/// digits vary in width, so even a right-aligned plain string shifts as the
+/// digits change. Cells pin each glyph in place.
+fn time_readout(since: std::time::Instant) -> AnyElement {
     let secs = since.elapsed().as_secs();
-    format!("{}:{:02}", secs / 60, secs % 60)
+    let text = format!("{}:{:02}", secs / 60, secs % 60);
+    div()
+        .w(px(34.))
+        .flex_none()
+        .flex()
+        .justify_end()
+        .text_size(px(11.))
+        .text_color(rgba(theme::TEXT_DIM | 0x8C))
+        .children(text.chars().map(|c| {
+            let cell = if c == ':' { 4. } else { 7. };
+            div()
+                .w(px(cell))
+                .flex_none()
+                .text_center()
+                .child(c.to_string())
+        }))
+        .into_any_element()
 }
 
 /// Deliberately not `phase as u64`: these keys are animation element ids and
@@ -349,9 +383,7 @@ impl Render for Pill {
         if display == Phase::Recording && self.recording_since.is_none() {
             self.recording_since = Some(std::time::Instant::now());
         }
-        let elapsed = (display == Phase::Recording)
-            .then(|| self.recording_since.map(elapsed_readout))
-            .flatten();
+        let elapsed = self.recording_since.filter(|_| display == Phase::Recording);
         let time_width = if elapsed.is_some() { 34. } else { 0. };
         let text_width = f64::from(PILL_WIDTH) as f32 - METER_BOX - 3. * 12. - time_width;
         let content = match display {
@@ -376,9 +408,9 @@ impl Render for Pill {
             .px_3()
             .gap_2()
             .rounded_full()
-            .bg(rgba(0x16161AE8))
+            .bg(rgba(theme::SURFACE | 0xE8))
             .border_1()
-            .border_color(rgba(0xFFFFFF14))
+            .border_color(rgba(theme::HAIRLINE | 0x22))
             .child(self.orbital_meter(display, reduce_motion))
             .child(
                 // Cross-fade the content on phase changes and on the empty ->
@@ -393,18 +425,7 @@ impl Render for Pill {
                 ),
             );
         let pill = match elapsed {
-            Some(readout) => pill.child(
-                // Fixed-width, right-aligned box (cadence's player-bar idiom)
-                // so varying digit widths never shift the layout.
-                div()
-                    .w(px(34.))
-                    .flex_none()
-                    .text_right()
-                    .text_size(px(11.))
-                    .text_color(rgba(0xFFFFFF73))
-                    .whitespace_nowrap()
-                    .child(readout),
-            ),
+            Some(since) => pill.child(time_readout(since)),
             None => pill,
         };
 
