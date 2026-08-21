@@ -3,10 +3,9 @@
 //! overlay mechanics (non-activating panel, above-normal level, joins all
 //! Spaces, shows over fullscreen apps).
 //!
-//! Motion follows the platform rules: the pill enters and exits along the same
-//! path (rises in, sinks out, exits softer than enters), the recording dot
-//! breathes only while audio is actually being captured, and phase content
-//! cross-fades. Under Reduce Motion, gpui snaps animations to their end state,
+//! Motion follows the platform rules: the pill rises in; on exit its
+//! contents fade out in place and then the empty chip sinks away along the
+//! entry path. Phase content cross-fades. Under Reduce Motion, gpui snaps animations to their end state,
 //! so the pill appears and disappears instantly; only the repeating breath
 //! needs an explicit gate.
 
@@ -16,7 +15,7 @@ use crate::theme;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, AppContext, Bounds, BoxShadow, Context, Entity,
     IntoElement, ParentElement, Pixels, Render, Styled, Window, WindowBackgroundAppearance,
-    WindowBounds, WindowHandle, WindowKind, WindowOptions, div, ease_in_out, ease_out_quint, point,
+    WindowBounds, WindowHandle, WindowKind, WindowOptions, div, ease_out_quint, point,
     pulsating_between, px, rgba, size,
 };
 use objc2::MainThreadMarker;
@@ -36,8 +35,10 @@ const TOP_PAD: f32 = 0.;
 const BOTTOM_MARGIN: f64 = 15.;
 
 const ENTER: Duration = Duration::from_millis(200);
-/// Exits are softer than enters.
-const EXIT: Duration = Duration::from_millis(300);
+/// The exit is staged: first the pill's contents fade out in place, then the
+/// empty chip sinks away. EXIT is the total; manage() times removal off it.
+const EXIT_CONTENT: Duration = Duration::from_millis(150);
+const EXIT: Duration = Duration::from_millis(400);
 const CONTENT_FADE: Duration = Duration::from_millis(150);
 const DOT_BREATH: Duration = Duration::from_millis(1100);
 /// Aurora glow floor while recording: the wash never goes fully dark, so
@@ -516,25 +517,35 @@ impl Render for Pill {
             },
         };
 
-        let pill = div()
-            .absolute()
-            .left_0()
-            .w(PILL_WIDTH)
-            .h(PILL_HEIGHT)
+        // Staged exit, driven off closing_since by the 30fps repaint loop:
+        // contents fade out in place first, then the empty chip sinks away.
+        // Under Reduce Motion the pill just disappears.
+        let (content_alpha, sink) = if self.closing {
+            if reduce_motion {
+                (0., 1.)
+            } else {
+                let t = self
+                    .closing_since
+                    .map(|since| since.elapsed().as_secs_f32())
+                    .unwrap_or(0.);
+                let content_secs = EXIT_CONTENT.as_secs_f32();
+                let sink_secs = (EXIT - EXIT_CONTENT).as_secs_f32();
+                let sink = ((t - content_secs) / sink_secs).clamp(0., 1.);
+                // Smoothstep so the sink starts and lands gently.
+                let sink = sink * sink * (3. - 2. * sink);
+                (1. - (t / content_secs).clamp(0., 1.), sink)
+            }
+        } else {
+            (1., 0.)
+        };
+
+        let contents = div()
+            .size_full()
             .flex()
             .items_center()
             .px_3()
             .gap_2()
-            .rounded_full()
-            .bg(rgba(theme::SURFACE | 0xE8))
-            .border_1()
-            .border_color(rgba(theme::HAIRLINE | 0x22))
-            .shadow(
-                aurora_bands
-                    .map(|bands| self.aurora_edge(bands, reduce_motion))
-                    .unwrap_or_default(),
-            )
-            .children(aurora_bands.map(|bands| self.aurora_wash(bands, reduce_motion)))
+            .opacity(content_alpha)
             .child(self.orbital_meter(orbit, reduce_motion))
             .child(
                 // Cross-fade the content on phase changes; the changing key
@@ -550,19 +561,32 @@ impl Render for Pill {
                     |el, delta| el.opacity(delta),
                 ),
             );
-        let pill = match elapsed {
-            Some(since) => pill.child(time_readout(since)),
-            None => pill,
+        let contents = match elapsed {
+            Some(since) => contents.child(time_readout(since)),
+            None => contents,
         };
 
-        // Enter rises in; exit sinks out along the same path, softer.
+        let pill = div()
+            .absolute()
+            .left_0()
+            .w(PILL_WIDTH)
+            .h(PILL_HEIGHT)
+            .rounded_full()
+            .bg(rgba(theme::SURFACE | 0xE8))
+            .border_1()
+            .border_color(rgba(theme::HAIRLINE | 0x22))
+            .shadow(
+                aurora_bands
+                    .map(|bands| self.aurora_edge(bands, reduce_motion))
+                    .unwrap_or_default(),
+            )
+            .children(aurora_bands.map(|bands| self.aurora_wash(bands, reduce_motion)))
+            .child(contents);
+
+        // Enter rises in; the staged exit above sinks out along the same path.
         let root = div().size_full().relative();
         if self.closing {
-            root.child(pill.with_animation(
-                "exit",
-                Animation::new(EXIT).with_easing(ease_in_out),
-                move |el, delta| el.opacity(1.0 - delta).top(px(TOP_PAD + TRAVEL * delta)),
-            ))
+            root.child(pill.opacity(1. - sink).top(px(TOP_PAD + TRAVEL * sink)))
         } else {
             root.child(pill.with_animation(
                 "enter",
