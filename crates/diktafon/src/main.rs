@@ -7,14 +7,41 @@ use capture::{Recorder, Session};
 use diktafon_protocol::{socket_path, Msg, SessionConfig};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
 use transport::DaemonClient;
 
-fn vad_model_path() -> PathBuf {
-    diktafon_protocol::models_dir().join("silero_vad_v4.onnx")
+/// Ships inside the binary (1.8MB, mirroring Handy bundling the same file) so
+/// the client needs no model downloads at all.
+const SILERO_VAD: &[u8] = include_bytes!("../resources/silero_vad_v4.onnx");
+
+fn ensure_vad_model() -> Result<PathBuf> {
+    let path = diktafon_protocol::models_dir().join("silero_vad_v4.onnx");
+    materialize_vad_model(&path)?;
+    Ok(path)
+}
+
+fn materialize_vad_model(path: &Path) -> Result<()> {
+    let up_to_date = std::fs::metadata(path).is_ok_and(|m| m.len() == SILERO_VAD.len() as u64);
+    if up_to_date {
+        return Ok(());
+    }
+    let dir = path.parent().context("VAD model path has no parent")?;
+    std::fs::create_dir_all(dir)?;
+    let tmp = path.with_extension("onnx.tmp");
+    std::fs::write(&tmp, SILERO_VAD)?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        // A second client instance may have raced us here; both write
+        // identical bytes, so a completed destination means someone won.
+        let raced_and_won =
+            std::fs::metadata(path).is_ok_and(|m| m.len() == SILERO_VAD.len() as u64);
+        if !raced_and_won {
+            return Err(e).context("installing the VAD model");
+        }
+    }
+    Ok(())
 }
 
 /// The diktafond binary to auto-spawn: `DIKTAFOND_BIN` override, or the one
@@ -45,7 +72,7 @@ fn main() -> Result<()> {
         return paste::insert(&text);
     }
 
-    let recorder = Recorder::new(vad_model_path())?;
+    let recorder = Recorder::new(ensure_vad_model()?)?;
     println!("Mic: {}", recorder.describe());
 
     let manager = GlobalHotKeyManager::new().context("registering global hotkey manager")?;
@@ -118,5 +145,27 @@ fn control_loop(recorder: Recorder, daemon: DaemonClient, events: mpsc::Receiver
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vad_model_materializes_and_repairs() {
+        let dir = std::env::temp_dir().join(format!("dkt-vad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("models/silero_vad_v4.onnx");
+
+        materialize_vad_model(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), SILERO_VAD);
+
+        // A wrong-size file (corruption, older version) is replaced.
+        std::fs::write(&path, b"junk").unwrap();
+        materialize_vad_model(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap().len(), SILERO_VAD.len());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
