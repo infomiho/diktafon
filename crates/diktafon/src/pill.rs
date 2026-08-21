@@ -165,6 +165,8 @@ pub struct Pill {
     recording_since: Option<std::time::Instant>,
     /// Drives the comet orbit while transcribing/polishing.
     opened_at: std::time::Instant,
+    /// DIKTAFON_AURORA=1: voice-driven glow wash prototype while recording.
+    aurora: bool,
 }
 
 impl Pill {
@@ -190,7 +192,57 @@ impl Pill {
             last_active: Phase::Recording,
             recording_since: None,
             opened_at: std::time::Instant::now(),
+            aurora: std::env::var("DIKTAFON_AURORA").is_ok_and(|v| v != "0"),
         }
+    }
+
+    /// Prototype (DIKTAFON_AURORA=1): a voice-driven glow wash behind the
+    /// pill content while recording. Three soft blobs, each fed by one band
+    /// of the spectrum (lows left, highs right), drifting slowly; silence
+    /// means no glow, per the design system's signal rule.
+    fn aurora(&self, display: Phase, reduce_motion: bool) -> Option<AnyElement> {
+        if !self.aurora || display != Phase::Recording {
+            return None;
+        }
+        let t = self.opened_at.elapsed().as_secs_f32();
+        let levels = *self.levels.lock().unwrap();
+        let band = |range: std::ops::Range<usize>| {
+            let len = range.len() as f32;
+            levels[range].iter().sum::<f32>() / len
+        };
+        let blobs = [
+            (36., band(0..5), 0.),
+            (110., band(5..11), 2.1),
+            (184., band(11..16), 4.2),
+        ];
+        let mid = f64::from(PILL_HEIGHT) as f32 / 2.;
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .rounded_full()
+                .overflow_hidden()
+                .children(blobs.into_iter().map(|(x, level, seed)| {
+                    let drift = if reduce_motion {
+                        0.
+                    } else {
+                        (t * 0.4 + seed).sin() * 12.
+                    };
+                    let glow = rgba(theme::SIGNAL_RED | (level * 130.) as u32);
+                    div()
+                        .absolute()
+                        .left(px(x + drift - 3.))
+                        .top(px(mid - 3.))
+                        .size(px(6.))
+                        .rounded_full()
+                        .shadow(vec![
+                            BoxShadow::new(px(0.), px(0.), glow.into())
+                                .blur_radius(px(16.))
+                                .spread_radius(px(8.)),
+                        ])
+                }))
+                .into_any_element(),
+        )
     }
 
     /// The pill's identity element: an orbit of satellites that IS the phase
@@ -347,6 +399,7 @@ impl Render for Pill {
             .bg(rgba(theme::SURFACE | 0xE8))
             .border_1()
             .border_color(rgba(theme::HAIRLINE | 0x22))
+            .children(self.aurora(display, reduce_motion))
             .child(self.orbital_meter(display, reduce_motion))
             .child(
                 // Cross-fade the content on phase changes; the changing key
