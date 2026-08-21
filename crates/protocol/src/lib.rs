@@ -10,6 +10,7 @@
 use anyhow::{bail, Context, Result};
 use bincode::{Decode, Encode};
 use std::io::{Read, Write};
+use std::path::PathBuf;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
@@ -26,8 +27,17 @@ pub const MAX_FRAME_LEN: u32 = 64 * 1024 * 1024;
 /// by [`ClientMsg`]/[`DaemonMsg`] once the client talks to the daemon over a
 /// socket.
 pub enum Msg {
+    Start(SessionConfig),
     Chunk(Vec<f32>),
     Flush,
+    Cancel,
+}
+
+/// Where the daemon listens locally; shared so client and daemon agree without
+/// the client depending on the daemon crate.
+pub fn socket_path() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").expect("HOME not set"))
+        .join("Library/Application Support/diktafon/diktafond.sock")
 }
 
 /// Per-session settings the daemon forwards into the models.
@@ -39,6 +49,15 @@ pub struct SessionConfig {
     pub language: String,
     /// S1-mini control line selecting styling, structure, and context.
     pub control_line: String,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            language: "en".into(),
+            control_line: "[Styling: semi-formal] [Structure: prose] [Context: general]".into(),
+        }
+    }
 }
 
 /// Client → daemon messages.

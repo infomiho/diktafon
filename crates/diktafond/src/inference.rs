@@ -1,14 +1,14 @@
 use anyhow::{anyhow, Context, Result};
-use std::cell::Cell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use transcribe_rs::onnx::cohere::{CohereModel, CohereParams};
 use transcribe_rs::onnx::Quantization;
 
-use diktafon_protocol::{Msg, TARGET_RATE};
+use diktafon_protocol::{DaemonMsg, Msg, SessionConfig, TARGET_RATE};
 
 use crate::llm::Polisher;
 
@@ -32,23 +32,26 @@ fn catch_panic<T>(what: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
 
 /// Worker thread owning the resident ASR and polish models. Chunks stream in
 /// during recording and are transcribed as they arrive; `Flush` ends a session,
-/// triggering one polish pass over the joined parts. This chunks-in/text-out
-/// boundary is the seam where a remote server backend can replace the local
-/// worker later.
+/// triggering one polish pass over the joined parts. The worker reports back as
+/// [`DaemonMsg`] events: a `Partial` per chunk, then `Final` (or `Aborted`
+/// after a `Cancel`).
 pub struct Inference {
     pub chunk_tx: mpsc::Sender<Msg>,
-    final_rx: mpsc::Receiver<String>,
-    /// Replies still owed by sessions whose `finish` timed out. Each `Flush`
-    /// produces exactly one reply in FIFO order, so this many must be discarded
-    /// before the current session's text; otherwise a late reply from a slow
-    /// worker would be pasted into the next session.
-    stale_results: Cell<usize>,
+    /// Wrapped in a Mutex so the daemon's relay thread can receive events while
+    /// another thread owns the `Inference`; there is only ever one consumer at
+    /// a time.
+    events_rx: Mutex<mpsc::Receiver<DaemonMsg>>,
+    /// `Final`s still owed by sessions whose `finish` timed out. Each `Flush`
+    /// produces exactly one `Final` in FIFO order, so this many must be
+    /// discarded before the current session's text; otherwise a late reply from
+    /// a slow worker would be pasted into the next session.
+    stale_finals: AtomicUsize,
 }
 
 impl Inference {
     pub fn spawn(models_dir: &Path) -> Result<Self> {
         let (chunk_tx, chunk_rx) = mpsc::channel::<Msg>();
-        let (final_tx, final_rx) = mpsc::channel::<String>();
+        let (events_tx, events_rx) = mpsc::channel::<DaemonMsg>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<()>>();
         let models_dir = models_dir.to_path_buf();
 
@@ -71,9 +74,14 @@ impl Inference {
                 }
             };
 
+            let mut config = SessionConfig::default();
             let mut parts: Vec<String> = Vec::new();
             for msg in chunk_rx {
                 match msg {
+                    Msg::Start(new_config) => {
+                        parts.clear();
+                        config = new_config;
+                    }
                     Msg::Chunk(samples) => {
                         let secs = samples.len() as f32 / TARGET_RATE as f32;
                         let start = Instant::now();
@@ -81,7 +89,7 @@ impl Inference {
                             asr.transcribe_with(
                                 &samples,
                                 &CohereParams {
-                                    language: Some("en".to_string()),
+                                    language: Some(config.language.clone()),
                                     ..Default::default()
                                 },
                             )
@@ -90,6 +98,7 @@ impl Inference {
                         match result {
                             Ok(r) => {
                                 println!("  chunk {:>4.1}s, ASR {:.2?}: {}", secs, start.elapsed(), r.text);
+                                let _ = events_tx.send(DaemonMsg::Partial(r.text.clone()));
                                 parts.push(r.text);
                             }
                             Err(e) => eprintln!("ASR error: {e}"),
@@ -101,39 +110,54 @@ impl Inference {
                             String::new()
                         } else {
                             let start = Instant::now();
-                            let polished = catch_panic("polish", || polisher.polish(&raw))
-                                .unwrap_or_else(|e| {
-                                    eprintln!("polish error, using raw text: {e}");
-                                    raw
-                                });
+                            let polished =
+                                catch_panic("polish", || polisher.polish(&raw, &config.control_line))
+                                    .unwrap_or_else(|e| {
+                                        eprintln!("polish error, using raw text: {e}");
+                                        raw
+                                    });
                             println!("  polish {:.2?}", start.elapsed());
                             polished
                         };
-                        let _ = final_tx.send(text);
+                        let _ = events_tx.send(DaemonMsg::Final(text));
+                    }
+                    Msg::Cancel => {
+                        parts.clear();
+                        config = SessionConfig::default();
+                        let _ = events_tx.send(DaemonMsg::Aborted);
                     }
                 }
             }
         });
 
         ready_rx.recv().context("inference thread died during load")??;
-        Ok(Self { chunk_tx, final_rx, stale_results: Cell::new(0) })
+        Ok(Self { chunk_tx, events_rx: Mutex::new(events_rx), stale_finals: AtomicUsize::new(0) })
+    }
+
+    /// Receive the next worker event, for callers that relay `Partial`s as they
+    /// arrive. Must not be mixed with `finish` on the same instance.
+    pub fn recv_event(&self, timeout: Duration) -> Result<DaemonMsg, mpsc::RecvTimeoutError> {
+        self.events_rx.lock().expect("event receiver poisoned").recv_timeout(timeout)
     }
 
     /// Wait for the session flushed by `Session::stop` to finish transcribing
-    /// and polishing.
+    /// and polishing, skipping intermediate events.
     pub fn finish(&self) -> Result<String> {
         loop {
-            let text = match self.final_rx.recv_timeout(FINISH_TIMEOUT) {
-                Ok(text) => text,
+            let event = match self.recv_event(FINISH_TIMEOUT) {
+                Ok(event) => event,
                 Err(e) => {
-                    self.stale_results.set(self.stale_results.get() + 1);
+                    self.stale_finals.fetch_add(1, Ordering::Relaxed);
                     return Err(e).context("inference worker did not respond, it may have crashed");
                 }
             };
-            if self.stale_results.get() == 0 {
+            let DaemonMsg::Final(text) = event else {
+                continue;
+            };
+            if self.stale_finals.load(Ordering::Relaxed) == 0 {
                 return Ok(text);
             }
-            self.stale_results.set(self.stale_results.get() - 1);
+            self.stale_finals.fetch_sub(1, Ordering::Relaxed);
             eprintln!("discarding late result from a timed-out session");
         }
     }

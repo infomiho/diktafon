@@ -8,12 +8,12 @@ use llama_cpp_2::sampling::LlamaSampler;
 use std::num::NonZeroU32;
 use std::path::Path;
 
-// S1-mini requires this exact system prompt, control line, and a pre-filled
-// empty <think> block; deviations degrade or blank its output.
+// S1-mini requires this exact system prompt, a control line (see
+// SessionConfig), and a pre-filled empty <think> block; deviations degrade or
+// blank its output.
 const S1_SYSTEM_PROMPT: &str = "You are a text normalizer for speech-to-text transcripts. The \
 input begins with a control line specifying the styling, structure, and context settings; clean \
 the transcript to match those settings and output only the cleaned text.";
-const S1_CONTROL_LINE: &str = "[Styling: semi-formal] [Structure: prose] [Context: general]";
 
 const N_CTX: u32 = 4096;
 
@@ -31,10 +31,10 @@ impl Polisher {
         Ok(Self { backend, model })
     }
 
-    pub fn polish(&self, transcript: &str) -> Result<String> {
+    pub fn polish(&self, transcript: &str, control_line: &str) -> Result<String> {
         let prompt = format!(
             "<|im_start|>system\n{S1_SYSTEM_PROMPT}<|im_end|>\n\
-             <|im_start|>user\n{S1_CONTROL_LINE}\n{transcript}<|im_end|>\n\
+             <|im_start|>user\n{control_line}\n{transcript}<|im_end|>\n\
              <|im_start|>assistant\n<think>\n\n</think>\n\n"
         );
         let tokens = self.model.str_to_token(&prompt, AddBos::Never)?;

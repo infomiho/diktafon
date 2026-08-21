@@ -1,3 +1,4 @@
+pub mod daemon;
 mod inference;
 mod llm;
 

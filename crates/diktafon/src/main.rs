@@ -3,7 +3,7 @@ mod paste;
 
 use anyhow::{Context, Result};
 use capture::{Recorder, Session};
-use diktafon_protocol::Msg;
+use diktafon_protocol::{Msg, SessionConfig};
 use diktafond::Inference;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
@@ -65,6 +65,7 @@ fn control_loop(recorder: Recorder, inference: Inference, events: mpsc::Receiver
         match state {
             HotKeyState::Pressed => {
                 if session.is_none() {
+                    let _ = inference.chunk_tx.send(Msg::Start(SessionConfig::default()));
                     match recorder.start(inference.chunk_tx.clone()) {
                         Ok(s) => {
                             println!("recording...");
