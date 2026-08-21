@@ -3,6 +3,7 @@
 //! overlay mechanics (non-activating panel, above-normal level, joins all
 //! Spaces, shows over fullscreen apps).
 
+use crate::capture::LevelBars;
 use crate::dictation::{Dictation, Phase};
 use gpui::{
     div, point, px, rgb, rgba, size, App, AppContext, Bounds, Context, Entity, IntoElement,
@@ -18,7 +19,7 @@ const BOTTOM_MARGIN: f64 = 15.;
 
 /// Open the pill while a session is active, close it when the pipeline goes
 /// idle.
-pub fn manage(cx: &mut App, dictation: Entity<Dictation>) {
+pub fn manage(cx: &mut App, dictation: Entity<Dictation>, levels: LevelBars) {
     let mut open: Option<WindowHandle<Pill>> = None;
     cx.observe(&dictation, move |dictation, cx| {
         let idle = dictation.read(cx).phase == Phase::Idle;
@@ -27,14 +28,18 @@ pub fn manage(cx: &mut App, dictation: Entity<Dictation>) {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
                 open = None;
             }
-            (None, false) => open = open_pill(&dictation, cx),
+            (None, false) => open = open_pill(&dictation, levels.clone(), cx),
             _ => {}
         }
     })
     .detach();
 }
 
-fn open_pill(dictation: &Entity<Dictation>, cx: &mut App) -> Option<WindowHandle<Pill>> {
+fn open_pill(
+    dictation: &Entity<Dictation>,
+    levels: LevelBars,
+    cx: &mut App,
+) -> Option<WindowHandle<Pill>> {
     let bounds = pill_bounds()?;
     let dictation = dictation.clone();
     cx.open_window(
@@ -50,7 +55,7 @@ fn open_pill(dictation: &Entity<Dictation>, cx: &mut App) -> Option<WindowHandle
             window_background: WindowBackgroundAppearance::Transparent,
             ..Default::default()
         },
-        |_, cx| cx.new(|cx| Pill::new(dictation, cx)),
+        |_, cx| cx.new(|cx| Pill::new(dictation, levels, cx)),
     )
     .ok()
 }
@@ -86,14 +91,52 @@ fn pill_bounds() -> Option<Bounds<Pixels>> {
     })
 }
 
+/// Repaint cadence for the live level bars; matches the meter's update rate.
+const BAR_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
+
 pub struct Pill {
     dictation: Entity<Dictation>,
+    levels: LevelBars,
 }
 
 impl Pill {
-    fn new(dictation: Entity<Dictation>, cx: &mut Context<Self>) -> Self {
+    fn new(dictation: Entity<Dictation>, levels: LevelBars, cx: &mut Context<Self>) -> Self {
         cx.observe(&dictation, |_, _, cx| cx.notify()).detach();
-        Self { dictation }
+        // Drive repaints while the pill is open so the bars animate; ends when
+        // the window (and with it the entity) is removed.
+        cx.spawn(async move |pill, cx| {
+            loop {
+                cx.background_executor().timer(BAR_FRAME).await;
+                // Repaint only while the bars are showing; phase changes
+                // repaint via the dictation observer.
+                let alive = pill.update(cx, |pill, cx| {
+                    if pill.dictation.read(cx).phase == Phase::Recording {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
+        Self { dictation, levels }
+    }
+
+    fn bars(&self) -> impl IntoElement {
+        let levels = *self.levels.lock().unwrap();
+        div()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .h(px(30.))
+            .children(levels.into_iter().map(|level| {
+                div()
+                    .w(px(5.))
+                    .h(px(4. + level * 26.))
+                    .rounded_full()
+                    .bg(rgba(0xFFFFFFCC))
+            }))
     }
 }
 
@@ -106,7 +149,7 @@ impl Render for Pill {
             Phase::Polishing => (rgb(0x46A758), "polishing"),
             Phase::Idle => (rgb(0x8F8F94), ""),
         };
-        div()
+        let pill = div()
             .size_full()
             .flex()
             .items_center()
@@ -116,12 +159,11 @@ impl Render for Pill {
             .bg(rgba(0x16161AE8))
             .border_1()
             .border_color(rgba(0xFFFFFF14))
-            .child(div().size_2().rounded_full().bg(dot_color))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(rgba(0xFFFFFFD9))
-                    .child(label),
-            )
+            .child(div().size_2().rounded_full().bg(dot_color));
+        if phase == Phase::Recording {
+            pill.child(self.bars())
+        } else {
+            pill.child(div().text_sm().text_color(rgba(0xFFFFFFD9)).child(label))
+        }
     }
 }

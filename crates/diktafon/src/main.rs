@@ -86,7 +86,8 @@ fn main() -> Result<()> {
         return paste::insert(&text);
     }
 
-    let recorder = Recorder::new(ensure_vad_model()?)?;
+    let levels: capture::LevelBars = Default::default();
+    let recorder = Recorder::new(ensure_vad_model()?, levels.clone())?;
     println!("Mic: {}", recorder.describe());
 
     let manager = GlobalHotKeyManager::new().context("registering global hotkey manager")?;
@@ -131,7 +132,7 @@ fn main() -> Result<()> {
                 println!("[phase] {:?}", dictation.read(cx).phase);
             })
             .detach();
-            pill::manage(cx, dictation.clone());
+            pill::manage(cx, dictation.clone(), levels);
             cx.set_global(AppServices { dictation });
             println!("Ready. Hold Option+Space to dictate, release to paste.");
         });

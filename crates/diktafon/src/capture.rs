@@ -9,7 +9,8 @@ use transcribe_rs::vad::{SileroVad, SmoothedVad, Vad};
 
 use diktafon_protocol::{Msg, TARGET_RATE};
 
-const MONITOR_TICK: Duration = Duration::from_millis(100);
+/// Also the level-meter frame interval, so ~30 FPS.
+const MONITOR_TICK: Duration = Duration::from_millis(33);
 
 // Handy's tuned Silero setup: 30ms frames, onset after 2 speech frames, 450ms
 // of pre-onset audio kept, 450ms hangover before a speech segment is declared
@@ -23,12 +24,18 @@ const HANGOVER_FRAMES: usize = 15;
 /// instead of paying a per-chunk ASR roundtrip.
 const MIN_CHUNK_SAMPLES: usize = TARGET_RATE as usize * 3 / 2;
 
+pub const LEVEL_BAR_COUNT: usize = 16;
+/// Live level-meter bars in 0..=1, written by the recording monitor at each
+/// tick and read by the pill's render loop.
+pub type LevelBars = Arc<Mutex<[f32; LEVEL_BAR_COUNT]>>;
+
 pub struct Recorder {
     device: cpal::Device,
     config: cpal::SupportedStreamConfig,
     channels: usize,
     rate: u32,
     vad_model: PathBuf,
+    levels: LevelBars,
 }
 
 pub struct Session {
@@ -38,14 +45,14 @@ pub struct Session {
 }
 
 impl Recorder {
-    pub fn new(vad_model: PathBuf) -> Result<Self> {
+    pub fn new(vad_model: PathBuf, levels: LevelBars) -> Result<Self> {
         let device = cpal::default_host()
             .default_input_device()
             .context("no input device")?;
         let config = device.default_input_config()?;
         let channels = config.channels() as usize;
         let rate = config.sample_rate().0;
-        Ok(Self { device, config, channels, rate, vad_model })
+        Ok(Self { device, config, channels, rate, vad_model, levels })
     }
 
     pub fn describe(&self) -> String {
@@ -70,15 +77,21 @@ impl Recorder {
         stream.play()?;
 
         let stop = Arc::new(AtomicBool::new(false));
+        *self.levels.lock().unwrap() = [0.0; LEVEL_BAR_COUNT];
         let monitor = thread::spawn({
             let buffer = buffer.clone();
             let stop = stop.clone();
+            let levels = self.levels.clone();
             move || {
+                let mut meter = LevelMeter::new();
                 let mut frame_tail: Vec<f32> = Vec::new();
                 loop {
                     thread::sleep(MONITOR_TICK);
                     let done = stop.load(Ordering::Relaxed);
-                    frame_tail.extend(resampler.drain(&buffer.lock().unwrap()));
+                    let fresh = resampler.drain(&buffer.lock().unwrap());
+                    meter.push(&fresh);
+                    *levels.lock().unwrap() = meter.compute();
+                    frame_tail.extend(fresh);
                     let frame_size = chunker.frame_size();
                     let mut frames = frame_tail.chunks_exact(frame_size);
                     for frame in &mut frames {
@@ -92,6 +105,7 @@ impl Recorder {
                             let _ = chunk_tx.send(Msg::Chunk(chunk));
                         }
                         let _ = chunk_tx.send(Msg::Flush);
+                        *levels.lock().unwrap() = [0.0; LEVEL_BAR_COUNT];
                         break;
                     }
                 }
@@ -212,6 +226,72 @@ impl VadChunker {
     }
 }
 
+/// Handy's mic-calibrated level meter: an FFT over the most recent ~32ms of
+/// 16kHz audio, 16 log-spaced buckets across 400-4000Hz, each mapped from a
+/// -68..-30dB range with gain and a softening power curve.
+struct LevelMeter {
+    fft: Arc<dyn rustfft::Fft<f32>>,
+    hann: Vec<f32>,
+    recent: std::collections::VecDeque<f32>,
+}
+
+const FFT_WINDOW: usize = 512;
+const LEVEL_MIN_DB: f32 = -68.0;
+const LEVEL_MAX_DB: f32 = -30.0;
+const LEVEL_GAIN: f32 = 1.3;
+const LEVEL_POWER: f32 = 0.7;
+const LEVEL_FREQ_MIN: f32 = 400.0;
+const LEVEL_FREQ_MAX: f32 = 4000.0;
+
+impl LevelMeter {
+    fn new() -> Self {
+        let fft = rustfft::FftPlanner::new().plan_fft_forward(FFT_WINDOW);
+        let hann = (0..FFT_WINDOW)
+            .map(|i| (std::f32::consts::PI * i as f32 / FFT_WINDOW as f32).sin().powi(2))
+            .collect();
+        Self { fft, hann, recent: std::collections::VecDeque::with_capacity(FFT_WINDOW) }
+    }
+
+    fn push(&mut self, samples: &[f32]) {
+        for &sample in samples {
+            if self.recent.len() == FFT_WINDOW {
+                self.recent.pop_front();
+            }
+            self.recent.push_back(sample);
+        }
+    }
+
+    fn compute(&self) -> [f32; LEVEL_BAR_COUNT] {
+        let mut bars = [0.0; LEVEL_BAR_COUNT];
+        if self.recent.len() < FFT_WINDOW {
+            return bars;
+        }
+        let mut spectrum: Vec<rustfft::num_complex::Complex<f32>> = self
+            .recent
+            .iter()
+            .zip(&self.hann)
+            .map(|(sample, window)| rustfft::num_complex::Complex::new(sample * window, 0.0))
+            .collect();
+        self.fft.process(&mut spectrum);
+
+        let bin_hz = TARGET_RATE as f32 / FFT_WINDOW as f32;
+        let span_ratio = LEVEL_FREQ_MAX / LEVEL_FREQ_MIN;
+        for (i, bar) in bars.iter_mut().enumerate() {
+            let lo = LEVEL_FREQ_MIN * span_ratio.powf(i as f32 / LEVEL_BAR_COUNT as f32);
+            let hi = LEVEL_FREQ_MIN * span_ratio.powf((i + 1) as f32 / LEVEL_BAR_COUNT as f32);
+            let lo_bin = (lo / bin_hz) as usize;
+            let hi_bin = ((hi / bin_hz) as usize).clamp(lo_bin + 1, FFT_WINDOW / 2);
+            let mean = spectrum[lo_bin..hi_bin].iter().map(|c| c.norm()).sum::<f32>()
+                / (hi_bin - lo_bin) as f32
+                / (FFT_WINDOW as f32 / 2.0);
+            let db = 20.0 * mean.max(1e-9).log10();
+            let norm = ((db - LEVEL_MIN_DB) / (LEVEL_MAX_DB - LEVEL_MIN_DB)).clamp(0.0, 1.0);
+            *bar = (norm * LEVEL_GAIN).min(1.0).powf(LEVEL_POWER);
+        }
+        bars
+    }
+}
+
 /// Incremental linear resampler over a growing source buffer; output position
 /// is tracked globally so successive `drain` calls stay continuous.
 struct StreamResampler {
@@ -321,6 +401,25 @@ mod tests {
         let mut chunker = test_chunker();
         assert!(feed(&mut chunker, &silence(3.0)).is_empty());
         assert!(chunker.finish(&[]).is_none());
+    }
+
+    #[test]
+    fn level_meter_tracks_a_tone_and_silence() {
+        let mut meter = LevelMeter::new();
+        let tone: Vec<f32> = (0..FFT_WINDOW)
+            .map(|i| (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / TARGET_RATE as f32).sin() * 0.5)
+            .collect();
+        meter.push(&tone);
+        let bars = meter.compute();
+        let loudest =
+            bars.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i).unwrap();
+        // 1 kHz lands in log bucket 6 of 400..4000 Hz across 16 buckets.
+        assert!((5..=7).contains(&loudest), "loudest bucket {loudest}: {bars:?}");
+        assert!(bars[loudest] > 0.5, "{bars:?}");
+
+        let mut silent = LevelMeter::new();
+        silent.push(&vec![0.0; FFT_WINDOW]);
+        assert_eq!(silent.compute(), [0.0; LEVEL_BAR_COUNT]);
     }
 
     #[test]
