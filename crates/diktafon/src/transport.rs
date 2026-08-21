@@ -459,6 +459,18 @@ impl Transport {
     /// progress frame, so a multi-gigabyte download never trips it while it is
     /// moving.
     fn await_ready(&self, stream: &UnixStream) -> Result<()> {
+        let result = self.await_ready_frames(stream);
+        // Also clear the UI's download state on failure; otherwise a daemon
+        // dying mid-download leaves the pill claiming that download forever.
+        if result.is_err()
+            && let Some(tx) = &self.ledger.phase_tx
+        {
+            let _ = tx.unbounded_send(PhaseEvent::DownloadFinished);
+        }
+        result
+    }
+
+    fn await_ready_frames(&self, stream: &UnixStream) -> Result<()> {
         stream.set_read_timeout(Some(READY_FRAME_TIMEOUT))?;
         let mut last_print = Instant::now() - READY_FRAME_TIMEOUT;
         loop {
@@ -476,7 +488,7 @@ impl Transport {
                     total_bytes,
                 }) => {
                     if let Some(tx) = &self.ledger.phase_tx {
-                        let percent = (downloaded_bytes * 100 / total_bytes.max(1)) as u8;
+                        let percent = (downloaded_bytes * 100 / total_bytes.max(1)).min(100) as u8;
                         let _ = tx.unbounded_send(PhaseEvent::DownloadProgress {
                             model: model.clone(),
                             percent,

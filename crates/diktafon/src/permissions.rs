@@ -38,13 +38,14 @@ fn prewarm_microphone() {
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
-    fn AXIsProcessTrusted() -> bool;
+    // Returns a MacTypes Boolean (unsigned char), so u8 rather than bool.
+    fn AXIsProcessTrusted() -> u8;
 }
 
 /// The paste keystroke needs Accessibility; surface that at launch instead of
 /// letting the first paste silently do nothing.
 fn check_accessibility() {
-    if unsafe { AXIsProcessTrusted() } {
+    if unsafe { AXIsProcessTrusted() } != 0 {
         return;
     }
     eprintln!(
