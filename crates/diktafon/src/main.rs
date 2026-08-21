@@ -357,30 +357,31 @@ fn control_loop(
                     let stopped_at = Instant::now();
                     s.stop();
                     let _ = phases.unbounded_send(PhaseEvent::RecordingStopped);
-                    let error = match daemon.finish() {
+                    // `cancelled` also covers "nothing to paste": the pill
+                    // plays its quiet ending, keeping the success bloom to
+                    // mean words actually landed.
+                    let (error, cancelled) = match daemon.finish() {
                         Ok(text) if text.is_empty() => {
                             println!("(no speech)");
-                            None
+                            (None, true)
                         }
                         Ok(text) => {
                             println!(">>> {text}");
                             let keycode = v_keycode.load(Ordering::Relaxed) as u16;
-                            if let Err(e) = paste::insert(&text, keycode) {
+                            let error = paste::insert(&text, keycode).err().map(|e| {
                                 eprintln!("paste failed (Accessibility permission?): {e}");
-                            }
+                                format!("paste failed (Accessibility permission?): {e:#}")
+                            });
                             println!("stop-to-paste: {:.2?}", stopped_at.elapsed());
-                            None
+                            (error, false)
                         }
                         Err(e) => {
                             play(sounds::Cue::Error);
                             eprintln!("inference error: {e}");
-                            Some(format!("{e:#}"))
+                            (Some(format!("{e:#}")), false)
                         }
                     };
-                    let _ = phases.unbounded_send(PhaseEvent::SessionEnded {
-                        error,
-                        cancelled: false,
-                    });
+                    let _ = phases.unbounded_send(PhaseEvent::SessionEnded { error, cancelled });
                 }
             }
         }

@@ -52,6 +52,9 @@ const BLOOM: Duration = Duration::from_millis(350);
 /// and then close it.
 pub fn manage(cx: &mut App, dictation: Entity<Dictation>, levels: LevelBars) {
     let mut open: Option<WindowHandle<Pill>> = None;
+    // A pill lingering through its error hold; a new session would otherwise
+    // open a second pill at the same spot on top of it.
+    let held: std::rc::Rc<std::cell::Cell<Option<WindowHandle<Pill>>>> = Default::default();
     cx.observe(&dictation, move |dictation, cx| {
         let idle = dictation.read(cx).phase == Phase::Idle;
         match (&open, idle) {
@@ -61,12 +64,21 @@ pub fn manage(cx: &mut App, dictation: Entity<Dictation>, levels: LevelBars) {
                 // else fades right away.
                 let failed = matches!(dictation.read(cx).outcome, Some(Outcome::Failed(_)));
                 let hold = if failed { ERROR_HOLD } else { Duration::ZERO };
+                if failed {
+                    held.set(Some(handle));
+                }
                 // A session starting during the fade opens a fresh pill; the
                 // fading one is gone within EXIT, so the overlap is brief.
                 open = None;
+                let held = held.clone();
                 cx.spawn(async move |cx| {
                     cx.background_executor().timer(hold).await;
                     cx.update(|cx| {
+                        // A new session may have superseded (and removed) this
+                        // pill during the hold.
+                        if held.get() == Some(handle) {
+                            held.set(None);
+                        }
                         let _ = handle.update(cx, |pill, _, cx| {
                             pill.closing = true;
                             pill.closing_since = Some(std::time::Instant::now());
@@ -82,7 +94,12 @@ pub fn manage(cx: &mut App, dictation: Entity<Dictation>, levels: LevelBars) {
                 })
                 .detach();
             }
-            (None, false) => open = open_pill(&dictation, levels.clone(), cx),
+            (None, false) => {
+                if let Some(superseded) = held.take() {
+                    let _ = superseded.update(cx, |_, window, _| window.remove_window());
+                }
+                open = open_pill(&dictation, levels.clone(), cx);
+            }
             _ => {}
         }
     })
@@ -482,13 +499,10 @@ impl Render for Pill {
             Some(message) => label(message.clone(), false),
             // A first-run model download outranks the session content: the
             // session is stalled on it and would otherwise look like a hang.
-            None if download.is_some() => label(
-                format!(
-                    "Downloading models {}%",
-                    download.as_ref().map(|d| d.percent).unwrap_or(0)
-                ),
-                !reduce_motion,
-            ),
+            None if download.is_some() => {
+                let percent = download.as_ref().expect("guarded above").percent;
+                label(format!("Downloading models {percent}%"), !reduce_motion)
+            }
             None => match display {
                 // The orbit carries the liveness while recording; the label
                 // just states what the pill is doing.
