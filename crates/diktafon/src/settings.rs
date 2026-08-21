@@ -16,9 +16,10 @@ use gpui_component::input::{Input, InputState};
 use gpui_component::label::Label;
 use gpui_component::searchable_list::SearchableVec;
 use gpui_component::select::{Select, SelectState};
-use gpui_component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
 use gpui_component::switch::Switch;
-use gpui_component::{ActiveTheme, IconName, IndexPath, Root, Sizable, StyledExt, h_flex, v_flex};
+use gpui_component::{
+    ActiveTheme, Icon, IconName, IndexPath, Root, Sizable, StyledExt, h_flex, v_flex,
+};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -307,6 +308,37 @@ impl SettingsWindow {
         .detach();
     }
 
+    /// Hand-rolled nav row on the shared control height: the kit's
+    /// SidebarMenuItem hardcodes a 28px compact height that would sit
+    /// undersized next to the 40px controls.
+    fn nav_item(&self, entry: Section, cx: &mut Context<Self>) -> impl IntoElement {
+        let active = self.section == entry;
+        let theme = cx.theme();
+        h_flex()
+            .id(entry.title())
+            .h(CONTROL_HEIGHT)
+            .px_3()
+            .gap_3()
+            .rounded_lg()
+            .cursor_pointer()
+            .text_color(if active {
+                theme.sidebar_accent_foreground
+            } else {
+                theme.sidebar_foreground
+            })
+            .when(active, |el| el.bg(theme.sidebar_accent))
+            .when(!active, {
+                let hover_bg = theme.sidebar_accent.opacity(0.5);
+                move |el| el.hover(move |el| el.bg(hover_bg))
+            })
+            .on_click(cx.listener(move |view, _, _, cx| {
+                view.section = entry;
+                cx.notify();
+            }))
+            .child(Icon::new(entry.icon()).small())
+            .child(entry.title())
+    }
+
     /// A titled row with a muted description on the left and a control on
     /// the right; the layout for switches and static values.
     fn control_row(
@@ -394,20 +426,24 @@ impl Render for SettingsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let saved = self.saved_at.is_some_and(|at| at.elapsed() < SAVED_FLASH);
         let section = self.section;
-        let sidebar = Sidebar::new("settings-sidebar")
-            .w(px(184.))
-            // First nav item aligns with the pane's 32px top padding;
-            // item height and side insets are the kit's own.
+        let theme = cx.theme();
+        let sidebar = v_flex()
+            .w(px(200.))
+            .h_full()
+            .flex_shrink_0()
+            .bg(theme.sidebar)
+            .border_r_1()
+            .border_color(theme.sidebar_border)
             .pt_8()
-            .child(SidebarMenu::new().children(Section::ALL.map(|entry| {
-                SidebarMenuItem::new(entry.title())
-                    .icon(entry.icon())
-                    .active(section == entry)
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        view.section = entry;
-                        cx.notify();
-                    }))
-            })));
+            .px_3()
+            .gap_1p5()
+            .children({
+                let mut items = Vec::new();
+                for entry in Section::ALL {
+                    items.push(self.nav_item(entry, cx).into_any_element());
+                }
+                items
+            });
 
         let pane: gpui::AnyElement = match section {
             Section::General => self.general_pane(cx).into_any_element(),
