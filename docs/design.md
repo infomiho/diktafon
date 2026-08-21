@@ -51,8 +51,6 @@ Colors are `0xRRGGBB`; alpha is chosen at the call site. Defined in
 - Ambient motion (processing states) is slow and periodic: a soft highlight
   circling at ~0.25 rev/s (transcribing), a radius breath on a ~3s cycle
   (polishing). Nothing strobes; per-frame change stays small.
-- The live-transcript marquee crawls at a constant slow speed; it conveys
-  that things are happening, not real-time position.
 - Enter rises in (200ms), exit sinks out along the same path, softer (300ms).
 - Under Reduce Motion, ambient animation freezes to a static state; the pill
   snaps in and out.
