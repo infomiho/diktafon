@@ -394,18 +394,20 @@ impl Render for SettingsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let saved = self.saved_at.is_some_and(|at| at.elapsed() < SAVED_FLASH);
         let section = self.section;
-        let sidebar =
-            Sidebar::new("settings-sidebar")
-                .w(px(184.))
-                .child(SidebarMenu::new().children(Section::ALL.map(|entry| {
-                    SidebarMenuItem::new(entry.title())
-                        .icon(entry.icon())
-                        .active(section == entry)
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.section = entry;
-                            cx.notify();
-                        }))
-                })));
+        let sidebar = Sidebar::new("settings-sidebar")
+            .w(px(184.))
+            // First nav item aligns with the pane's 32px top padding;
+            // item height and side insets are the kit's own.
+            .pt_8()
+            .child(SidebarMenu::new().children(Section::ALL.map(|entry| {
+                SidebarMenuItem::new(entry.title())
+                    .icon(entry.icon())
+                    .active(section == entry)
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.section = entry;
+                        cx.notify();
+                    }))
+            })));
 
         let pane: gpui::AnyElement = match section {
             Section::General => self.general_pane(cx).into_any_element(),
