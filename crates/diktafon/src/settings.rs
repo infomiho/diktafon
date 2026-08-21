@@ -1,31 +1,110 @@
-//! Settings window, opened from the menu bar: edit the S1 control line and
-//! ASR language (persisted to config.json and applied to the next session),
-//! see the hotkey and daemon status. Built from gpui-component's stock
-//! widgets so it follows the system look in light and dark.
+//! Settings window, opened from the menu bar: a sidebar of sections
+//! (General / Dictation / Advanced) with a titled content pane, built from
+//! gpui-component widgets. Edits persist to config.json; the prompt and
+//! language apply to the next dictation, the idle-unload time when the
+//! daemon restarts.
 
 use crate::config::SessionSettings;
-use crate::statusbar;
+use crate::{autostart, statusbar};
 use gpui::{
     App, AppContext, Bounds, Context, Entity, ParentElement, Render, SharedString, TitlebarOptions,
-    Window, WindowBounds, WindowHandle, WindowOptions, prelude::*, px, size,
+    Window, WindowBounds, WindowHandle, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::form::{field, v_form};
-use gpui_component::group_box::GroupBox;
 use gpui_component::input::{Input, InputState};
 use gpui_component::label::Label;
-use gpui_component::{ActiveTheme, Root, h_flex, v_flex};
+use gpui_component::searchable_list::SearchableVec;
+use gpui_component::select::{Select, SelectState};
+use gpui_component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
+use gpui_component::switch::Switch;
+use gpui_component::{ActiveTheme, IconName, IndexPath, Root, StyledExt, h_flex, v_flex};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(520.), px(420.));
+const WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(680.), px(440.));
 /// How long the "Saved" confirmation stays visible.
 const SAVED_FLASH: Duration = Duration::from_secs(2);
 
+/// ISO 639-1 codes the language dropdown offers; a configured code outside
+/// this list is appended so it stays selectable.
+const LANGUAGES: &[(&str, &str)] = &[
+    ("en", "English"),
+    ("hr", "Croatian"),
+    ("de", "German"),
+    ("fr", "French"),
+    ("es", "Spanish"),
+    ("it", "Italian"),
+    ("pt", "Portuguese"),
+    ("nl", "Dutch"),
+    ("pl", "Polish"),
+    ("cs", "Czech"),
+    ("sv", "Swedish"),
+    ("da", "Danish"),
+    ("nb", "Norwegian"),
+    ("fi", "Finnish"),
+    ("hu", "Hungarian"),
+    ("ro", "Romanian"),
+    ("tr", "Turkish"),
+    ("uk", "Ukrainian"),
+    ("ru", "Russian"),
+    ("ja", "Japanese"),
+    ("ko", "Korean"),
+    ("zh", "Chinese"),
+];
+
+const IDLE_OPTIONS: &[(u64, &str)] = &[
+    (60, "After 1 minute"),
+    (300, "After 5 minutes"),
+    (900, "After 15 minutes"),
+    (3600, "After 1 hour"),
+];
+
+#[derive(Clone, Copy, PartialEq)]
+enum Section {
+    General,
+    Dictation,
+    Advanced,
+}
+
+impl Section {
+    const ALL: [Section; 3] = [Section::General, Section::Dictation, Section::Advanced];
+
+    fn title(self) -> &'static str {
+        match self {
+            Section::General => "General",
+            Section::Dictation => "Dictation",
+            Section::Advanced => "Advanced",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Section::General => "How diktafon starts and how you talk to it.",
+            Section::Dictation => "What happens to your words after you stop speaking.",
+            Section::Advanced => "Model residency and daemon state.",
+        }
+    }
+
+    fn icon(self) -> IconName {
+        match self {
+            Section::General => IconName::Settings,
+            Section::Dictation => IconName::ALargeSmall,
+            Section::Advanced => IconName::Cpu,
+        }
+    }
+}
+
 pub struct SettingsWindow {
     settings: Arc<Mutex<SessionSettings>>,
+    section: Section,
     control_input: Entity<InputState>,
-    language_input: Entity<InputState>,
+    language_select: Entity<SelectState<SearchableVec<SharedString>>>,
+    /// Codes parallel to the dropdown items.
+    language_codes: Vec<String>,
+    idle_select: Entity<SelectState<SearchableVec<SharedString>>>,
+    /// Loaded asynchronously: the SMAppService query is a blocking XPC call.
+    autostart: bool,
     /// Cached at open: reading it does file IO and must not run per render.
     daemon_summary: SharedString,
     saved_at: Option<Instant>,
@@ -75,50 +154,109 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> Self {
         let current = settings.lock().unwrap().clone();
+
         let control_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("[Styling: ...] [Structure: ...] [Context: ...]")
                 .default_value(current.control_line.clone())
         });
-        let language_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("en")
-                .default_value(current.language.clone())
+
+        let mut language_codes: Vec<String> =
+            LANGUAGES.iter().map(|(c, _)| c.to_string()).collect();
+        let mut language_items: Vec<SharedString> = LANGUAGES
+            .iter()
+            .map(|(code, name)| SharedString::from(format!("{name} ({code})")))
+            .collect();
+        let language_index = match language_codes.iter().position(|c| *c == current.language) {
+            Some(index) => index,
+            None => {
+                language_codes.push(current.language.clone());
+                language_items.push(current.language.clone().into());
+                language_items.len() - 1
+            }
+        };
+        let language_select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(language_items),
+                Some(IndexPath::new(language_index)),
+                window,
+                cx,
+            )
         });
+
+        let idle_items: Vec<SharedString> = IDLE_OPTIONS
+            .iter()
+            .map(|(_, label)| (*label).into())
+            .collect();
+        let idle_index = IDLE_OPTIONS
+            .iter()
+            .position(|(secs, _)| *secs == current.idle_unload_secs)
+            .unwrap_or(1);
+        let idle_select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(idle_items),
+                Some(IndexPath::new(idle_index)),
+                window,
+                cx,
+            )
+        });
+
+        cx.spawn(async move |view, cx| {
+            let enabled = cx
+                .background_executor()
+                .spawn(async { autostart::is_enabled() })
+                .await;
+            let _ = view.update(cx, |view: &mut Self, cx| {
+                view.autostart = enabled;
+                cx.notify();
+            });
+        })
+        .detach();
+
         Self {
             settings,
+            section: Section::General,
             control_input,
-            language_input,
+            language_select,
+            language_codes,
+            idle_select,
+            autostart: false,
             daemon_summary: statusbar::daemon_summary().into(),
             saved_at: None,
         }
     }
 
-    /// An emptied field falls back to its default: an empty control line or
-    /// language would silently degrade the models (S1-mini needs its exact
-    /// control-line format).
-    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// An emptied prompt falls back to its default: an empty control line
+    /// would silently degrade S1-mini, which needs its exact format.
+    fn save(&mut self, cx: &mut Context<Self>) {
         let defaults = SessionSettings::default();
+        let control_line = self.control_input.read(cx).value().trim().to_string();
+        let language = self
+            .language_select
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|index| self.language_codes.get(index.row).cloned())
+            .unwrap_or(defaults.language);
+        let idle_unload_secs = self
+            .idle_select
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|index| IDLE_OPTIONS.get(index.row))
+            .map(|(secs, _)| *secs)
+            .unwrap_or(defaults.idle_unload_secs);
         let updated = SessionSettings {
-            language: non_empty_or(
-                self.language_input.read(cx).value().trim(),
-                defaults.language,
-            ),
-            control_line: non_empty_or(
-                self.control_input.read(cx).value().trim(),
-                defaults.control_line,
-            ),
+            language,
+            control_line: if control_line.is_empty() {
+                defaults.control_line
+            } else {
+                control_line
+            },
+            idle_unload_secs,
         };
         if let Err(e) = updated.save() {
             eprintln!("saving settings failed: {e:#}");
             return;
         }
-        self.language_input.update(cx, |state, cx| {
-            state.set_value(updated.language.clone(), window, cx)
-        });
-        self.control_input.update(cx, |state, cx| {
-            state.set_value(updated.control_line.clone(), window, cx)
-        });
         *self.settings.lock().unwrap() = updated;
         self.saved_at = Some(Instant::now());
         cx.notify();
@@ -130,72 +268,153 @@ impl SettingsWindow {
         .detach();
     }
 
-    fn info_row(&self, label: &'static str, value: SharedString, cx: &App) -> impl IntoElement {
+    fn set_autostart(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.autostart = enabled;
+        cx.notify();
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(e) = autostart::set(enabled) {
+                    eprintln!("autostart change failed: {e:#}");
+                }
+            })
+            .detach();
+    }
+
+    /// A titled row with a muted description on the left and a control on
+    /// the right; the layout for switches and static values.
+    fn control_row(
+        label: &'static str,
+        description: &'static str,
+        control: impl IntoElement,
+        cx: &App,
+    ) -> impl IntoElement {
         h_flex()
             .justify_between()
-            .text_sm()
-            .child(Label::new(label).text_color(cx.theme().muted_foreground))
-            .child(Label::new(value))
+            .items_center()
+            .gap_4()
+            .child(
+                v_flex().gap_1().child(Label::new(label)).child(
+                    Label::new(description)
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground),
+                ),
+            )
+            .child(control)
     }
-}
 
-fn non_empty_or(value: &str, fallback: String) -> String {
-    if value.is_empty() {
-        fallback
-    } else {
-        value.to_string()
+    fn general_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_6()
+            .child(Self::control_row(
+                "Start at Login",
+                "Launch diktafon when you log in (needs the app bundle)",
+                Switch::new("autostart").checked(self.autostart).on_click(
+                    cx.listener(|view, checked: &bool, _, cx| view.set_autostart(*checked, cx)),
+                ),
+                cx,
+            ))
+            .child(Self::control_row(
+                "Hotkey",
+                "Hold to dictate, release to paste",
+                Label::new("⌥ Space"),
+                cx,
+            ))
+    }
+
+    fn dictation_pane(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+        v_form()
+            .child(
+                field()
+                    .label("Post-processing prompt")
+                    .description("S1-mini control line; applies to the next dictation")
+                    .child(Input::new(&self.control_input)),
+            )
+            .child(
+                field()
+                    .label("Language")
+                    .description("Hint for the speech recognizer")
+                    .child(Select::new(&self.language_select)),
+            )
+    }
+
+    fn advanced_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_6()
+            .child(
+                field()
+                    .label("Unload models when idle")
+                    .description(
+                        "Frees a few GB of RAM; models reload on the next dictation. \
+                         Applies when the daemon restarts.",
+                    )
+                    .child(Select::new(&self.idle_select)),
+            )
+            .child(Self::control_row(
+                "Daemon",
+                "The resident inference process",
+                Label::new(self.daemon_summary.clone()),
+                cx,
+            ))
     }
 }
 
 impl Render for SettingsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let saved = self.saved_at.is_some_and(|at| at.elapsed() < SAVED_FLASH);
-        v_flex()
+        let section = self.section;
+        let sidebar =
+            Sidebar::new("settings-sidebar")
+                .w(px(170.))
+                .child(SidebarMenu::new().children(Section::ALL.map(|entry| {
+                    SidebarMenuItem::new(entry.title())
+                        .icon(entry.icon())
+                        .active(section == entry)
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.section = entry;
+                            cx.notify();
+                        }))
+                })));
+
+        let pane: gpui::AnyElement = match section {
+            Section::General => self.general_pane(cx).into_any_element(),
+            Section::Dictation => self.dictation_pane(cx).into_any_element(),
+            Section::Advanced => self.advanced_pane(cx).into_any_element(),
+        };
+
+        h_flex()
             .size_full()
-            .p_6()
-            .gap_5()
             .bg(cx.theme().background)
+            .child(sidebar)
             .child(
-                GroupBox::new().title("Dictation").child(
-                    v_form()
-                        .child(
-                            field()
-                                .label("Post-processing prompt")
-                                .description("S1-mini control line; applies to the next dictation")
-                                .child(Input::new(&self.control_input)),
-                        )
-                        .child(
-                            field()
-                                .label("Language")
-                                .description("ISO 639-1 hint for the speech recognizer")
-                                .child(Input::new(&self.language_input)),
-                        ),
-                ),
-            )
-            .child(
-                GroupBox::new().title("Status").child(
-                    v_flex()
-                        .gap_2()
-                        .child(self.info_row("Hotkey", "⌥ Space".into(), cx))
-                        .child(self.info_row("Daemon", self.daemon_summary.clone(), cx)),
-                ),
-            )
-            .child(
-                h_flex()
-                    .mt_auto()
-                    .justify_end()
-                    .items_center()
-                    .gap_3()
+                v_flex()
+                    .flex_1()
+                    .h_full()
+                    .p_6()
+                    .gap_2()
+                    .child(div().text_xl().font_semibold().child(section.title()))
                     .child(
-                        Label::new(if saved { "Saved" } else { "" })
+                        Label::new(section.description())
                             .text_sm()
                             .text_color(cx.theme().muted_foreground),
                     )
+                    .child(div().mt_4().child(pane))
                     .child(
-                        Button::new("save")
-                            .primary()
-                            .label("Save")
-                            .on_click(cx.listener(|view, _, window, cx| view.save(window, cx))),
+                        h_flex()
+                            .mt_auto()
+                            .justify_end()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                Label::new(if saved { "Saved" } else { "" })
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground),
+                            )
+                            .child(
+                                Button::new("save")
+                                    .primary()
+                                    .label("Save")
+                                    .on_click(cx.listener(|view, _, _, cx| view.save(cx))),
+                            ),
                     ),
             )
     }

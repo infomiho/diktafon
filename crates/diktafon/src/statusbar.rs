@@ -4,7 +4,6 @@
 //! model status, recent dictations (click to copy), the autostart toggle, and
 //! quit.
 
-use crate::autostart;
 use crate::dictation::{Dictation, Phase};
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedSender, unbounded};
@@ -13,7 +12,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSControlStateValueOn, NSImage, NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar, NSStatusItem,
+    NSImage, NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar, NSStatusItem,
     NSVariableStatusItemLength,
 };
 use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSString};
@@ -29,10 +28,6 @@ struct ControllerIvars {
     actions: UnboundedSender<MenuAction>,
     status_item: OnceCell<Retained<NSStatusItem>>,
     phase: Cell<Phase>,
-    /// SMAppService's status query is a blocking XPC roundtrip; the menu
-    /// renders this cached value and refreshes it in the background, so a
-    /// just-toggled state appears one open later.
-    autostart_enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 define_class!(
@@ -52,18 +47,6 @@ define_class!(
     }
 
     impl MenuController {
-        #[unsafe(method(toggleAutostart:))]
-        fn toggle_autostart(&self, _sender: &NSMenuItem) {
-            let cache = self.ivars().autostart_enabled.clone();
-            std::thread::spawn(move || {
-                let target = !autostart::is_enabled();
-                if let Err(e) = autostart::set(target) {
-                    eprintln!("autostart change failed: {e:#}");
-                }
-                refresh_autostart_cache(&cache);
-            });
-        }
-
         #[unsafe(method(openSettings:))]
         fn open_settings(&self, _sender: &NSMenuItem) {
             let _ = self.ivars().actions.unbounded_send(MenuAction::OpenSettings);
@@ -83,13 +66,10 @@ define_class!(
 
 impl MenuController {
     fn new(mtm: MainThreadMarker, actions: UnboundedSender<MenuAction>) -> Retained<Self> {
-        let autostart_enabled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        refresh_autostart_cache(&autostart_enabled);
         let this = Self::alloc(mtm).set_ivars(ControllerIvars {
             actions,
             status_item: OnceCell::new(),
             phase: Cell::new(Phase::Idle),
-            autostart_enabled,
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -115,15 +95,6 @@ impl MenuController {
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 
         self.add_action(menu, "Settings…", sel!(openSettings:));
-        let auto = self.add_action(menu, "Start at Login", sel!(toggleAutostart:));
-        if self
-            .ivars()
-            .autostart_enabled
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            auto.setState(NSControlStateValueOn);
-        }
-        refresh_autostart_cache(&self.ivars().autostart_enabled);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 
         self.add_action(menu, "Quit Diktafon", sel!(quit:));
@@ -156,16 +127,6 @@ impl MenuController {
         menu.addItem(&item);
         item
     }
-}
-
-fn refresh_autostart_cache(cache: &std::sync::Arc<std::sync::atomic::AtomicBool>) {
-    let cache = cache.clone();
-    std::thread::spawn(move || {
-        cache.store(
-            autostart::is_enabled(),
-            std::sync::atomic::Ordering::Relaxed,
-        );
-    });
 }
 
 /// The app's mark, drawn instead of shipped: the pill's satellite orbit as a

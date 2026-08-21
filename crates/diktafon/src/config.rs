@@ -53,6 +53,9 @@ impl Config {
 pub struct SessionSettings {
     pub language: String,
     pub control_line: String,
+    /// Seconds of daemon idleness before the models are unloaded; passed as
+    /// DIKTAFOND_IDLE_SECS when the client spawns the daemon.
+    pub idle_unload_secs: u64,
 }
 
 impl Default for SessionSettings {
@@ -60,6 +63,7 @@ impl Default for SessionSettings {
         Self {
             language: CONFIG.language.into(),
             control_line: CONFIG.control_line.into(),
+            idle_unload_secs: 300,
         }
     }
 }

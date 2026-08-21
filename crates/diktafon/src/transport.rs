@@ -219,7 +219,17 @@ impl Supervisor {
             Err(_) => (Stdio::null(), Stdio::null()),
         };
         eprintln!("starting diktafond (logs: {})...", log_path.display());
-        match std::process::Command::new(bin)
+        let mut command = std::process::Command::new(bin);
+        // An explicit env override (tests) wins over the configured value.
+        if std::env::var_os("DIKTAFOND_IDLE_SECS").is_none() {
+            command.env(
+                "DIKTAFOND_IDLE_SECS",
+                crate::config::SessionSettings::load()
+                    .idle_unload_secs
+                    .to_string(),
+            );
+        }
+        match command
             .env("DIKTAFOND_SOCKET", socket)
             .process_group(0)
             .stdin(Stdio::null())
