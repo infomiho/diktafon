@@ -21,6 +21,18 @@ fn read_daemon_msg(stream: &mut UnixStream) -> DaemonMsg {
     read_frame::<DaemonMsg>(stream).unwrap().expect("daemon closed the stream")
 }
 
+/// The daemon sends Ready after the handshake: instantly on a warm start, or
+/// after download progress when it connected during startup.
+fn wait_for_ready(stream: &mut UnixStream) {
+    loop {
+        match read_daemon_msg(stream) {
+            DaemonMsg::Ready => return,
+            DaemonMsg::DownloadProgress { .. } => {}
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+}
+
 /// Spawns the real daemon, so it loads the real models from Application
 /// Support; run manually with `cargo test -p diktafond -- --ignored`.
 #[test]
@@ -36,6 +48,7 @@ fn daemon_serves_sessions_over_the_socket() {
     let mut stream = UnixStream::connect(&socket).unwrap();
     write_frame(&mut stream, &ClientMsg::Hello { version: PROTOCOL_VERSION }).unwrap();
     assert_eq!(read_daemon_msg(&mut stream), DaemonMsg::Hello { version: PROTOCOL_VERSION });
+    wait_for_ready(&mut stream);
 
     // An empty session skips ASR and polish entirely and finishes instantly.
     write_frame(&mut stream, &ClientMsg::Start(SessionConfig::default())).unwrap();
@@ -51,6 +64,7 @@ fn daemon_serves_sessions_over_the_socket() {
     let mut stream = UnixStream::connect(&socket).unwrap();
     write_frame(&mut stream, &ClientMsg::Hello { version: PROTOCOL_VERSION }).unwrap();
     assert_eq!(read_daemon_msg(&mut stream), DaemonMsg::Hello { version: PROTOCOL_VERSION });
+    wait_for_ready(&mut stream);
 
     // A version mismatch is answered with Error.
     let mut mismatched = UnixStream::connect(&socket).unwrap();

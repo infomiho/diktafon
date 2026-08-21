@@ -14,12 +14,17 @@ use std::time::{Duration, Instant};
 /// when the daemon is wedged, so `finish` errors instead of blocking forever.
 const FINISH_TIMEOUT: Duration = Duration::from_secs(60);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Longest silence tolerated between startup frames while waiting for `Ready`;
+/// covers model loading and sha256 verification of multi-GB files.
+const READY_FRAME_TIMEOUT: Duration = Duration::from_secs(120);
 const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
 const MAX_BACKOFF: Duration = Duration::from_secs(8);
 
-/// How long a spawned daemon may take to load its models and bind the socket.
-/// Kept well under FINISH_TIMEOUT so a session that triggered a cold spawn can
-/// still transcribe and finish before its own deadline.
+/// How long a freshly spawned daemon may take to bind its socket (it binds
+/// before provisioning, so this is process startup, not model loading). Once
+/// connected, `await_ready`'s per-frame timeout takes over; a session that
+/// triggered a cold multi-minute download can still exceed FINISH_TIMEOUT, in
+/// which case it fails cleanly and the late result is discarded as stale.
 const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const DAEMON_READY_POLL: Duration = Duration::from_millis(250);
 /// Minimum gap between spawn attempts, so a daemon that dies on startup does
@@ -353,6 +358,7 @@ impl Transport {
     fn connect(&self) -> Result<UnixStream, ConnectFailure> {
         let stream = UnixStream::connect(&self.socket).map_err(ConnectFailure::NoDaemon)?;
         self.handshake(&stream).map_err(ConnectFailure::Rejected)?;
+        self.await_ready(&stream).map_err(ConnectFailure::Rejected)?;
         spawn_reader(
             stream.try_clone().map_err(|e| ConnectFailure::Rejected(e.into()))?,
             self.ledger.clone(),
@@ -364,13 +370,43 @@ impl Transport {
         stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
         write_frame(&mut &*stream, &ClientMsg::Hello { version: PROTOCOL_VERSION })?;
         match read_frame::<DaemonMsg>(&mut &*stream)? {
-            Some(DaemonMsg::Hello { .. }) => {}
+            Some(DaemonMsg::Hello { .. }) => Ok(()),
             Some(DaemonMsg::Error(e)) => bail!("daemon refused the connection: {e}"),
             Some(other) => bail!("unexpected handshake reply: {other:?}"),
             None => bail!("daemon closed the connection during the handshake"),
         }
-        stream.set_read_timeout(None)?;
-        Ok(())
+    }
+
+    /// After the handshake the daemon sends `Ready` — immediately when warm,
+    /// or after streaming download progress on a first run. Waiting here means
+    /// a dictation session that triggered a cold start blocks until the daemon
+    /// can actually serve it. The generous per-frame timeout resets with every
+    /// progress frame, so a multi-gigabyte download never trips it while it is
+    /// moving.
+    fn await_ready(&self, stream: &UnixStream) -> Result<()> {
+        stream.set_read_timeout(Some(READY_FRAME_TIMEOUT))?;
+        let mut last_print = Instant::now() - READY_FRAME_TIMEOUT;
+        loop {
+            match read_frame::<DaemonMsg>(&mut &*stream)? {
+                Some(DaemonMsg::Ready) => {
+                    stream.set_read_timeout(None)?;
+                    return Ok(());
+                }
+                Some(DaemonMsg::DownloadProgress { model, downloaded_bytes, total_bytes }) => {
+                    if last_print.elapsed() >= Duration::from_secs(1) {
+                        println!(
+                            "  daemon is downloading {model}: {}/{} MB",
+                            downloaded_bytes / 1_000_000,
+                            total_bytes / 1_000_000
+                        );
+                        last_print = Instant::now();
+                    }
+                }
+                Some(DaemonMsg::Error(e)) => bail!("daemon startup failed: {e}"),
+                Some(other) => bail!("unexpected startup message: {other:?}"),
+                None => bail!("daemon closed the connection during startup"),
+            }
+        }
     }
 
     fn drop_conn(&mut self) {
@@ -390,8 +426,14 @@ fn spawn_reader(stream: UnixStream, ledger: Arc<FlushLedger>) {
                 Ok(Some(DaemonMsg::Final(text))) => ledger.deliver(SessionResult::Final(text)),
                 Ok(Some(DaemonMsg::Error(e))) => ledger.deliver(SessionResult::Failed(e)),
                 // The client does not send Cancel yet (cancel gesture task), so
-                // an ack needs no handling; Hello was consumed by the handshake.
-                Ok(Some(DaemonMsg::Aborted | DaemonMsg::Hello { .. })) => {}
+                // an ack needs no handling; Hello, Ready, and DownloadProgress
+                // belong to the pre-adoption startup phase.
+                Ok(Some(
+                    DaemonMsg::Aborted
+                    | DaemonMsg::Hello { .. }
+                    | DaemonMsg::Ready
+                    | DaemonMsg::DownloadProgress { .. },
+                )) => {}
                 Ok(None) => return ledger.fail_pending("diktafond closed the connection"),
                 Err(e) => return ledger.fail_pending(&format!("connection to diktafond lost: {e}")),
             }
@@ -413,7 +455,8 @@ mod tests {
         let mut writer = stream;
         match read_frame::<ClientMsg>(&mut reader) {
             Ok(Some(ClientMsg::Hello { .. })) => {
-                write_frame(&mut writer, &DaemonMsg::Hello { version: PROTOCOL_VERSION }).unwrap()
+                write_frame(&mut writer, &DaemonMsg::Hello { version: PROTOCOL_VERSION }).unwrap();
+                write_frame(&mut writer, &DaemonMsg::Ready).unwrap();
             }
             other => panic!("expected Hello, got {other:?}"),
         }

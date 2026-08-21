@@ -42,6 +42,15 @@ fn main() {
         Some(DaemonMsg::Hello { .. }) => {}
         other => panic!("handshake failed: {other:?}"),
     }
+    loop {
+        match read_frame::<DaemonMsg>(&mut stream).unwrap() {
+            Some(DaemonMsg::Ready) => break,
+            Some(DaemonMsg::DownloadProgress { model, downloaded_bytes, total_bytes }) => {
+                println!("daemon downloading {model}: {downloaded_bytes}/{total_bytes}")
+            }
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
 
     write_frame(&mut stream, &ClientMsg::Start(SessionConfig::default())).unwrap();
     for chunk in wav_samples(&path).chunks(TARGET_RATE as usize * CHUNK_SECS) {

@@ -2,8 +2,10 @@
 //! daemon. Messages are bincode-encoded and length-prefixed, so the same codec
 //! runs over any byte stream: a Unix socket locally, a WebSocket remotely.
 //!
-//! A connection starts with a `Hello` exchange carrying [`PROTOCOL_VERSION`].
-//! Each dictation session is then `Start`, streamed `Chunk`s (answered with
+//! A connection starts with a `Hello` exchange carrying [`PROTOCOL_VERSION`],
+//! after which the daemon sends zero or more `DownloadProgress` frames (while
+//! it is still provisioning models) and then exactly one `Ready`. Each
+//! dictation session is then `Start`, streamed `Chunk`s (answered with
 //! `Partial` transcripts), and a `Flush` answered with the `Final` polished
 //! text.
 
@@ -12,7 +14,7 @@ use bincode::{Decode, Encode};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Sample rate of the audio chunks the client delivers and the daemon's ASR
 /// model expects.
@@ -117,6 +119,13 @@ pub enum DaemonMsg {
     /// Ack of `Cancel`; the client must discard any `Partial` or `Final` that
     /// arrived after it sent `Cancel` but before this ack.
     Aborted,
+    /// The daemon is fetching a model it is missing; sent between `Hello` and
+    /// `Ready` while the client waits. (v2)
+    DownloadProgress { model: String, downloaded_bytes: u64, total_bytes: u64 },
+    /// Startup is complete and the connection now serves sessions. Sent once
+    /// after the handshake: immediately on a warm daemon, or after the last
+    /// `DownloadProgress` on a cold one. (v2)
+    Ready,
 }
 
 pub fn write_frame<T: Encode>(writer: &mut impl Write, msg: &T) -> Result<()> {
@@ -224,6 +233,27 @@ mod tests {
         write_frame(&mut buf, &ClientMsg::Hello { version: 1 }).unwrap();
         // 2-byte payload: variant index 0 as varint, version 1 as varint.
         assert_eq!(buf, vec![2, 0, 0, 0, 0, 1]);
+    }
+
+    /// Same freeze for the v2 startup variants.
+    #[test]
+    fn v2_frame_bytes_are_stable() {
+        let mut buf = Vec::new();
+        write_frame(
+            &mut buf,
+            &DaemonMsg::DownloadProgress {
+                model: "s1".into(),
+                downloaded_bytes: 1,
+                total_bytes: 2,
+            },
+        )
+        .unwrap();
+        // Variant index 5, then string length 2 + "s1", then the two varints.
+        assert_eq!(buf, vec![6, 0, 0, 0, 5, 2, b's', b'1', 1, 2]);
+
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &DaemonMsg::Ready).unwrap();
+        assert_eq!(buf, vec![1, 0, 0, 0, 6]);
     }
 
     #[test]
