@@ -1,3 +1,4 @@
+mod autostart;
 mod bench;
 mod capture;
 mod config;
@@ -83,13 +84,18 @@ struct AppServices {
 impl Global for AppServices {}
 
 fn main() -> Result<()> {
-    let (phase_tx, phase_rx) = futures::channel::mpsc::unbounded::<PhaseEvent>();
-    let daemon = DaemonClient::spawn(socket_path(), daemon_bin(), Some(phase_tx.clone()));
-
+    // Modes that must not touch (or auto-spawn) the daemon come first.
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--transcribe-file") {
         return bench::transcribe_file(&args[1..]);
     }
+    if args.first().is_some_and(|a| a == "--autostart") {
+        return autostart::run(args.get(1).map(String::as_str).unwrap_or("status"));
+    }
+
+    let (phase_tx, phase_rx) = futures::channel::mpsc::unbounded::<PhaseEvent>();
+    let daemon = DaemonClient::spawn(socket_path(), daemon_bin(), Some(phase_tx.clone()));
+
     if let Some(text) = args.first() {
         let text = text.clone();
         daemon.chunk_tx.send(Msg::Flush)?;
