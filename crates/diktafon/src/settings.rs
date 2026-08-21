@@ -11,13 +11,14 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::form::{field, v_form};
+use gpui_component::group_box::GroupBox;
 use gpui_component::input::{Input, InputState};
 use gpui_component::label::Label;
 use gpui_component::{ActiveTheme, Root, h_flex, v_flex};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(520.), px(360.));
+const WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(520.), px(420.));
 /// How long the "Saved" confirmation stays visible.
 const SAVED_FLASH: Duration = Duration::from_secs(2);
 
@@ -152,28 +153,32 @@ impl Render for SettingsWindow {
         v_flex()
             .size_full()
             .p_6()
-            .gap_6()
+            .gap_5()
             .bg(cx.theme().background)
             .child(
-                v_form()
-                    .child(
-                        field()
-                            .label("Post-processing prompt")
-                            .description("S1-mini control line; applies to the next dictation")
-                            .child(Input::new(&self.control_input)),
-                    )
-                    .child(
-                        field()
-                            .label("Language")
-                            .description("ISO 639-1 hint for the speech recognizer")
-                            .child(Input::new(&self.language_input)),
-                    ),
+                GroupBox::new().title("Dictation").child(
+                    v_form()
+                        .child(
+                            field()
+                                .label("Post-processing prompt")
+                                .description("S1-mini control line; applies to the next dictation")
+                                .child(Input::new(&self.control_input)),
+                        )
+                        .child(
+                            field()
+                                .label("Language")
+                                .description("ISO 639-1 hint for the speech recognizer")
+                                .child(Input::new(&self.language_input)),
+                        ),
+                ),
             )
             .child(
-                v_flex()
-                    .gap_2()
-                    .child(self.info_row("Hotkey", "⌥ Space".into(), cx))
-                    .child(self.info_row("Daemon", self.daemon_summary.clone(), cx)),
+                GroupBox::new().title("Status").child(
+                    v_flex()
+                        .gap_2()
+                        .child(self.info_row("Hotkey", "⌥ Space".into(), cx))
+                        .child(self.info_row("Daemon", self.daemon_summary.clone(), cx)),
+                ),
             )
             .child(
                 h_flex()
