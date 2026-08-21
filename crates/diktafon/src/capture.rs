@@ -233,6 +233,9 @@ struct LevelMeter {
     fft: Arc<dyn rustfft::Fft<f32>>,
     hann: Vec<f32>,
     recent: std::collections::VecDeque<f32>,
+    /// Meter ballistics: instant attack, gradual decay, so bars fall smoothly
+    /// instead of strobing between ticks.
+    smoothed: [f32; LEVEL_BAR_COUNT],
 }
 
 const FFT_WINDOW: usize = 512;
@@ -242,6 +245,8 @@ const LEVEL_GAIN: f32 = 1.3;
 const LEVEL_POWER: f32 = 0.7;
 const LEVEL_FREQ_MIN: f32 = 400.0;
 const LEVEL_FREQ_MAX: f32 = 4000.0;
+/// Per-tick decay factor of a falling bar.
+const LEVEL_DECAY: f32 = 0.78;
 
 impl LevelMeter {
     fn new() -> Self {
@@ -249,7 +254,12 @@ impl LevelMeter {
         let hann = (0..FFT_WINDOW)
             .map(|i| (std::f32::consts::PI * i as f32 / FFT_WINDOW as f32).sin().powi(2))
             .collect();
-        Self { fft, hann, recent: std::collections::VecDeque::with_capacity(FFT_WINDOW) }
+        Self {
+            fft,
+            hann,
+            recent: std::collections::VecDeque::with_capacity(FFT_WINDOW),
+            smoothed: [0.0; LEVEL_BAR_COUNT],
+        }
     }
 
     fn push(&mut self, samples: &[f32]) {
@@ -261,10 +271,17 @@ impl LevelMeter {
         }
     }
 
-    fn compute(&self) -> [f32; LEVEL_BAR_COUNT] {
+    fn compute(&mut self) -> [f32; LEVEL_BAR_COUNT] {
         let mut bars = [0.0; LEVEL_BAR_COUNT];
         if self.recent.len() < FFT_WINDOW {
-            return bars;
+            // No spectrum yet; keep the bars falling instead of freezing.
+            for smoothed in &mut self.smoothed {
+                *smoothed *= LEVEL_DECAY;
+                if *smoothed < 0.01 {
+                    *smoothed = 0.0;
+                }
+            }
+            return self.smoothed;
         }
         let mut spectrum: Vec<rustfft::num_complex::Complex<f32>> = self
             .recent
@@ -288,7 +305,13 @@ impl LevelMeter {
             let norm = ((db - LEVEL_MIN_DB) / (LEVEL_MAX_DB - LEVEL_MIN_DB)).clamp(0.0, 1.0);
             *bar = (norm * LEVEL_GAIN).min(1.0).powf(LEVEL_POWER);
         }
-        bars
+        for (smoothed, raw) in self.smoothed.iter_mut().zip(bars) {
+            *smoothed = if raw > *smoothed { raw } else { *smoothed * LEVEL_DECAY };
+            if *smoothed < 0.01 {
+                *smoothed = 0.0;
+            }
+        }
+        self.smoothed
     }
 }
 
