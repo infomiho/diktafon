@@ -1,8 +1,7 @@
 //! Menu bar presence: the app is otherwise invisible when idle and
 //! unquittable without pkill. An NSStatusItem whose icon tracks the phase,
 //! with a menu (rebuilt on every open via NSMenuDelegate) showing daemon and
-//! model status, recent dictations (click to copy), the autostart toggle, and
-//! quit.
+//! model status, opening the settings window, and quitting.
 
 use crate::dictation::{Dictation, Phase};
 use futures::StreamExt;

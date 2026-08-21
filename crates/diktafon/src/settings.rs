@@ -100,9 +100,13 @@ pub struct SettingsWindow {
     section: Section,
     control_input: Entity<InputState>,
     language_select: Entity<SelectState<SearchableVec<SharedString>>>,
-    /// Codes parallel to the dropdown items.
+    /// Codes parallel to the dropdown items. Parallel indexing is only valid
+    /// while the selects stay non-searchable: with `.searchable(true)` the
+    /// selected index would point into the filtered list.
     language_codes: Vec<String>,
     idle_select: Entity<SelectState<SearchableVec<SharedString>>>,
+    /// Seconds parallel to the idle dropdown items.
+    idle_values: Vec<u64>,
     /// Loaded asynchronously: the SMAppService query is a blocking XPC call.
     autostart: bool,
     /// Cached at open: reading it does file IO and must not run per render.
@@ -184,14 +188,24 @@ impl SettingsWindow {
             )
         });
 
-        let idle_items: Vec<SharedString> = IDLE_OPTIONS
+        let mut idle_values: Vec<u64> = IDLE_OPTIONS.iter().map(|(secs, _)| *secs).collect();
+        let mut idle_items: Vec<SharedString> = IDLE_OPTIONS
             .iter()
             .map(|(_, label)| (*label).into())
             .collect();
-        let idle_index = IDLE_OPTIONS
+        // A hand-edited value outside the presets stays selectable; the
+        // language dropdown gets the same treatment.
+        let idle_index = match idle_values
             .iter()
-            .position(|(secs, _)| *secs == current.idle_unload_secs)
-            .unwrap_or(1);
+            .position(|secs| *secs == current.idle_unload_secs)
+        {
+            Some(index) => index,
+            None => {
+                idle_values.push(current.idle_unload_secs);
+                idle_items.push(format!("After {} seconds", current.idle_unload_secs).into());
+                idle_items.len() - 1
+            }
+        };
         let idle_select = cx.new(|cx| {
             SelectState::new(
                 SearchableVec::new(idle_items),
@@ -220,6 +234,7 @@ impl SettingsWindow {
             language_select,
             language_codes,
             idle_select,
+            idle_values,
             autostart: false,
             daemon_summary: statusbar::daemon_summary().into(),
             saved_at: None,
@@ -241,8 +256,7 @@ impl SettingsWindow {
             .idle_select
             .read(cx)
             .selected_index(cx)
-            .and_then(|index| IDLE_OPTIONS.get(index.row))
-            .map(|(secs, _)| *secs)
+            .and_then(|index| self.idle_values.get(index.row).copied())
             .unwrap_or(defaults.idle_unload_secs);
         let updated = SessionSettings {
             language,
@@ -268,16 +282,25 @@ impl SettingsWindow {
         .detach();
     }
 
+    /// Optimistic flip, reverted if the change fails; failure is the normal
+    /// case outside the app bundle.
     fn set_autostart(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.autostart = enabled;
         cx.notify();
-        cx.background_executor()
-            .spawn(async move {
-                if let Err(e) = autostart::set(enabled) {
-                    eprintln!("autostart change failed: {e:#}");
-                }
-            })
-            .detach();
+        cx.spawn(async move |view, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { autostart::set(enabled) })
+                .await;
+            if let Err(e) = result {
+                eprintln!("autostart change failed: {e:#}");
+                let _ = view.update(cx, |view: &mut Self, cx| {
+                    view.autostart = !enabled;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     /// A titled row with a muted description on the left and a control on
