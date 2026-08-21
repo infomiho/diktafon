@@ -60,7 +60,9 @@ pub struct Inference {
 }
 
 impl Inference {
-    pub fn spawn(models_dir: &Path) -> Result<Self> {
+    /// `history`: where finished sessions are appended for recovery; `None`
+    /// disables it (benchmarks, tests).
+    pub fn spawn(models_dir: &Path, history: Option<std::path::PathBuf>) -> Result<Self> {
         let (chunk_tx, chunk_rx) = mpsc::channel::<Msg>();
         let (events_tx, events_rx) = mpsc::channel::<DaemonMsg>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<()>>();
@@ -87,10 +89,14 @@ impl Inference {
 
             let mut config = SessionConfig::default();
             let mut parts: Vec<String> = Vec::new();
+            let mut audio_secs = 0.0f32;
+            let mut asr_ms = 0u64;
             for msg in chunk_rx {
                 match msg {
                     Msg::Start(new_config) => {
                         parts.clear();
+                        audio_secs = 0.0;
+                        asr_ms = 0;
                         config = new_config;
                     }
                     Msg::Chunk(mut samples) => {
@@ -110,6 +116,8 @@ impl Inference {
                         match result {
                             Ok(r) => {
                                 println!("  chunk {:>4.1}s, ASR {:.2?}: {}", secs, start.elapsed(), r.text);
+                                audio_secs += secs;
+                                asr_ms += start.elapsed().as_millis() as u64;
                                 let _ = events_tx.send(DaemonMsg::Partial(r.text.clone()));
                                 parts.push(r.text);
                             }
@@ -117,7 +125,9 @@ impl Inference {
                         }
                     }
                     Msg::Flush => {
+                        let chunks = parts.len();
                         let raw = std::mem::take(&mut parts).join(" ");
+                        let mut polish_ms = 0u64;
                         let text = if raw.trim().is_empty() {
                             String::new()
                         } else {
@@ -127,15 +137,34 @@ impl Inference {
                                 catch_panic("polish", || polisher.polish(&raw, &config.control_line))
                                     .unwrap_or_else(|e| {
                                         eprintln!("polish error, using raw text: {e}");
-                                        raw
+                                        raw.clone()
                                     });
+                            polish_ms = start.elapsed().as_millis() as u64;
                             println!("  polish {:.2?}", start.elapsed());
                             polished
                         };
+                        // Gate on raw, not polished: an empty polish of real
+                        // speech is exactly the lost dictation this recovers.
+                        if let Some(history_path) = &history
+                            && !raw.trim().is_empty()
+                        {
+                            let mut entry = crate::history::Entry::now(&raw, &text);
+                            entry.chunks = chunks;
+                            entry.audio_secs = audio_secs;
+                            entry.asr_ms = asr_ms;
+                            entry.polish_ms = polish_ms;
+                            if let Err(e) = crate::history::append(history_path, &entry) {
+                                eprintln!("recording history failed: {e:#}");
+                            }
+                        }
+                        audio_secs = 0.0;
+                        asr_ms = 0;
                         let _ = events_tx.send(DaemonMsg::Final(text));
                     }
                     Msg::Cancel => {
                         parts.clear();
+                        audio_secs = 0.0;
+                        asr_ms = 0;
                         config = SessionConfig::default();
                         let _ = events_tx.send(DaemonMsg::Aborted);
                     }

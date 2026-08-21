@@ -61,6 +61,7 @@ fn main() {
     loop {
         match read_frame::<DaemonMsg>(&mut stream).unwrap() {
             Some(DaemonMsg::Partial(text)) => println!("partial: {text}"),
+            Some(DaemonMsg::Polishing) => println!("polishing..."),
             Some(DaemonMsg::Final(text)) => {
                 println!("final: {text}");
                 return;

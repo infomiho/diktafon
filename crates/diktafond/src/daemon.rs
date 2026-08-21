@@ -127,7 +127,8 @@ fn start_up(listener: &UnixListener, models_dir: &Path) -> Result<(Inference, Ve
             .and_then(|()| {
                 println!("Loading models...");
                 let load_start = Instant::now();
-                let inference = Inference::spawn(&models_dir);
+                let history = diktafon_protocol::data_dir().join("history.jsonl");
+                let inference = Inference::spawn(&models_dir, Some(history));
                 if inference.is_ok() {
                     println!("Models loaded in {:.2?}", load_start.elapsed());
                 }
