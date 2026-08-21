@@ -28,14 +28,6 @@ const PILL_HEIGHT: Pixels = px(38.);
 /// The orbital level meter's box; the satellites orbit the phase dot inside.
 const METER_BOX: f32 = 28.;
 const SATELLITES: usize = 16;
-/// Trailing characters of the transcript the marquee shapes per frame; long
-/// dictations scroll through this window.
-const MARQUEE_CHARS: usize = 80;
-/// Base marquee crawl speed in px/s; deliberately slower than speech.
-const MARQUEE_SPEED: f32 = 24.;
-/// Extra crawl speed per px of backlog (per second), so a long pause's burst
-/// of text drains gradually instead of stalling the line forever.
-const MARQUEE_CATCHUP: f32 = 0.5;
 /// Vertical slide distance of the enter/exit transition.
 const TRAVEL: f32 = 8.;
 const TOP_PAD: f32 = 0.;
@@ -169,8 +161,6 @@ pub struct Pill {
     closing: bool,
     /// What the fading pill keeps showing after the phase already went Idle.
     last_active: Phase,
-    /// Smoothed marquee scroll offset, eased toward its target every frame.
-    marquee_offset: f32,
     /// When this session's recording began, for the elapsed-time readout.
     recording_since: Option<std::time::Instant>,
     /// Drives the comet orbit while transcribing/polishing.
@@ -198,7 +188,6 @@ impl Pill {
             levels,
             closing: false,
             last_active: Phase::Recording,
-            marquee_offset: 0.,
             recording_since: None,
             opened_at: std::time::Instant::now(),
         }
@@ -252,56 +241,6 @@ impl Pill {
             .size(px(METER_BOX))
             .flex_none()
             .children(satellites)
-            .into_any_element()
-    }
-
-    /// A single clipped line where recognized words appear left to right and
-    /// scroll left once the line fills. The scroll crawls at a slow constant
-    /// speed (plus a gentle catch-up when far behind): it conveys that words
-    /// are flowing, not real-time position, so freshly recognized text glides
-    /// in from the right instead of snapping into view.
-    fn marquee(&mut self, text: &str, width: f32, window: &mut Window) -> AnyElement {
-        let total = text.chars().count();
-        let shown: String = text
-            .chars()
-            .skip(total.saturating_sub(MARQUEE_CHARS))
-            .collect();
-        let style = window.text_style();
-        let font_size = px(13.);
-        let run = style.to_run(shown.len());
-        let measured = window
-            .text_system()
-            .shape_line(shown.clone().into(), font_size, &[run], None)
-            .width;
-        let target = (f32::from(measured) - width).max(0.);
-        let remaining = target - self.marquee_offset;
-        if remaining <= 0. {
-            self.marquee_offset = target;
-        } else {
-            let speed = MARQUEE_SPEED + remaining * MARQUEE_CATCHUP;
-            let dt = BAR_FRAME.as_secs_f32();
-            self.marquee_offset += remaining.min(speed * dt);
-        }
-        div()
-            .relative()
-            .w(px(width))
-            // Explicit height: h_full inside the auto-sized flex parent
-            // resolves circularly to zero and the text vanishes.
-            .h(px(22.))
-            .overflow_hidden()
-            .child(
-                div()
-                    .absolute()
-                    .left(px(-self.marquee_offset))
-                    .top_0()
-                    .h_full()
-                    .flex()
-                    .items_center()
-                    .text_size(font_size)
-                    .text_color(rgba(theme::TEXT_PRIMARY | 0xD9))
-                    .whitespace_nowrap()
-                    .child(shown),
-            )
             .into_any_element()
     }
 }
@@ -367,7 +306,7 @@ fn phase_key(phase: Phase) -> u64 {
 }
 
 impl Render for Pill {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let reduce_motion = cx.reduce_motion();
         let phase = self.dictation.read(cx).phase;
         if phase != Phase::Idle {
@@ -379,22 +318,19 @@ impl Render for Pill {
         } else {
             phase
         };
-        let partial = self.dictation.read(cx).partial.clone();
         if display == Phase::Recording && self.recording_since.is_none() {
             self.recording_since = Some(std::time::Instant::now());
         }
         let elapsed = self.recording_since.filter(|_| display == Phase::Recording);
-        let time_width = if elapsed.is_some() { 34. } else { 0. };
-        let text_width = f64::from(PILL_WIDTH) as f32 - METER_BOX - 3. * 12. - time_width;
         let content = match display {
-            // Words appear as they are recognized and scroll once the line
-            // fills; empty until then.
-            Phase::Recording => self.marquee(&partial, text_width, window),
-            Phase::Arming => label("starting".into(), false),
+            // The orbit carries the liveness while recording; the label just
+            // states what the pill is doing.
+            Phase::Recording => label("Listening".into(), false),
+            Phase::Arming => label("Starting".into(), false),
             // The words themselves are about to be pasted; the label just has
             // to feel alive, so it pulses.
-            Phase::Transcribing => label("transcribing".into(), !reduce_motion),
-            Phase::Polishing => label("polishing".into(), !reduce_motion),
+            Phase::Transcribing => label("Transcribing".into(), !reduce_motion),
+            Phase::Polishing => label("Polishing".into(), !reduce_motion),
             Phase::Idle => label(String::new(), false),
         };
 
@@ -413,13 +349,10 @@ impl Render for Pill {
             .border_color(rgba(theme::HAIRLINE | 0x22))
             .child(self.orbital_meter(display, reduce_motion))
             .child(
-                // Cross-fade the content on phase changes and on the empty ->
-                // words swap; the changing key restarts the fade.
+                // Cross-fade the content on phase changes; the changing key
+                // restarts the fade.
                 div().flex_1().child(content).with_animation(
-                    (
-                        "content-fade",
-                        phase_key(display) * 2 + u64::from(!partial.is_empty()),
-                    ),
+                    ("content-fade", phase_key(display)),
                     Animation::new(CONTENT_FADE).with_easing(ease_out_quint()),
                     |el, delta| el.opacity(delta),
                 ),
