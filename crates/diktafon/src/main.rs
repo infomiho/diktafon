@@ -1,4 +1,5 @@
 mod capture;
+mod config;
 mod dictation;
 mod keymap;
 mod paste;
@@ -9,8 +10,8 @@ mod transport;
 use anyhow::{Context, Result};
 use capture::{Recorder, Session};
 use dictation::{Dictation, PhaseEvent};
-use diktafon_protocol::{Msg, SessionConfig, socket_path};
-use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+use diktafon_protocol::{Msg, socket_path};
+use global_hotkey::hotkey::{Code, HotKey};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use gpui::{Entity, Global};
 use std::path::{Path, PathBuf};
@@ -98,7 +99,7 @@ fn main() -> Result<()> {
     println!("Mic: {}", recorder.describe());
 
     let manager = GlobalHotKeyManager::new().context("registering global hotkey manager")?;
-    let record_key = HotKey::new(Some(Modifiers::ALT), Code::Space);
+    let record_key = config::CONFIG.hotkey();
     // Registered only while a session is live, so Escape works normally
     // otherwise; see the phase observer below.
     let escape_key = HotKey::new(None, Code::Escape);
@@ -246,7 +247,7 @@ fn control_loop(
         match event.state {
             HotKeyState::Pressed => {
                 if session.is_none() {
-                    let _ = daemon.chunk_tx.send(Msg::Start(SessionConfig::default()));
+                    let _ = daemon.chunk_tx.send(Msg::Start(config::CONFIG.session()));
                     match recorder.start(daemon.chunk_tx.clone()) {
                         Ok(s) => {
                             let _ = phases.unbounded_send(PhaseEvent::RecordingArmed);

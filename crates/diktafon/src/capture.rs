@@ -12,17 +12,7 @@ use diktafon_protocol::{Msg, TARGET_RATE};
 /// Also the level-meter frame interval, so ~30 FPS.
 const MONITOR_TICK: Duration = Duration::from_millis(33);
 
-// Handy's tuned Silero setup: 30ms frames, onset after 2 speech frames, 450ms
-// of pre-onset audio kept, 450ms hangover before a speech segment is declared
-// over.
-const SPEECH_THRESHOLD: f32 = 0.3;
-const ONSET_FRAMES: usize = 2;
-const PREFILL_FRAMES: usize = 15;
-const HANGOVER_FRAMES: usize = 15;
-
-/// Segments shorter than this are held and merged with the next speech segment
-/// instead of paying a per-chunk ASR roundtrip.
-const MIN_CHUNK_SAMPLES: usize = TARGET_RATE as usize * 3 / 2;
+use crate::config::CONFIG;
 
 pub const LEVEL_BAR_COUNT: usize = 16;
 /// Live level-meter bars in 0..=1, written by the recording monitor at each
@@ -144,7 +134,7 @@ impl Recorder {
         self.refresh_input_if_needed();
         // Fresh VAD per session: Silero keeps LSTM state across frames, and
         // loading the 1.8MB model is fast enough to not delay recording.
-        let silero = SileroVad::new(&self.vad_model, SPEECH_THRESHOLD)
+        let silero = SileroVad::new(&self.vad_model, CONFIG.speech_threshold)
             .with_context(|| format!("loading VAD model {}", self.vad_model.display()))?;
         let mut chunker = VadChunker::new(Box::new(silero));
         let mut resampler = StreamResampler::new(self.input.rate, TARGET_RATE);
@@ -278,6 +268,10 @@ fn push_mono(buffer: &Arc<Mutex<Vec<f32>>>, data: &[f32], channels: usize) {
     );
 }
 
+fn min_chunk_samples() -> usize {
+    (CONFIG.min_chunk_secs * TARGET_RATE as f32) as usize
+}
+
 /// Cuts the sample stream into speech chunks using a smoothed VAD: a chunk is
 /// pre-onset prefill + speech + hangover, emitted when the VAD leaves speech.
 /// Silence between speech segments never reaches the ASR model, which
@@ -293,7 +287,12 @@ struct VadChunker {
 impl VadChunker {
     fn new(inner: Box<dyn Vad>) -> Self {
         Self {
-            vad: SmoothedVad::new(inner, PREFILL_FRAMES, HANGOVER_FRAMES, ONSET_FRAMES),
+            vad: SmoothedVad::new(
+                inner,
+                CONFIG.prefill_frames,
+                CONFIG.hangover_frames,
+                CONFIG.onset_frames,
+            ),
             pending: Vec::new(),
             frames_since_speech: usize::MAX,
         }
@@ -317,7 +316,8 @@ impl VadChunker {
                 // The prefill ring also filled during the previous segment's
                 // hangover, so its oldest frames may already have been emitted;
                 // re-adding them would duplicate audio.
-                let overlap_frames = (PREFILL_FRAMES - 1).saturating_sub(self.frames_since_speech);
+                let overlap_frames =
+                    (CONFIG.prefill_frames - 1).saturating_sub(self.frames_since_speech);
                 let skip = (overlap_frames * self.frame_size()).min(prefill.len());
                 self.pending.extend_from_slice(&prefill[skip..]);
             }
@@ -326,7 +326,7 @@ impl VadChunker {
         }
         if was_in_speech {
             self.frames_since_speech = 0;
-            if self.pending.len() >= MIN_CHUNK_SAMPLES {
+            if self.pending.len() >= min_chunk_samples() {
                 return Some(std::mem::take(&mut self.pending));
             }
         } else {
