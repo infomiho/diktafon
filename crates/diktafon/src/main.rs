@@ -10,7 +10,6 @@ mod pill;
 mod settings;
 mod sounds;
 mod statusbar;
-mod text_input;
 mod theme;
 mod transport;
 
@@ -204,9 +203,11 @@ fn main() -> Result<()> {
     // target, which GPUI's NSApp run loop dispatches (a bare CFRunLoop would
     // not). Explicit quit mode keeps the windowless app alive.
     gpui_platform::application()
+        .with_assets(gpui_component_assets::Assets)
         .with_quit_mode(gpui::QuitMode::Explicit)
         .run(move |cx| {
             hide_from_dock();
+            gpui_component::init(cx);
             permissions::check_at_launch();
             let dictation = Dictation::spawn(cx, phase_rx);
             // The Carbon hotkey manager lives on this thread; register Escape
@@ -239,7 +240,6 @@ fn main() -> Result<()> {
             .detach();
             pill::manage(cx, dictation.clone(), levels);
             statusbar::install(cx, &dictation, session_settings.clone());
-            text_input::bind_keys(cx);
             cx.set_global(AppServices { dictation });
             println!("Ready. Hold Option+Space to dictate, release to paste.");
         });

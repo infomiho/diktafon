@@ -61,7 +61,7 @@ pub fn transcribe_file(args: &[String]) -> Result<()> {
         let start = Instant::now();
         write_frame(
             &mut writer,
-            &ClientMsg::Start(crate::config::SessionSettings::load().session()),
+            &ClientMsg::Start(crate::config::SessionSettings::default().session()),
         )?;
         for chunk in samples.chunks(TARGET_RATE as usize * CHUNK_SECS) {
             write_frame(&mut writer, &ClientMsg::Chunk(chunk.to_vec()))?;

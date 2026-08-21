@@ -5,9 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-# Pinned to a Zed rev from 2026-08-21; gpui is not on crates.io.
-gpui = { git = "https://github.com/zed-industries/zed", rev = "ef50ad95b522d49402d30ed11c484d63d57a0757" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "ef50ad95b522d49402d30ed11c484d63d57a0757", features = ["font-kit"] }
+# No rev here so gpui-component's identical git reference unifies to one
+# gpui; the concrete zed commit is pinned by Cargo.lock (update it with
+# `cargo update -p gpui --precise <sha>`). gpui is not on crates.io.
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "14359a0cd" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "14359a0cd" }
 cpal = "0.16"
 futures = "0.3"
 rodio = "0.22"
@@ -36,7 +40,6 @@ block2 = "0.6"
 objc2-service-management = { version = "0.3", features = ["SMAppService"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-unicode-segmentation = "1"
 transcribe-rs = { version = "0.3.11", default-features = false, features = ["vad-silero"] }
 global-hotkey = "0.8"
 libc = "0.2"

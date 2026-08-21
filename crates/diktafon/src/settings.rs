@@ -1,37 +1,45 @@
 //! Settings window, opened from the menu bar: edit the S1 control line and
 //! ASR language (persisted to config.json and applied to the next session),
-//! see the hotkey and daemon status. Styled with the Signal theme.
+//! see the hotkey and daemon status. Built from gpui-component's stock
+//! widgets so it follows the system look in light and dark.
 
 use crate::config::SessionSettings;
-use crate::text_input::TextInput;
-use crate::{statusbar, theme};
+use crate::statusbar;
 use gpui::{
-    App, AppContext, Bounds, Context, Entity, Focusable, MouseButton, ParentElement, Render,
-    SharedString, Styled, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, div,
-    prelude::*, px, rgba, size,
+    App, AppContext, Bounds, Context, Entity, ParentElement, Render, SharedString, TitlebarOptions,
+    Window, WindowBounds, WindowHandle, WindowOptions, prelude::*, px, size,
 };
+use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::form::{field, v_form};
+use gpui_component::input::{Input, InputState};
+use gpui_component::label::Label;
+use gpui_component::{ActiveTheme, Root, h_flex, v_flex};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(460.), px(300.));
+const WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(520.), px(360.));
 /// How long the "Saved" confirmation stays visible.
 const SAVED_FLASH: Duration = Duration::from_secs(2);
 
 pub struct SettingsWindow {
     settings: Arc<Mutex<SessionSettings>>,
-    control_input: Entity<TextInput>,
-    language_input: Entity<TextInput>,
+    control_input: Entity<InputState>,
+    language_input: Entity<InputState>,
+    /// Cached at open: reading it does file IO and must not run per render.
+    daemon_summary: SharedString,
     saved_at: Option<Instant>,
 }
 
-/// Open the settings window, or surface the existing one.
+/// Open the settings window, or bring the existing one to the front.
 pub fn open(
-    existing: Option<WindowHandle<SettingsWindow>>,
+    existing: Option<WindowHandle<Root>>,
     settings: Arc<Mutex<SessionSettings>>,
     cx: &mut App,
-) -> Option<WindowHandle<SettingsWindow>> {
+) -> Option<WindowHandle<Root>> {
     if let Some(handle) = existing
-        && handle.update(cx, |_, _, cx| cx.notify()).is_ok()
+        && handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
     {
         cx.activate(true);
         return Some(handle);
@@ -50,10 +58,8 @@ pub fn open(
                 ..Default::default()
             },
             |window, cx| {
-                let view = cx.new(|cx| SettingsWindow::new(settings, cx));
-                let focus = view.read(cx).control_input.read(cx).focus_handle(cx);
-                window.focus(&focus, cx);
-                view
+                let view = cx.new(|cx| SettingsWindow::new(settings, window, cx));
+                cx.new(|cx| Root::new(view, window, cx))
             },
         )
         .ok()?;
@@ -62,33 +68,56 @@ pub fn open(
 }
 
 impl SettingsWindow {
-    fn new(settings: Arc<Mutex<SessionSettings>>, cx: &mut Context<Self>) -> Self {
+    fn new(
+        settings: Arc<Mutex<SessionSettings>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let current = settings.lock().unwrap().clone();
         let control_input = cx.new(|cx| {
-            TextInput::new(
-                cx,
-                "[Styling: ...] [Structure: ...] [Context: ...]",
-                &current.control_line,
-            )
+            InputState::new(window, cx)
+                .placeholder("[Styling: ...] [Structure: ...] [Context: ...]")
+                .default_value(current.control_line.clone())
         });
-        let language_input = cx.new(|cx| TextInput::new(cx, "en", &current.language));
+        let language_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("en")
+                .default_value(current.language.clone())
+        });
         Self {
             settings,
             control_input,
             language_input,
+            daemon_summary: statusbar::daemon_summary().into(),
             saved_at: None,
         }
     }
 
-    fn save(&mut self, cx: &mut Context<Self>) {
+    /// An emptied field falls back to its default: an empty control line or
+    /// language would silently degrade the models (S1-mini needs its exact
+    /// control-line format).
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let defaults = SessionSettings::default();
         let updated = SessionSettings {
-            language: self.language_input.read(cx).text().trim().to_string(),
-            control_line: self.control_input.read(cx).text().trim().to_string(),
+            language: non_empty_or(
+                self.language_input.read(cx).value().trim(),
+                defaults.language,
+            ),
+            control_line: non_empty_or(
+                self.control_input.read(cx).value().trim(),
+                defaults.control_line,
+            ),
         };
         if let Err(e) = updated.save() {
             eprintln!("saving settings failed: {e:#}");
             return;
         }
+        self.language_input.update(cx, |state, cx| {
+            state.set_value(updated.language.clone(), window, cx)
+        });
+        self.control_input.update(cx, |state, cx| {
+            state.set_value(updated.control_line.clone(), window, cx)
+        });
         *self.settings.lock().unwrap() = updated;
         self.saved_at = Some(Instant::now());
         cx.notify();
@@ -100,90 +129,68 @@ impl SettingsWindow {
         .detach();
     }
 
-    fn field(label: &str, input: Entity<TextInput>) -> impl gpui::IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(
-                div()
-                    .text_size(px(11.))
-                    .text_color(rgba(theme::TEXT_DIM | 0xB0))
-                    .child(label.to_string()),
-            )
-            .child(input)
-    }
-
-    fn info_row(label: &str, value: String) -> impl gpui::IntoElement {
-        div()
-            .flex()
+    fn info_row(&self, label: &'static str, value: SharedString, cx: &App) -> impl IntoElement {
+        h_flex()
             .justify_between()
-            .text_size(px(12.))
-            .child(
-                div()
-                    .text_color(rgba(theme::TEXT_DIM | 0xB0))
-                    .child(label.to_string()),
-            )
-            .child(
-                div()
-                    .text_color(rgba(theme::TEXT_PRIMARY | 0xD9))
-                    .child(value),
-            )
+            .text_sm()
+            .child(Label::new(label).text_color(cx.theme().muted_foreground))
+            .child(Label::new(value))
+    }
+}
+
+fn non_empty_or(value: &str, fallback: String) -> String {
+    if value.is_empty() {
+        fallback
+    } else {
+        value.to_string()
     }
 }
 
 impl Render for SettingsWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let saved = self.saved_at.is_some_and(|at| at.elapsed() < SAVED_FLASH);
-        div()
+        v_flex()
             .size_full()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .p_4()
-            .bg(rgba(theme::SURFACE | 0xFF))
-            .text_color(rgba(theme::TEXT_PRIMARY | 0xF5))
-            .child(Self::field(
-                "Post-processing prompt (S1 control line)",
-                self.control_input.clone(),
-            ))
-            .child(Self::field("Language", self.language_input.clone()))
+            .p_6()
+            .gap_6()
+            .bg(cx.theme().background)
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(Self::info_row("Hotkey", "⌥ Space".into()))
-                    .child(Self::info_row("Daemon", statusbar::daemon_summary())),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .mt_auto()
+                v_form()
                     .child(
-                        div()
-                            .id("save")
-                            .px_4()
-                            .py_1p5()
-                            .rounded_md()
-                            .bg(rgba(theme::SIGNAL_RED | 0xCC))
-                            .hover(|style| style.bg(rgba(theme::SIGNAL_RED | 0xFF)))
-                            .active(|style| style.bg(rgba(theme::SIGNAL_RED | 0xAA)))
-                            .cursor_pointer()
-                            .text_size(px(13.))
-                            .child("Save")
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|view, _, _, cx| view.save(cx)),
-                            ),
+                        field()
+                            .label("Post-processing prompt")
+                            .description("S1-mini control line; applies to the next dictation")
+                            .child(Input::new(&self.control_input)),
                     )
                     .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(rgba(theme::TEXT_DIM | 0xB0))
-                            .child(if saved { "Saved" } else { "" }),
+                        field()
+                            .label("Language")
+                            .description("ISO 639-1 hint for the speech recognizer")
+                            .child(Input::new(&self.language_input)),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(self.info_row("Hotkey", "⌥ Space".into(), cx))
+                    .child(self.info_row("Daemon", self.daemon_summary.clone(), cx)),
+            )
+            .child(
+                h_flex()
+                    .mt_auto()
+                    .justify_end()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        Label::new(if saved { "Saved" } else { "" })
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(
+                        Button::new("save")
+                            .primary()
+                            .label("Save")
+                            .on_click(cx.listener(|view, _, window, cx| view.save(window, cx))),
                     ),
             )
     }

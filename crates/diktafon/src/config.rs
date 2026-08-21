@@ -49,6 +49,7 @@ impl Config {
 /// edited live from the settings window; the compile-time [`CONFIG`] provides
 /// the defaults.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct SessionSettings {
     pub language: String,
     pub control_line: String,
