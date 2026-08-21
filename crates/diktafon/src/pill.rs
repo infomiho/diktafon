@@ -165,6 +165,10 @@ pub struct Pill {
     last_active: Phase,
     /// Smoothed marquee scroll offset, eased toward its target every frame.
     marquee_offset: f32,
+    /// When this session's recording began, for the elapsed-time readout.
+    recording_since: Option<std::time::Instant>,
+    /// Drives the comet orbit while transcribing/polishing.
+    opened_at: std::time::Instant,
 }
 
 impl Pill {
@@ -189,6 +193,8 @@ impl Pill {
             closing: false,
             last_active: Phase::Recording,
             marquee_offset: 0.,
+            recording_since: None,
+            opened_at: std::time::Instant::now(),
         }
     }
 
@@ -196,7 +202,19 @@ impl Pill {
     /// satellites orbiting it. Present in every phase; the satellites rest on
     /// a quiet ring when there is no signal.
     fn orbital_meter(&self, display: Phase, breathing: bool) -> AnyElement {
-        let levels = *self.levels.lock().unwrap();
+        // Three behaviors for one element: mic levels while recording, a
+        // comet orbiting while the daemon works, a quiet ring otherwise.
+        let levels: [f32; SATELLITES] = match display {
+            Phase::Recording => *self.levels.lock().unwrap(),
+            Phase::Transcribing | Phase::Polishing => {
+                let t = self.opened_at.elapsed().as_secs_f32();
+                std::array::from_fn(|i| {
+                    let angle = i as f32 * std::f32::consts::TAU / SATELLITES as f32;
+                    (0.5 + 0.5 * (angle - t * 3.5).cos()).powi(3)
+                })
+            }
+            _ => [0.; SATELLITES],
+        };
         let center = METER_BOX / 2.;
         let satellites = (0..SATELLITES).map(move |i| {
             let level = levels[i];
@@ -295,6 +313,11 @@ fn label(text: String, busy: bool) -> AnyElement {
     }
 }
 
+fn elapsed_readout(since: std::time::Instant) -> String {
+    let secs = since.elapsed().as_secs();
+    format!("{}:{:02}", secs / 60, secs % 60)
+}
+
 fn dot_core(phase: Phase, breathing: bool) -> AnyElement {
     let color = match phase {
         Phase::Arming | Phase::Idle => rgb(0x8F8F94),
@@ -344,7 +367,14 @@ impl Render for Pill {
             phase
         };
         let partial = self.dictation.read(cx).partial.clone();
-        let text_width = f64::from(PILL_WIDTH) as f32 - METER_BOX - 3. * 12.;
+        if display == Phase::Recording && self.recording_since.is_none() {
+            self.recording_since = Some(std::time::Instant::now());
+        }
+        let elapsed = (display == Phase::Recording)
+            .then(|| self.recording_since.map(elapsed_readout))
+            .flatten();
+        let time_width = if elapsed.is_some() { 34. } else { 0. };
+        let text_width = f64::from(PILL_WIDTH) as f32 - METER_BOX - 3. * 12. - time_width;
         let content = match display {
             // Words appear as they are recognized and scroll once the line
             // fills; empty until then.
@@ -372,9 +402,9 @@ impl Render for Pill {
             .border_color(rgba(0xFFFFFF14))
             .child(self.orbital_meter(display, phase == Phase::Recording && !reduce_motion))
             .child(
-                // Cross-fade the content on phase changes and on the bars ->
+                // Cross-fade the content on phase changes and on the empty ->
                 // words swap; the changing key restarts the fade.
-                div().child(content).with_animation(
+                div().flex_1().child(content).with_animation(
                     (
                         "content-fade",
                         phase_key(display) * 2 + u64::from(!partial.is_empty()),
@@ -383,6 +413,17 @@ impl Render for Pill {
                     |el, delta| el.opacity(delta),
                 ),
             );
+        let pill = match elapsed {
+            Some(readout) => pill.child(
+                div()
+                    .flex_none()
+                    .text_size(px(11.))
+                    .text_color(rgba(0xFFFFFF73))
+                    .whitespace_nowrap()
+                    .child(readout),
+            ),
+            None => pill,
+        };
 
         // Enter rises in; exit sinks out along the same path, softer.
         let root = div().size_full().relative();
