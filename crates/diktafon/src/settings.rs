@@ -23,6 +23,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(720.), px(500.));
+/// One control height for the whole window: the kit's Large inputs and
+/// selects are 40px, but its Large button keeps the 32px Medium height, so
+/// the button gets the height explicitly to stay coherent.
+const CONTROL_HEIGHT: gpui::Pixels = px(40.);
 /// How long the "Saved" confirmation stays visible.
 const SAVED_FLASH: Duration = Duration::from_secs(2);
 
@@ -450,6 +454,8 @@ impl Render for SettingsWindow {
                                 Button::new("save")
                                     .primary()
                                     .large()
+                                    .h(CONTROL_HEIGHT)
+                                    .px_5()
                                     .label("Save")
                                     .on_click(cx.listener(|view, _, _, cx| view.save(cx))),
                             ),
