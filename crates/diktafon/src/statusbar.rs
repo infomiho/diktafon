@@ -177,7 +177,7 @@ fn orbit_icon(phase: Phase) -> Retained<NSImage> {
 
 fn phase_label(phase: Phase) -> &'static str {
     match phase {
-        Phase::Idle => "Idle",
+        Phase::Idle => "Ready",
         Phase::Arming => "Starting",
         Phase::Recording => "Listening",
         Phase::Transcribing => "Transcribing",

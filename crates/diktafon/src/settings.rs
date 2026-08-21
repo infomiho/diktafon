@@ -414,8 +414,8 @@ impl SettingsWindow {
         v_flex()
             .gap_8()
             .child(Self::control_row(
-                "Start at Login",
-                "Launch diktafon when you log in (needs the app bundle)",
+                "Start at login",
+                "Launch diktafon when you log in",
                 Switch::new("autostart")
                     .large()
                     .checked(self.autostart)
@@ -438,13 +438,13 @@ impl SettingsWindow {
             .child(
                 field()
                     .label("Post-processing prompt")
-                    .description("S1-mini control line; applies to the next dictation")
+                    .description("Shapes how your words are polished; applies to the next dictation")
                     .child(Input::new(&self.control_input).large()),
             )
             .child(
                 field()
                     .label("Language")
-                    .description("Hint for the speech recognizer")
+                    .description("The language you dictate in")
                     .child(Select::new(&self.language_select).large()),
             )
     }
@@ -511,11 +511,11 @@ impl SettingsWindow {
                     }),
             );
         let card = match &status.asr {
-            Some(asr) => card.child(Self::daemon_row("Speech model", asr.clone(), cx)),
+            Some(asr) => card.child(Self::daemon_row("Transcription model", asr.clone(), cx)),
             None => card,
         };
         match &status.llm {
-            Some(llm) => card.child(Self::daemon_row("Polish model", llm.clone(), cx)),
+            Some(llm) => card.child(Self::daemon_row("Polishing model", llm.clone(), cx)),
             None => card,
         }
     }

@@ -343,9 +343,10 @@ fn control_loop(
                                 session = Some(s);
                                 let _ = phases.unbounded_send(PhaseEvent::RecordingStarted);
                             } else {
-                                let error =
-                                    "microphone produced no samples; is another app holding it?";
-                                eprintln!("{error}");
+                                let error = "Microphone unavailable";
+                                eprintln!(
+                                    "microphone produced no samples; is another app holding it?"
+                                );
                                 // stop() flushes the (empty) session to the
                                 // daemon; consume its result so it cannot be
                                 // misdelivered to the next session.
@@ -380,16 +381,16 @@ fn control_loop(
                             println!(">>> {text}");
                             let keycode = v_keycode.load(Ordering::Relaxed) as u16;
                             let error = paste::insert(&text, keycode).err().map(|e| {
-                                eprintln!("paste failed (Accessibility permission?): {e}");
-                                format!("paste failed (Accessibility permission?): {e:#}")
+                                eprintln!("paste failed (Accessibility permission?): {e:#}");
+                                "Paste needs Accessibility".to_string()
                             });
                             println!("stop-to-paste: {:.2?}", stopped_at.elapsed());
                             (error, false)
                         }
                         Err(e) => {
                             play(sounds::Cue::Error);
-                            eprintln!("inference error: {e}");
-                            (Some(format!("{e:#}")), false)
+                            eprintln!("inference error: {e:#}");
+                            (Some("Transcription failed".to_string()), false)
                         }
                     };
                     let _ = phases.unbounded_send(PhaseEvent::SessionEnded { error, cancelled });
