@@ -42,7 +42,7 @@ const CONTENT_FADE: Duration = Duration::from_millis(150);
 const DOT_BREATH: Duration = Duration::from_millis(1100);
 /// Aurora glow floor while recording: the wash never goes fully dark, so
 /// quiet moments read as embers rather than the effect blinking off.
-const AURORA_BASELINE: f32 = 0.25;
+const AURORA_BASELINE: f32 = 0.22;
 
 /// Open the pill while a session is active; on idle, play the exit animation
 /// and then close it.
@@ -244,7 +244,7 @@ impl Pill {
                     (t * 0.4 + seed).sin() * 16.
                 };
                 let intensity = (AURORA_BASELINE + level).min(1.);
-                let glow = rgba(hue | (intensity * 190.) as u32);
+                let glow = rgba(hue | (intensity * 170.) as u32);
                 div()
                     .absolute()
                     .left(px(x + drift - 4.))
@@ -254,7 +254,7 @@ impl Pill {
                     .shadow(vec![
                         BoxShadow::new(px(0.), px(0.), glow.into())
                             .blur_radius(px(22.))
-                            .spread_radius(px(11.)),
+                            .spread_radius(px(10.)),
                     ])
             }))
             .into_any_element()
@@ -272,7 +272,7 @@ impl Pill {
             0.5 + 0.5 * (t * 0.7).sin()
         };
         let edge = |hue: u32, weight: f32| {
-            let alpha = (overall * weight * 150.) as u32;
+            let alpha = (overall * weight * 135.) as u32;
             BoxShadow::new(px(0.), px(0.), rgba(hue | alpha).into())
                 .blur_radius(px(12.))
                 .spread_radius(px(2.))
@@ -340,7 +340,7 @@ impl Pill {
 fn label(text: String, busy: bool) -> AnyElement {
     let text_el = div()
         .text_sm()
-        .text_color(rgba(theme::TEXT_PRIMARY | 0xD9))
+        .text_color(rgba(theme::TEXT_PRIMARY | 0xF5))
         .whitespace_nowrap()
         .overflow_hidden()
         .max_w(px(170.))
