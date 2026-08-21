@@ -184,7 +184,7 @@ struct Hotkeys {
 }
 
 fn control_loop(
-    recorder: Recorder,
+    mut recorder: Recorder,
     daemon: DaemonClient,
     events: mpsc::Receiver<GlobalHotKeyEvent>,
     phases: futures::channel::mpsc::UnboundedSender<PhaseEvent>,
@@ -226,6 +226,7 @@ fn control_loop(
                                 // daemon; consume its result so it cannot be
                                 // misdelivered to the next session.
                                 s.stop();
+                                recorder.mark_stream_failed();
                                 let _ = daemon.finish();
                                 let _ = phases.unbounded_send(PhaseEvent::SessionEnded {
                                     error: Some(error.into()),

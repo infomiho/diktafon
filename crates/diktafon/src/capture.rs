@@ -29,13 +29,32 @@ pub const LEVEL_BAR_COUNT: usize = 16;
 /// tick and read by the pill's render loop.
 pub type LevelBars = Arc<Mutex<[f32; LEVEL_BAR_COUNT]>>;
 
-pub struct Recorder {
+struct InputDevice {
     device: cpal::Device,
     config: cpal::SupportedStreamConfig,
     channels: usize,
     rate: u32,
+    name: String,
+}
+
+fn default_input() -> Result<InputDevice> {
+    let device = cpal::default_host()
+        .default_input_device()
+        .context("no input device")?;
+    let config = device.default_input_config()?;
+    let channels = config.channels() as usize;
+    let rate = config.sample_rate().0;
+    let name = device.name().unwrap_or_else(|_| "unknown".into());
+    Ok(InputDevice { device, config, channels, rate, name })
+}
+
+pub struct Recorder {
+    input: InputDevice,
     vad_model: PathBuf,
     levels: LevelBars,
+    /// Set from cpal's error callback: the device disconnected mid-session
+    /// (AirPods dropping, USB unplug) without closing the callback channel.
+    stream_failed: Arc<AtomicBool>,
 }
 
 pub struct Session {
@@ -66,31 +85,59 @@ impl FirstSampleSignal {
 
 impl Recorder {
     pub fn new(vad_model: PathBuf, levels: LevelBars) -> Result<Self> {
-        let device = cpal::default_host()
-            .default_input_device()
-            .context("no input device")?;
-        let config = device.default_input_config()?;
-        let channels = config.channels() as usize;
-        let rate = config.sample_rate().0;
-        Ok(Self { device, config, channels, rate, vad_model, levels })
+        Ok(Self {
+            input: default_input()?,
+            vad_model,
+            levels,
+            stream_failed: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     pub fn describe(&self) -> String {
-        format!(
-            "{} ({} Hz, {} ch)",
-            self.device.name().unwrap_or_else(|_| "unknown".into()),
-            self.rate,
-            self.channels
-        )
+        format!("{} ({} Hz, {} ch)", self.input.name, self.input.rate, self.input.channels)
     }
 
-    pub fn start(&self, chunk_tx: mpsc::Sender<Msg>) -> Result<Session> {
+    /// Reopen the input when the stream died or the system default moved
+    /// (e.g. AirPods connected); on failure keep the old device and let the
+    /// session surface the error.
+    fn refresh_input_if_needed(&mut self) {
+        let failed = self.stream_failed.swap(false, Ordering::Relaxed);
+        let default_name = cpal::default_host()
+            .default_input_device()
+            .and_then(|d| d.name().ok());
+        let default_changed =
+            default_name.as_ref().is_some_and(|name| *name != self.input.name);
+        if !(failed || default_changed) {
+            return;
+        }
+        match default_input() {
+            Ok(input) => {
+                self.input = input;
+                println!("Mic: {}", self.describe());
+            }
+            Err(e) => {
+                // Keep the retry armed: with the flag consumed and the name
+                // unchanged, nothing else would ever trigger another rebuild.
+                self.stream_failed.store(true, Ordering::Relaxed);
+                eprintln!("reopening the microphone failed: {e:#}");
+            }
+        }
+    }
+
+    /// Mark the current device suspect so the next session rebuilds it; used
+    /// when a stream produced no samples at all.
+    pub fn mark_stream_failed(&self) {
+        self.stream_failed.store(true, Ordering::Relaxed);
+    }
+
+    pub fn start(&mut self, chunk_tx: mpsc::Sender<Msg>) -> Result<Session> {
+        self.refresh_input_if_needed();
         // Fresh VAD per session: Silero keeps LSTM state across frames, and
         // loading the 1.8MB model is fast enough to not delay recording.
         let silero = SileroVad::new(&self.vad_model, SPEECH_THRESHOLD)
             .with_context(|| format!("loading VAD model {}", self.vad_model.display()))?;
         let mut chunker = VadChunker::new(Box::new(silero));
-        let mut resampler = StreamResampler::new(self.rate, TARGET_RATE);
+        let mut resampler = StreamResampler::new(self.input.rate, TARGET_RATE);
 
         let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
         let (live_tx, live_rx) = mpsc::channel();
@@ -153,11 +200,15 @@ impl Recorder {
         buffer: Arc<Mutex<Vec<f32>>>,
         live: Arc<FirstSampleSignal>,
     ) -> Result<cpal::Stream> {
-        let err_fn = |e| eprintln!("stream error: {e}");
-        let stream_config: cpal::StreamConfig = self.config.clone().into();
-        let channels = self.channels;
-        let stream = match self.config.sample_format() {
-            cpal::SampleFormat::F32 => self.device.build_input_stream(
+        let failed = self.stream_failed.clone();
+        let err_fn = move |e| {
+            eprintln!("stream error: {e}");
+            failed.store(true, Ordering::Relaxed);
+        };
+        let stream_config: cpal::StreamConfig = self.input.config.clone().into();
+        let channels = self.input.channels;
+        let stream = match self.input.config.sample_format() {
+            cpal::SampleFormat::F32 => self.input.device.build_input_stream(
                 &stream_config,
                 move |data: &[f32], _| {
                     live.fire();
@@ -166,7 +217,7 @@ impl Recorder {
                 err_fn,
                 None,
             )?,
-            cpal::SampleFormat::I16 => self.device.build_input_stream(
+            cpal::SampleFormat::I16 => self.input.device.build_input_stream(
                 &stream_config,
                 move |data: &[i16], _| {
                     live.fire();
