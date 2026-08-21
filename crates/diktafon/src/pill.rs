@@ -16,7 +16,7 @@ use gpui::{
     Animation, AnimationExt, AnyElement, App, AppContext, Bounds, Context, Entity, IntoElement,
     ParentElement, Pixels, Render, Styled, Window, WindowBackgroundAppearance, WindowBounds,
     WindowHandle, WindowKind, WindowOptions, div, ease_in_out, ease_out_quint, point,
-    pulsating_between, px, rgb, rgba, size,
+    pulsating_between, px, rgba, size,
 };
 use objc2::MainThreadMarker;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -201,47 +201,47 @@ impl Pill {
     /// The pill's identity element: the phase dot with the voice level as
     /// satellites orbiting it. Present in every phase; the satellites rest on
     /// a quiet ring when there is no signal.
-    fn orbital_meter(&self, display: Phase, breathing: bool) -> AnyElement {
-        // Three behaviors for one element: mic levels while recording, a
-        // comet orbiting while the daemon works, a quiet ring otherwise.
-        let levels: [f32; SATELLITES] = match display {
-            Phase::Recording => *self.levels.lock().unwrap(),
-            Phase::Transcribing | Phase::Polishing => {
-                let t = self.opened_at.elapsed().as_secs_f32();
+    /// The pill's identity element: an orbit of satellites that IS the phase
+    /// indicator. Red and riding the voice while recording; a white comet
+    /// while transcribing; a white ring breathing in phase while polishing
+    /// (the text being condensed); a quiet gray ring otherwise.
+    fn orbital_meter(&self, display: Phase, reduce_motion: bool) -> AnyElement {
+        let t = self.opened_at.elapsed().as_secs_f32();
+        let (base_color, levels): (u32, [f32; SATELLITES]) = match display {
+            Phase::Recording => (0xE5484D00, *self.levels.lock().unwrap()),
+            Phase::Transcribing if reduce_motion => (0xFFFFFF00, [0.3; SATELLITES]),
+            Phase::Polishing if reduce_motion => (0xFFFFFF00, [0.3; SATELLITES]),
+            Phase::Transcribing => (
+                0xFFFFFF00,
                 std::array::from_fn(|i| {
                     let angle = i as f32 * std::f32::consts::TAU / SATELLITES as f32;
                     (0.5 + 0.5 * (angle - t * 3.5).cos()).powi(3)
-                })
-            }
-            _ => [0.; SATELLITES],
+                }),
+            ),
+            Phase::Polishing => (
+                0xFFFFFF00,
+                [(0.5 + 0.5 * (t * 4.).cos()).powi(2) * 0.7; SATELLITES],
+            ),
+            _ => (0x8F8F9400, [0.; SATELLITES]),
         };
         let center = METER_BOX / 2.;
         let satellites = (0..SATELLITES).map(move |i| {
             let level = levels[i];
             let angle = i as f32 * std::f32::consts::TAU / SATELLITES as f32;
-            let radius = 8. + level * 5.;
-            let size = 2.;
+            let radius = 7.5 + level * 5.;
+            let size = 2.5;
             div()
                 .absolute()
                 .left(px(center + angle.cos() * radius - size / 2.))
                 .top(px(center + angle.sin() * radius - size / 2.))
                 .size(px(size))
                 .rounded_full()
-                .bg(rgba(0xFFFFFF00 | (0x50 + (level * 170.) as u32)))
+                .bg(rgba(base_color | (0x60 + (level * 159.) as u32)))
         });
         div()
             .relative()
             .size(px(METER_BOX))
             .flex_none()
-            .child(
-                div()
-                    .absolute()
-                    .left(px(center - 3.))
-                    .top(px(center - 3.))
-                    .size(px(6.))
-                    .rounded_full()
-                    .child(dot_core(display, breathing)),
-            )
             .children(satellites)
             .into_any_element()
     }
@@ -270,7 +270,9 @@ impl Pill {
         div()
             .relative()
             .w(px(width))
-            .h_full()
+            // Explicit height: h_full inside the auto-sized flex parent
+            // resolves circularly to zero and the text vanishes.
+            .h(px(22.))
             .overflow_hidden()
             .child(
                 div()
@@ -316,29 +318,6 @@ fn label(text: String, busy: bool) -> AnyElement {
 fn elapsed_readout(since: std::time::Instant) -> String {
     let secs = since.elapsed().as_secs();
     format!("{}:{:02}", secs / 60, secs % 60)
-}
-
-fn dot_core(phase: Phase, breathing: bool) -> AnyElement {
-    let color = match phase {
-        Phase::Arming | Phase::Idle => rgb(0x8F8F94),
-        Phase::Recording => rgb(0xE5484D),
-        Phase::Transcribing => rgb(0xF0B429),
-        Phase::Polishing => rgb(0x46A758),
-    };
-    let dot = div().size_full().rounded_full().bg(color);
-    // The breath means "live microphone"; processing phases hold steady.
-    if breathing {
-        dot.with_animation(
-            "dot-breath",
-            Animation::new(DOT_BREATH)
-                .repeat()
-                .with_easing(pulsating_between(0.4, 1.0)),
-            |dot, level| dot.opacity(level),
-        )
-        .into_any_element()
-    } else {
-        dot.into_any_element()
-    }
 }
 
 /// Deliberately not `phase as u64`: these keys are animation element ids and
@@ -400,7 +379,7 @@ impl Render for Pill {
             .bg(rgba(0x16161AE8))
             .border_1()
             .border_color(rgba(0xFFFFFF14))
-            .child(self.orbital_meter(display, phase == Phase::Recording && !reduce_motion))
+            .child(self.orbital_meter(display, reduce_motion))
             .child(
                 // Cross-fade the content on phase changes and on the empty ->
                 // words swap; the changing key restarts the fade.
