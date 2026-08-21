@@ -2,10 +2,12 @@
 # Build diktafon.app so macOS attaches microphone and Accessibility permissions
 # to the app itself instead of the launching terminal.
 #
-# Ad-hoc signing means the signature (and thus the TCC identity) changes on
-# every rebuild: the mic permission re-prompts, but Accessibility fails
-# silently while its checkbox still shows enabled; remove and re-add the app in
-# System Settings. Good enough until there is a real signing identity.
+# Signing identity: a real Apple Development certificate keeps the TCC
+# identity stable across rebuilds, so mic and Accessibility grants survive.
+# Auto-discovered when exactly one exists; DIKTAFON_CODESIGN_IDENTITY
+# overrides. The ad-hoc fallback re-prompts mic on each rebuild and breaks
+# Accessibility silently (its checkbox still shows enabled; remove and re-add
+# the app in System Settings).
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -20,7 +22,16 @@ cp target/release/diktafon "$app/Contents/MacOS/diktafon"
 # Next to the client so its auto-spawn finds it.
 cp target/release/diktafond "$app/Contents/MacOS/diktafond"
 
-codesign --force --sign - "$app"
+identity="${DIKTAFON_CODESIGN_IDENTITY:-}"
+if [ -z "$identity" ]; then
+  identity=$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development/ {print $2; exit}')
+fi
+if [ -n "$identity" ]; then
+  echo "Signing with: $identity"
+else
+  echo "No Apple Development identity found; signing ad-hoc (permissions reset on rebuild)"
+fi
+codesign --force --sign "${identity:--}" "$app"
 codesign --verify --deep "$app"
 plutil -lint "$app/Contents/Info.plist" > /dev/null
 
