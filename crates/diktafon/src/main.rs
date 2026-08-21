@@ -13,13 +13,6 @@ use std::thread;
 use std::time::Instant;
 use transport::DaemonClient;
 
-// global-hotkey installs its Carbon handler on the application event target,
-// which only an application event loop dispatches; a bare CFRunLoop does not.
-#[link(name = "Carbon", kind = "framework")]
-unsafe extern "C" {
-    fn RunApplicationEventLoop();
-}
-
 fn vad_model_path() -> PathBuf {
     PathBuf::from(std::env::var("HOME").expect("HOME not set"))
         .join("Library/Application Support/diktafon/models/silero_vad_v4.onnx")
@@ -52,9 +45,27 @@ fn main() -> Result<()> {
         }
     });
 
-    println!("Ready. Hold Option+Space to dictate, release to paste.");
-    unsafe { RunApplicationEventLoop() };
+    // global-hotkey installs its Carbon handler on the application event
+    // target, which GPUI's NSApp run loop dispatches (a bare CFRunLoop would
+    // not). Explicit quit mode keeps the windowless app alive.
+    gpui_platform::application()
+        .with_quit_mode(gpui::QuitMode::Explicit)
+        .run(|_cx| {
+            hide_from_dock();
+            println!("Ready. Hold Option+Space to dictate, release to paste.");
+        });
     Ok(())
+}
+
+/// GPUI forces the Regular activation policy on launch, which gives this
+/// windowless app a Dock icon and a Cmd+Tab entry; demote it to a background
+/// app. Must run on the main thread after GPUI finished launching.
+fn hide_from_dock() {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+    let mtm = MainThreadMarker::new().expect("not on the main thread");
+    NSApplication::sharedApplication(mtm)
+        .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 }
 
 fn control_loop(recorder: Recorder, daemon: DaemonClient, events: mpsc::Receiver<HotKeyState>) {

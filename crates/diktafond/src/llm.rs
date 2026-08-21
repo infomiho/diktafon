@@ -58,8 +58,7 @@ impl Polisher {
         let mut out = String::new();
         let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut sampler = LlamaSampler::greedy();
-        let mut n_cur = batch.n_tokens();
-        for _ in 0..max_new {
+        for n_cur in (batch.n_tokens()..).take(max_new as usize) {
             let token = sampler.sample(&ctx, batch.n_tokens() - 1);
             sampler.accept(token);
             if self.model.is_eog_token(token) {
@@ -68,7 +67,6 @@ impl Polisher {
             out.push_str(&self.model.token_to_piece(token, &mut decoder, false, None)?);
             batch.clear();
             batch.add(token, n_cur, &[0], true)?;
-            n_cur += 1;
             ctx.decode(&mut batch)?;
         }
         Ok(cleanup(&out))

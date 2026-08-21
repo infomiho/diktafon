@@ -2,9 +2,15 @@
 name = "diktafon"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
+# Pinned to a Zed rev from 2026-08-21; gpui is not on crates.io.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "ef50ad95b522d49402d30ed11c484d63d57a0757" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "ef50ad95b522d49402d30ed11c484d63d57a0757" }
 cpal = "0.16"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder"] }
 transcribe-rs = { version = "0.3.11", default-features = false, features = ["vad-silero"] }
 global-hotkey = "0.8"
 arboard = "3"

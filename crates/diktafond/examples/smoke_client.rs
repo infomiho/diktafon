@@ -19,8 +19,10 @@ fn wav_samples(path: &str) -> Vec<f32> {
         let size = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().unwrap()) as usize;
         if &bytes[pos..pos + 4] == b"data" {
             return bytes[pos + 8..pos + 8 + size]
-                .chunks_exact(2)
-                .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| i16::from_le_bytes(*b) as f32 / 32768.0)
                 .collect();
         }
         pos += 8 + size + (size & 1);

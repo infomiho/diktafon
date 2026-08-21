@@ -2,6 +2,7 @@
 name = "diktafond"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 transcribe-rs = { version = "0.3.11", features = ["onnx"] }

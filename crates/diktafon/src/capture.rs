@@ -357,8 +357,10 @@ mod silero_tests {
 
         let wav = std::fs::read(support.join("eval-own/01.wav")).unwrap();
         let samples: Vec<f32> = wav[44..]
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b) as f32 / 32768.0)
             .collect();
         let clip_secs = samples.len() as f32 / TARGET_RATE as f32;
 
