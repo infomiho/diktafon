@@ -29,6 +29,13 @@ pub enum PhaseEvent {
     SessionEnded {
         error: Option<String>,
     },
+    /// The daemon is still fetching a model (first run); sessions wait on it.
+    DownloadProgress {
+        model: String,
+        percent: u8,
+    },
+    /// The daemon finished provisioning and can serve sessions.
+    DownloadFinished,
 }
 
 pub struct Dictation {
@@ -36,6 +43,15 @@ pub struct Dictation {
     /// Transcribed text accumulated so far in the current session.
     pub partial: String,
     pub last_error: Option<String>,
+    /// Model download underway on the daemon, shown instead of the session
+    /// content so a first run does not look like a hang.
+    pub download: Option<Download>,
+}
+
+#[derive(Clone, PartialEq)]
+pub struct Download {
+    pub model: String,
+    pub percent: u8,
 }
 
 impl Dictation {
@@ -48,6 +64,7 @@ impl Dictation {
             phase: Phase::Idle,
             partial: String::new(),
             last_error: None,
+            download: None,
         });
         cx.spawn({
             let entity = entity.clone();
@@ -86,6 +103,14 @@ impl Dictation {
             PhaseEvent::SessionEnded { error } => {
                 self.last_error = error;
                 Phase::Idle
+            }
+            PhaseEvent::DownloadProgress { model, percent } => {
+                self.download = Some(Download { model, percent });
+                self.phase
+            }
+            PhaseEvent::DownloadFinished => {
+                self.download = None;
+                self.phase
             }
         };
     }

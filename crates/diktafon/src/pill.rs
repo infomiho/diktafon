@@ -414,16 +414,25 @@ impl Render for Pill {
         }
         let aurora_bands = (display == Phase::Recording).then(|| self.aurora_bands());
         let elapsed = self.recording_since.filter(|_| display == Phase::Recording);
-        let content = match display {
-            // The orbit carries the liveness while recording; the label just
-            // states what the pill is doing.
-            Phase::Recording => label("Listening".into(), false),
-            Phase::Arming => label("Starting".into(), false),
-            // The words themselves are about to be pasted; the label just has
-            // to feel alive, so it pulses.
-            Phase::Transcribing => label("Transcribing".into(), !reduce_motion),
-            Phase::Polishing => label("Polishing".into(), !reduce_motion),
-            Phase::Idle => label(String::new(), false),
+        let download = self.dictation.read(cx).download.clone();
+        let content = match &download {
+            // A first-run model download outranks the session content: the
+            // session is stalled on it and would otherwise look like a hang.
+            Some(download) => label(
+                format!("Downloading models {}%", download.percent),
+                !reduce_motion,
+            ),
+            None => match display {
+                // The orbit carries the liveness while recording; the label
+                // just states what the pill is doing.
+                Phase::Recording => label("Listening".into(), false),
+                Phase::Arming => label("Starting".into(), false),
+                // The words themselves are about to be pasted; the label just
+                // has to feel alive, so it pulses.
+                Phase::Transcribing => label("Transcribing".into(), !reduce_motion),
+                Phase::Polishing => label("Polishing".into(), !reduce_motion),
+                Phase::Idle => label(String::new(), false),
+            },
         };
 
         let pill = div()
@@ -450,7 +459,10 @@ impl Render for Pill {
                 // Cross-fade the content on phase changes; the changing key
                 // restarts the fade.
                 div().flex_1().child(content).with_animation(
-                    ("content-fade", phase_key(display)),
+                    (
+                        "content-fade",
+                        phase_key(display) * 2 + u64::from(download.is_some()),
+                    ),
                     Animation::new(CONTENT_FADE).with_easing(ease_out_quint()),
                     |el, delta| el.opacity(delta),
                 ),

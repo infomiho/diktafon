@@ -464,6 +464,9 @@ impl Transport {
         loop {
             match read_frame::<DaemonMsg>(&mut &*stream)? {
                 Some(DaemonMsg::Ready) => {
+                    if let Some(tx) = &self.ledger.phase_tx {
+                        let _ = tx.unbounded_send(PhaseEvent::DownloadFinished);
+                    }
                     stream.set_read_timeout(None)?;
                     return Ok(());
                 }
@@ -472,6 +475,13 @@ impl Transport {
                     downloaded_bytes,
                     total_bytes,
                 }) => {
+                    if let Some(tx) = &self.ledger.phase_tx {
+                        let percent = (downloaded_bytes * 100 / total_bytes.max(1)) as u8;
+                        let _ = tx.unbounded_send(PhaseEvent::DownloadProgress {
+                            model: model.clone(),
+                            percent,
+                        });
+                    }
                     if last_print.elapsed() >= Duration::from_secs(1) {
                         eprintln!(
                             "  daemon is downloading {model}: {}/{} MB",

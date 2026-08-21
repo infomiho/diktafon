@@ -5,6 +5,7 @@ mod config;
 mod dictation;
 mod keymap;
 mod paste;
+mod permissions;
 mod pill;
 mod sounds;
 mod statusbar;
@@ -193,6 +194,7 @@ fn main() -> Result<()> {
         .with_quit_mode(gpui::QuitMode::Explicit)
         .run(move |cx| {
             hide_from_dock();
+            permissions::check_at_launch();
             let dictation = Dictation::spawn(cx, phase_rx);
             // The Carbon hotkey manager lives on this thread; register Escape
             // only while a session could still be cancelled.
