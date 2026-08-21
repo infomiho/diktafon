@@ -168,10 +168,16 @@ fn mark_icon(phase: Phase) -> Retained<NSImage> {
             ),
         );
         let radius = f64::from(mark::BODY_R) * SCALE;
-        let face =
-            objc2_app_kit::NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(body, radius, radius);
+        let face = objc2_app_kit::NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+            body, radius, radius,
+        );
         face.setWindingRule(objc2_app_kit::NSWindingRule::EvenOdd);
-        oval(&face, mark::DIAL_X, mark::DIAL_Y, f64::from(mark::DIAL_R) * SCALE);
+        oval(
+            &face,
+            mark::DIAL_X,
+            mark::DIAL_Y,
+            f64::from(mark::DIAL_R) * SCALE,
+        );
         for (i, (gx, gy)) in mark::grille().enumerate() {
             let dot = f64::from(mark::GRILLE_R) * SCALE * HOLE_BOOST;
             let dot = match phase {
@@ -187,7 +193,12 @@ fn mark_icon(phase: Phase) -> Retained<NSImage> {
         // The dial hub is the REC light.
         if matches!(phase, Phase::Arming | Phase::Recording) {
             let hub = objc2_app_kit::NSBezierPath::new();
-            oval(&hub, mark::DIAL_X, mark::DIAL_Y, f64::from(mark::HUB_R) * SCALE * HUB_BOOST);
+            oval(
+                &hub,
+                mark::DIAL_X,
+                mark::DIAL_Y,
+                f64::from(mark::HUB_R) * SCALE * HUB_BOOST,
+            );
             hub.fill();
         }
         objc2::runtime::Bool::YES

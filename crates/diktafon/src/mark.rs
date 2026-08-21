@@ -34,7 +34,13 @@ fn device_path(x: f32, y: f32, s: f32) -> String {
     let tx = |v: f32| x + (v - BODY_X) * s;
     let ty = |v: f32| y + (v - BODY_Y) * s;
     let rect = {
-        let (x0, y0, x1, y1, r) = (tx(BODY_X), ty(BODY_Y), tx(BODY_X + BODY_W), ty(BODY_Y + BODY_H), BODY_R * s);
+        let (x0, y0, x1, y1, r) = (
+            tx(BODY_X),
+            ty(BODY_Y),
+            tx(BODY_X + BODY_W),
+            ty(BODY_Y + BODY_H),
+            BODY_R * s,
+        );
         format!(
             "M {x} {y0} H {xr} A {r} {r} 0 0 1 {x1} {yr} V {yb} A {r} {r} 0 0 1 {xr} {y1} \
              H {x} A {r} {r} 0 0 1 {x0} {yb} V {yr} A {r} {r} 0 0 1 {x} {y0} Z",

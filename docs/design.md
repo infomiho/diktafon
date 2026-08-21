@@ -100,10 +100,11 @@ components:
     dot: 8px                   # signal-magenta = alive, ring-idle = not; never glows
     rows: muted label left, truncating mono value right
   pill:
-    size: 220x38px
+    size: 172x38px             # fits content up to 260px for long texts (errors, download)
     rounded: full
     backgroundColor: "{surface} @ 91%"
     borderColor: "{outline} @ 13%"
+    meter: the mark's grille extended to 5x3 dots  # red rides the voice; white scan transcribing; magenta twinkle polishing
 ---
 
 # Signal
@@ -179,20 +180,21 @@ a fourth level ("material") without changing the rules above.
 
 ## Motion
 
-- Signal-driven motion is 1:1 with the audio level (recording orbit), and
-  the recording aurora (spectrum-fed blobs inside the pill plus hue-trading
-  inset edge glow) rides a smoothed level with a baseline floor, so it
-  breathes rather than flashes.
-- Ambient motion (processing states) is slow and periodic: a soft highlight
-  circling at ~0.25 rev/s (transcribing), a radius breath on a ~3s cycle
-  (polishing). Nothing strobes; per-frame change stays small.
+- Signal-driven motion is 1:1 with the audio level: the pill's grille meter
+  and the recording aurora both ride fast-attack/slow-decay smoothing with a
+  baseline floor, so speech reads as motion and never strobes.
+- Ambient motion (processing states) is slow and periodic: a white scan
+  sweeping the grille (transcribing), random dots twinkling to a new
+  constellation each beat (polishing). Phase changes lerp the grille color
+  (~180ms) instead of hard-cutting.
 - Microinteractions confirm, never decorate: hover and press feedback
   ~150ms ease-out; state cross-fades 150ms; no staggering of routine
   updates.
-- Enter rises in (200ms), exit sinks out along the same path, softer
-  (400ms staged: contents fade first, then the chip sinks). Session endings
-  get a beat: a white bloom on paste (350ms), a lingering red state on
-  error, a quiet ring on cancel.
+- Enter rises in (260ms, strong ease-out); the exit is faster: contents
+  fade in place (130ms), then the chip sinks along the entry path (200ms).
+  Session endings hold for their beat first: a white wave sweeping the
+  grille on paste (420ms), a quiet dim on cancel (160ms), a steady red
+  message hold on error (2.4s).
 - Under Reduce Motion, ambient and decorative animation freezes to a static
   state; the pill snaps in and out; nothing loses meaning.
 

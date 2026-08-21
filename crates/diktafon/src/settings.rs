@@ -467,7 +467,9 @@ impl SettingsWindow {
             .child(
                 field()
                     .label("Post-processing prompt")
-                    .description("Shapes how your words are polished; applies to the next dictation")
+                    .description(
+                        "Shapes how your words are polished; applies to the next dictation",
+                    )
                     .child(Textarea::new(&self.control_input)),
             )
             .child(
