@@ -25,10 +25,7 @@ const PILL_WIDTH: Pixels = px(256.);
 const PILL_HEIGHT: Pixels = px(46.);
 /// Vertical slide distance of the enter/exit transition.
 const TRAVEL: f32 = 8.;
-/// Transparent window padding around the pill so its shadow and slide are not
-/// clipped by the window edge (shadow_lg extends ~12px sideways, ~22px down).
-const SHADOW_PAD: f32 = 24.;
-const TOP_PAD: f32 = 4.;
+const TOP_PAD: f32 = 0.;
 /// Gap between the pill's resting position and the bottom of the visible
 /// frame (above the Dock).
 const BOTTOM_MARGIN: f64 = 15.;
@@ -120,8 +117,8 @@ fn pill_bounds() -> Option<Bounds<Pixels>> {
         .or_else(|| screens.iter().next())?;
     let visible = screen.visibleFrame();
 
-    let bottom_pad = f64::from(TRAVEL + SHADOW_PAD);
-    let window_width = f64::from(PILL_WIDTH) + 2. * f64::from(SHADOW_PAD);
+    let bottom_pad = f64::from(TRAVEL);
+    let window_width = f64::from(PILL_WIDTH);
     let window_height = f64::from(TOP_PAD) + f64::from(PILL_HEIGHT) + bottom_pad;
     let x = visible.origin.x + (visible.size.width - window_width) / 2.;
     let window_bottom = visible.origin.y + BOTTOM_MARGIN - bottom_pad;
@@ -170,10 +167,9 @@ impl Pill {
         }
     }
 
-    /// Compact bars leave room for the live transcript tail beside them.
-    fn bars(&self, compact: bool) -> AnyElement {
+    fn bars(&self) -> AnyElement {
         let levels = *self.levels.lock().unwrap();
-        let (width, gap) = if compact { (3., 2.) } else { (5., 4.) };
+        let (width, gap) = (5., 4.);
         div()
             .flex()
             .items_center()
@@ -260,22 +256,7 @@ impl Render for Pill {
             _ => String::new(),
         };
         let content = if display == Phase::Recording {
-            let row = div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(self.bars(!partial.is_empty()));
-            let row = if partial.is_empty() {
-                row
-            } else {
-                row.child(
-                    div()
-                        .text_xs()
-                        .text_color(rgba(0xFFFFFF8C))
-                        .child(tail(&partial, 18)),
-                )
-            };
-            row.into_any_element()
+            self.bars()
         } else {
             div()
                 .text_sm()
@@ -286,7 +267,7 @@ impl Render for Pill {
 
         let pill = div()
             .absolute()
-            .left(px(SHADOW_PAD))
+            .left_0()
             .w(PILL_WIDTH)
             .h(PILL_HEIGHT)
             .flex()
@@ -297,7 +278,6 @@ impl Render for Pill {
             .bg(rgba(0x16161AE8))
             .border_1()
             .border_color(rgba(0xFFFFFF14))
-            .shadow_lg()
             .child(dot(display, phase == Phase::Recording && !reduce_motion))
             .child(
                 // Cross-fade the content on each phase change; the changing
