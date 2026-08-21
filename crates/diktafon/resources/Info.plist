@@ -10,6 +10,8 @@
 	<string>diktafon</string>
 	<key>CFBundleExecutable</key>
 	<string>diktafon</string>
+	<key>CFBundleIconFile</key>
+	<string>diktafon</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

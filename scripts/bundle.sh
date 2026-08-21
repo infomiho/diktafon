@@ -18,6 +18,8 @@ app=target/diktafon.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 cp crates/diktafon/resources/Info.plist "$app/Contents/Info.plist"
+mkdir -p "$app/Contents/Resources"
+cp crates/diktafon/resources/diktafon.icns "$app/Contents/Resources/diktafon.icns"
 cp target/release/diktafon "$app/Contents/MacOS/diktafon"
 # Next to the client so its auto-spawn finds it.
 cp target/release/diktafond "$app/Contents/MacOS/diktafond"
