@@ -394,8 +394,12 @@ impl Render for Pill {
             );
         let pill = match elapsed {
             Some(readout) => pill.child(
+                // Fixed-width, right-aligned box (cadence's player-bar idiom)
+                // so varying digit widths never shift the layout.
                 div()
+                    .w(px(34.))
                     .flex_none()
+                    .text_right()
                     .text_size(px(11.))
                     .text_color(rgba(0xFFFFFF73))
                     .whitespace_nowrap()
