@@ -10,10 +10,6 @@
     --on-surface: #F1F2FF;
     --muted: #AAACD6;
     --outline: rgba(155,157,255,0.13);
-    --red: #FF3B4D;
-    --magenta: #CE5CFF;
-    --ember: #FF5A36;
-    --rose: #E0459E;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -24,123 +20,197 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 36px;
+    gap: 28px;
     padding: 40px;
   }
   h1 { font-family: "Chakra Petch", sans-serif; font-size: 20px; text-shadow: 0 2px 8px rgba(0,0,0,.6); }
-  .controls { display: flex; gap: 8px; }
-  .controls button {
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  .controls button, .controls label {
     height: 32px; padding: 0 14px; border-radius: 6px; border: 1px solid var(--outline);
     background: rgba(23,25,52,.85); color: var(--on-surface); font-size: 13px; cursor: pointer;
+    display: flex; align-items: center;
   }
-  .controls button.active { background: #9843C0; border-color: transparent; }
-  .variant { display: flex; flex-direction: column; align-items: center; gap: 10px; }
-  .variant .name { font-size: 12px; color: var(--muted); text-shadow: 0 1px 4px rgba(0,0,0,.7); }
+  .controls button.active, .controls label.on { background: #9843C0; border-color: transparent; }
+  .stage { height: 110px; display: flex; align-items: center; }
 
   .pill {
-    --full: 220px;
-    --compact: 63px;
-    height: 38px;
-    width: var(--full);
+    width: 172px; height: 38px;
     border-radius: 19px;
     background: color-mix(in srgb, var(--surface) 91%, transparent);
     border: 1px solid var(--outline);
     display: flex;
     align-items: center;
     padding: 0 14px;
-    gap: 11px;
     position: relative;
     overflow: hidden;
-    transition: width 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+    /* The pill shows on every dictation, so entry is quick: rise + fade
+       with a strong ease-out. Exit sinks along the same path, faster. */
+    transition: transform 260ms cubic-bezier(0.23, 1, 0.32, 1), opacity 200ms ease-out, width 260ms cubic-bezier(0.23, 1, 0.32, 1);
   }
-  .pill.compact { width: var(--compact); }
+  .pill.hidden {
+    transform: translateY(9px);
+    opacity: 0;
+    transition: transform 200ms ease, opacity 160ms ease;
+  }
   .pill .aurora { position: absolute; inset: 0; border-radius: 19px; overflow: hidden; pointer-events: none; }
   .pill .aurora i { position: absolute; top: 15px; width: 8px; height: 8px; border-radius: 50%; }
+  .pill .content {
+    display: flex; align-items: center; gap: 11px; flex: 1; z-index: 1;
+    transition: opacity 120ms ease-out;
+  }
+  .pill.fading .content { opacity: 0; }
   .pill .label {
     font-size: 13px; color: rgba(241,242,255,.96); flex: 1;
-    white-space: nowrap; overflow: hidden; z-index: 1;
-    transition: opacity 0.25s ease-out;
+    white-space: nowrap; overflow: hidden;
+    transition: opacity 180ms ease-out;
   }
-  .pill.compact .label, .pill.compact .time { opacity: 0; }
   .pill .label.status { text-align: right; color: rgba(170,172,214,.55); }
   .pill .time {
-    font-size: 11px; color: rgba(170,172,214,.55); z-index: 1;
-    font-variant-numeric: tabular-nums; transition: opacity 0.25s ease-out;
+    font-size: 11px; color: rgba(170,172,214,.55);
+    font-variant-numeric: tabular-nums;
   }
-
-  .dial { position: relative; width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0; background: #0E102C; border: 1.5px solid rgba(241,242,255,0.28); z-index: 1; }
-  .dial .hub { position: absolute; left: 50%; top: 50%; width: 11px; height: 11px; margin: -5.5px; border-radius: 50%; }
-  .dial .spinner { position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px; border-radius: 50%; }
-
-  .grille { display: grid; gap: 3px; z-index: 1; flex-shrink: 0; }
+  .grille { display: grid; grid-template-columns: repeat(5, auto); gap: 3px; flex-shrink: 0; }
   .grille i { width: 4.5px; height: 4.5px; border-radius: 50%; }
+
+  .rm-note { font-size: 12px; color: var(--muted); text-shadow: 0 1px 4px rgba(0,0,0,.7); max-width: 470px; text-align: center; line-height: 1.5; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pill, .pill.hidden { transition: opacity 200ms ease; transform: none; }
+  }
 </style>
 </head>
 <body>
-<h1>Pill prototype</h1>
+<h1>Pill - variant E, animation pass</h1>
 <div class="controls">
-  <button data-phase="recording" class="active">Recording</button>
+  <button id="play">Play full session</button>
+  <button data-phase="recording">Recording</button>
   <button data-phase="transcribing">Transcribing</button>
   <button data-phase="polishing">Polishing</button>
+</div>
+<div class="controls">
+  <button data-beat="bloom">Paste bloom</button>
+  <button data-beat="cancel">Cancel</button>
+  <button data-beat="error">Error</button>
+  <label id="rm">Reduce motion</label>
   <button id="mic">Use mic</button>
 </div>
 
-<div class="variant">
-  <div class="pill" id="pillD">
+<div class="stage">
+  <div class="pill hidden" id="pill">
     <div class="aurora"></div>
-    <div class="grille" data-cols="5" data-rows="3"></div>
-    <div class="label">Listening</div>
-    <div class="time">0:07</div>
+    <div class="content">
+      <div class="grille"></div>
+      <div class="label"></div>
+      <div class="time"></div>
+    </div>
   </div>
-  <div class="name">D - chosen baseline: grille meter + label, always full width</div>
 </div>
 
-<div class="variant">
-  <div class="pill lifecycle" id="pillE" style="width: 172px">
-    <div class="aurora"></div>
-    <div class="grille" data-cols="5" data-rows="3"></div>
-    <div class="label"></div>
-    <div class="time"></div>
-  </div>
-  <div class="name">E - fixed 172px: grille + time recording, grille + status word processing</div>
-</div>
-
-<div class="variant">
-  <div class="pill lifecycle" id="pillF" style="width: 202px">
-    <div class="aurora"></div>
-    <div class="grille" data-cols="9" data-rows="3"></div>
-    <div class="label"></div>
-    <div class="time"></div>
-  </div>
-  <div class="name">F - fixed 202px with 9x3 grid: grille + time recording, status word processing</div>
-</div>
-
-<div class="variant">
-  <div class="pill" id="pillA">
-    <div class="aurora"></div>
-    <div class="dial"><div class="hub"></div><div class="spinner"></div></div>
-    <div class="grille" data-cols="5" data-rows="3"></div>
-    <div class="label">Listening</div>
-    <div class="time">0:07</div>
-  </div>
-  <div class="name">A - reference: dial with aurora hub + grille + label</div>
+<div class="rm-note">
+  Meter dots use fast-attack / slow-decay ballistics so speech reads as motion, never strobing.
+  Phase changes lerp the grille color instead of hard-cutting. Endings: white bloom wave on
+  paste, quiet dim on cancel, steady red hold on error. Enter rises (260ms strong ease-out);
+  exit fades content, then sinks along the same path, faster (200ms).
 </div>
 
 <script>
-let phase = "recording";
+let phase = "hidden";       // hidden | recording | transcribing | polishing
+let beat = null;             // null | bloom | cancel | error
+let beatSince = 0;
 let phaseSince = performance.now();
+let reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 let analyser = null, freqData = null;
+let timeline = [];
 
-document.querySelectorAll(".controls button[data-phase]").forEach(b => {
+const pill = document.getElementById("pill");
+// The pill is 172px for the whole normal flow; it grows only when a text
+// (a long error) genuinely needs more room.
+const measurer = document.createElement("span");
+measurer.style.cssText = "position:absolute; visibility:hidden; white-space:nowrap; font-size:13px; font-family:system-ui, sans-serif;";
+document.body.appendChild(measurer);
+let lastText = null;
+function fitWidth(text) {
+  if (text === lastText) return;
+  lastText = text;
+  measurer.textContent = text;
+  const needed = 28 + 34.5 + 11 + Math.ceil(measurer.getBoundingClientRect().width) + 2;
+  pill.style.width = Math.max(172, needed) + "px";
+}
+const grilleEl = pill.querySelector(".grille");
+const label = pill.querySelector(".label");
+const timeEl = pill.querySelector(".time");
+
+const COLS = 5, ROWS = 3;
+for (let i = 0; i < COLS * ROWS; i++) grilleEl.appendChild(document.createElement("i"));
+const dots = [...grilleEl.querySelectorAll("i")];
+const smooth = new Float32Array(COLS * ROWS);
+
+["#FF5A36", "#FF3B4D", "#E0459E"].forEach((c, i) => {
+  const b = document.createElement("i");
+  b.style.left = 30 + i * 55 + "px";
+  b.dataset.seed = i * 2.1;
+  b.dataset.color = c;
+  pill.querySelector(".aurora").appendChild(b);
+});
+
+// Phase color targets; the live color lerps toward them (no hard cuts).
+const COLORS = {
+  recording: [255, 59, 77],
+  transcribing: [255, 255, 255],
+  polishing: [206, 92, 255],
+  cancel: [142, 144, 190],
+  error: [255, 59, 77],
+  bloom: [255, 255, 255],
+};
+let liveColor = [255, 59, 77];
+
+function clearTimeline() { timeline.forEach(clearTimeout); timeline = []; }
+function at(ms, fn) { timeline.push(setTimeout(fn, ms)); }
+
+function setPhase(p) {
+  phase = p;
+  beat = null;
+  phaseSince = performance.now();
+  pill.classList.toggle("hidden", p === "hidden");
+  pill.classList.remove("fading");
+  document.querySelectorAll("[data-phase]").forEach(x => x.classList.toggle("active", x.dataset.phase === p));
+}
+
+function endSession(kind) {
+  beat = kind;
+  beatSince = performance.now();
+  document.querySelectorAll("[data-phase]").forEach(x => x.classList.remove("active"));
+  // The beat plays on the grille (deliberate), then the contents fade in
+  // place and the chip sinks out along the entry path (snappy).
+  const hold = kind === "error" ? 2400 : kind === "bloom" ? 420 : 160;
+  at(hold, () => pill.classList.add("fading"));
+  at(hold + 130, () => pill.classList.add("hidden"));
+  at(hold + 480, () => { setPhase("hidden"); pill.classList.remove("fading"); });
+}
+
+document.getElementById("play").onclick = () => {
+  clearTimeline();
+  setPhase("hidden");
+  at(180, () => setPhase("recording"));
+  at(3700, () => setPhase("transcribing"));
+  at(5200, () => setPhase("polishing"));
+  at(6200, () => endSession("bloom"));
+};
+document.querySelectorAll("[data-phase]").forEach(b => {
+  b.onclick = () => { clearTimeline(); setPhase(b.dataset.phase); };
+});
+document.querySelectorAll("[data-beat]").forEach(b => {
   b.onclick = () => {
-    phase = b.dataset.phase;
-    phaseSince = performance.now();
-    document.querySelectorAll("[data-phase]").forEach(x => x.classList.toggle("active", x === b));
-    const status = phase === "recording" ? "Listening" : phase === "transcribing" ? "Transcribing" : "Polishing";
-    document.querySelector("#pillD .label").textContent = status;
-    document.querySelector("#pillA .label").textContent = status;
+    clearTimeline();
+    if (phase === "hidden") setPhase("recording");
+    endSession(b.dataset.beat);
   };
 });
+document.getElementById("rm").onclick = () => {
+  reduceMotion = !reduceMotion;
+  document.getElementById("rm").classList.toggle("on", reduceMotion);
+  pill.style.transition = reduceMotion ? "opacity 200ms ease" : "";
+};
 document.getElementById("mic").onclick = async () => {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   const ctx = new AudioContext();
@@ -170,108 +240,70 @@ function bands(n, t) {
   for (let i = 0; i < n; i++) {
     const f = 2.1 + i * 1.7;
     const v = Math.max(0, Math.sin(t * f + i * 2.6) * 0.5 + 0.5 - i * 0.07);
-    out.push(Math.min(1, v * talking + Math.random() * 0.06));
+    out.push(Math.min(1, v * talking));
   }
   return out;
 }
 
-document.querySelectorAll(".grille").forEach(el => {
-  const cols = +el.dataset.cols, rows = +el.dataset.rows;
-  el.style.gridTemplateColumns = `repeat(${cols}, auto)`;
-  for (let r = 0; r < rows; r++)
-    for (let c = 0; c < cols; c++) {
-      const d = document.createElement("i");
-      d.dataset.col = c;
-      d.dataset.row = r;
-      el.appendChild(d);
-    }
-});
-
-document.querySelectorAll(".aurora").forEach(el => {
-  ["var(--ember)", "var(--red)", "var(--rose)"].forEach((c, i) => {
-    const b = document.createElement("i");
-    b.style.left = 30 + i * 70 + "px";
-    b.dataset.seed = i * 2.1;
-    b.dataset.color = c;
-    el.appendChild(b);
-  });
-});
-
-const phaseColor = () => phase === "recording" ? "255,59,77" : phase === "transcribing" ? "255,255,255" : "206,92,255";
-
-function renderGrille(el, levels, t) {
-  const cols = +el.dataset.cols;
-  const color = phaseColor();
-  el.querySelectorAll("i").forEach(d => {
-    const c = +d.dataset.col, r = +d.dataset.row;
-    let lit = 0;
-    if (phase === "recording") {
-      const level = levels[Math.floor(c * levels.length / cols)] ?? 0;
-      lit = Math.min(1, Math.max(0, level * 3.6 - (2 - r)));
-    } else if (phase === "transcribing") {
-      const scan = (t * 4) % (cols + 2) - 1;
-      lit = Math.max(0, 1 - Math.abs(c - scan) / 1.5) * 0.9;
-    } else {
-      // Polishing: random dots twinkling, a new constellation every beat.
-      const step = t * 2.5;
-      const i0 = Math.floor(step), f = step - i0;
-      const rnd = (k) => {
-        const x = Math.sin((c * 7.3 + r * 13.7) * 127.1 + k * 311.7) * 43758.5453;
-        return x - Math.floor(x);
-      };
-      const ease = f < 0.5 ? f * 2 : (1 - f) * 2;
-      const a0 = rnd(i0) > 0.7 ? 1 : 0;
-      const a1 = rnd(i0 + 1) > 0.7 ? 1 : 0;
-      lit = Math.max(a0 * (1 - f), a1 * f) * (0.55 + 0.45 * ease);
-    }
-    const a = 0.24 + lit * 0.76;
-    d.style.background = `rgba(${color},${a.toFixed(2)})`;
-    d.style.boxShadow = lit > 0.3 ? `0 0 ${4 + lit * 6}px rgba(${color},${(lit * 0.95).toFixed(2)})` : "none";
-  });
-}
-
-function renderDial(pill, levels, t) {
-  const hub = pill.querySelector(".hub");
-  if (!hub) return;
-  const spinner = pill.querySelector(".spinner");
-  const color = phaseColor();
-  if (phase === "recording") {
-    const overall = levels.reduce((a, b) => a + b, 0) / levels.length;
-    const glow = Math.min(1, 0.35 + overall * 1.6);
-    const trade = 0.5 + 0.5 * Math.sin(t * 1.1);
-    const lerp = (a, b, k) => Math.round(a + (b - a) * k);
-    const mix = trade < 0.5
-      ? [lerp(255,255,trade*2), lerp(90,59,trade*2), lerp(54,77,trade*2)]
-      : [lerp(255,224,trade*2-1), lerp(59,69,trade*2-1), lerp(77,158,trade*2-1)];
-    const c = mix.join(",");
-    const other = trade < 0.5 ? "224,69,158" : "255,90,54";
-    hub.style.background =
-      `radial-gradient(circle at 35% 32%, rgba(255,200,180,${(glow*0.9).toFixed(2)}), transparent 55%), rgb(${c})`;
-    hub.style.transform = `scale(${(1 + overall * 0.4).toFixed(3)})`;
-    hub.style.boxShadow =
-      `0 0 ${7 + overall * 16}px 2px rgba(${c},${(0.5 + glow * 0.45).toFixed(2)}),` +
-      `0 0 ${14 + overall * 22}px 5px rgba(${other},${(glow * 0.4).toFixed(2)})`;
-    spinner.style.display = "none";
-  } else {
-    hub.style.transform = "none";
-    hub.style.background = `rgba(${color},0.25)`;
-    hub.style.boxShadow = "none";
-    spinner.style.display = "block";
-    const speed = phase === "transcribing" ? 3.4 : 1.6;
-    const angle = t * speed;
-    spinner.style.transform = `translate(${Math.cos(angle) * 7}px, ${Math.sin(angle) * 7}px)`;
-    spinner.style.background = `rgba(${color},0.95)`;
-    spinner.style.boxShadow = `0 0 4px rgba(${color},0.8)`;
+// Target lit level for a dot, before ballistics.
+function targetLit(c, r, levels, t) {
+  if (beat === "bloom") {
+    // A white wave sweeping bottom-to-top, then holding bright.
+    if (reduceMotion) return 0.8;
+    const p = Math.min(1, (performance.now() - beatSince) / 380);
+    const wave = p * (ROWS + 1.4) - (ROWS - 1 - r);
+    return Math.max(0, Math.min(1, wave));
   }
+  if (beat === "cancel") return 0;
+  if (beat === "error") return 0.5;
+  if (phase === "recording") {
+    return Math.min(1, Math.max(0, (levels[c] ?? 0) * 3.6 - (ROWS - 1 - r)));
+  }
+  if (phase === "transcribing") {
+    if (reduceMotion) return 0.35;
+    const scan = (t * 4) % (COLS + 2) - 1;
+    return Math.max(0, 1 - Math.abs(c - scan) / 1.5) * 0.9;
+  }
+  if (phase === "polishing") {
+    if (reduceMotion) return 0.35;
+    const step = t * 2.5;
+    const i0 = Math.floor(step), f = step - i0;
+    const rnd = (k) => {
+      const x = Math.sin((c * 7.3 + r * 13.7) * 127.1 + k * 311.7) * 43758.5453;
+      return x - Math.floor(x);
+    };
+    const ease = f < 0.5 ? f * 2 : (1 - f) * 2;
+    const a0 = rnd(i0) > 0.7 ? 1 : 0;
+    const a1 = rnd(i0 + 1) > 0.7 ? 1 : 0;
+    return Math.max(a0 * (1 - f), a1 * f) * (0.55 + 0.45 * ease);
+  }
+  return 0;
 }
 
-// A quiet echo of the old full-pill aurora: the grille carries the energy,
-// this only warms the ground.
-function renderAurora(pill, levels, t) {
-  const on = phase === "recording";
+function renderGrille(levels, t) {
+  const targetColor = COLORS[beat ?? phase] ?? COLORS.recording;
+  // Color lerps toward the phase target; ~180ms to converge.
+  for (let i = 0; i < 3; i++) liveColor[i] += (targetColor[i] - liveColor[i]) * 0.22;
+  const col = liveColor.map(Math.round).join(",");
+  dots.forEach((d, i) => {
+    const c = i % COLS, r = Math.floor(i / COLS);
+    const target = targetLit(c, r, levels, t);
+    // Fast attack, slow decay: speech reads as motion, never strobing.
+    const rate = target > smooth[i] ? 0.55 : 0.14;
+    smooth[i] += (target - smooth[i]) * rate;
+    const lit = smooth[i];
+    const a = 0.24 + lit * 0.76;
+    d.style.background = `rgba(${col},${a.toFixed(2)})`;
+    d.style.boxShadow = lit > 0.3 ? `0 0 ${4 + lit * 6}px rgba(${col},${(lit * 0.95).toFixed(2)})` : "none";
+  });
+}
+
+function renderAurora(levels, t) {
+  const on = phase === "recording" && !beat && !reduceMotion;
   pill.querySelectorAll(".aurora i").forEach((b, i) => {
-    if (!on) { b.style.boxShadow = "none"; return; }
-    const level = levels[Math.min(i * 2, levels.length - 1)] ?? 0;
+    const level = on ? (levels[Math.min(i * 2, levels.length - 1)] ?? 0) : 0;
+    // Below this the blob's shadow reads as a smudge, not a glow.
+    if (!on || level < 0.08) { b.style.boxShadow = "none"; return; }
     const drift = Math.sin(t * 0.4 + +b.dataset.seed) * 14;
     b.style.transform = `translateX(${drift}px)`;
     const intensity = 0.1 + level * 0.3;
@@ -282,39 +314,40 @@ function renderAurora(pill, levels, t) {
     : "none";
 }
 
-// The lifecycle in a fixed-size pill: grille + elapsed time while
-// recording, grille + status word while processing.
-function renderLifecycle(pill, now) {
-  const label = pill.querySelector(".label");
-  const time = pill.querySelector(".time");
-  const elapsed = (now - phaseSince) / 1000;
+function renderText(now) {
+  if (beat === "error") {
+    label.textContent = "Transcription failed";
+    label.classList.add("status");
+    timeEl.style.display = "none";
+    fitWidth(label.textContent);
+    return;
+  }
   if (phase === "recording") {
     label.textContent = "";
-    const secs = Math.floor(elapsed);
-    time.textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+    label.classList.remove("status");
+    timeEl.style.display = "block";
+    const secs = Math.floor((now - phaseSince) / 1000);
+    timeEl.textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+    fitWidth("");
   } else {
-    label.textContent = phase === "transcribing" ? "Transcribing" : "Polishing";
-    time.textContent = "";
+    label.textContent = phase === "transcribing" ? "Transcribing" : phase === "polishing" ? "Polishing" : "";
+    label.classList.add("status");
+    timeEl.style.display = "none";
+    fitWidth(label.textContent);
   }
-  label.classList.toggle("status", phase !== "recording");
-  time.style.display = phase === "recording" ? "block" : "none";
 }
 
 let start = performance.now();
 function frame(now) {
   const t = (now - start) / 1000;
-  const levels = bands(9, t);
-  for (const id of ["pillD", "pillE", "pillF", "pillA"]) {
-    const pill = document.getElementById(id);
-    renderAurora(pill, levels, t);
-    renderDial(pill, levels, t);
-    renderGrille(pill.querySelector(".grille"), levels, t);
-  }
-  renderLifecycle(document.getElementById("pillE"), now);
-  renderLifecycle(document.getElementById("pillF"), now);
+  const levels = bands(COLS, t);
+  renderGrille(levels, t);
+  renderAurora(levels, t);
+  renderText(now);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+setTimeout(() => setPhase("recording"), 400);
 </script>
 </body>
 </html>
