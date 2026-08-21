@@ -1,3 +1,4 @@
+mod bench;
 mod capture;
 mod config;
 mod dictation;
@@ -54,7 +55,7 @@ fn materialize_vad_model(path: &Path) -> Result<()> {
 
 /// The diktafond binary to auto-spawn: `DIKTAFOND_BIN` override, or the one
 /// sitting next to this executable (cargo target dir, or the app bundle).
-fn daemon_bin() -> Option<PathBuf> {
+pub(crate) fn daemon_bin() -> Option<PathBuf> {
     if let Some(bin) = std::env::var_os("DIKTAFOND_BIN") {
         return Some(PathBuf::from(bin));
     }
@@ -85,7 +86,12 @@ fn main() -> Result<()> {
     let (phase_tx, phase_rx) = futures::channel::mpsc::unbounded::<PhaseEvent>();
     let daemon = DaemonClient::spawn(socket_path(), daemon_bin(), Some(phase_tx.clone()));
 
-    if let Some(text) = std::env::args().nth(1) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "--transcribe-file") {
+        return bench::transcribe_file(&args[1..]);
+    }
+    if let Some(text) = args.first() {
+        let text = text.clone();
         daemon.chunk_tx.send(Msg::Flush)?;
         daemon.finish().context("daemon roundtrip failed")?;
         println!("Pasting in 3s, focus a text field...");

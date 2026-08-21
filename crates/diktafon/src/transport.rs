@@ -204,7 +204,7 @@ impl Supervisor {
             },
             Err(_) => (Stdio::null(), Stdio::null()),
         };
-        println!("starting diktafond (logs: {})...", log_path.display());
+        eprintln!("starting diktafond (logs: {})...", log_path.display());
         match std::process::Command::new(bin)
             .env("DIKTAFOND_SOCKET", socket)
             .process_group(0)
@@ -359,7 +359,7 @@ impl Transport {
 
     fn adopt(&mut self, stream: UnixStream) -> bool {
         self.backoff = INITIAL_BACKOFF;
-        println!("connected to diktafond");
+        eprintln!("connected to diktafond");
         self.conn = Some(stream);
         true
     }
@@ -438,7 +438,7 @@ impl Transport {
                     total_bytes,
                 }) => {
                     if last_print.elapsed() >= Duration::from_secs(1) {
-                        println!(
+                        eprintln!(
                             "  daemon is downloading {model}: {}/{} MB",
                             downloaded_bytes / 1_000_000,
                             total_bytes / 1_000_000
