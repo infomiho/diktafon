@@ -566,15 +566,20 @@ impl Render for Pill {
             None => contents,
         };
 
+        // The chip fades via explicit color alphas rather than element
+        // opacity: gpui composites opacity per primitive and the hairline
+        // border can survive it as a ghost line.
+        let chip = 1. - sink;
+        let fade = |alpha: u32| (alpha as f32 * chip) as u32;
         let pill = div()
             .absolute()
             .left_0()
             .w(PILL_WIDTH)
             .h(PILL_HEIGHT)
             .rounded_full()
-            .bg(rgba(theme::SURFACE | 0xE8))
+            .bg(rgba(theme::SURFACE | fade(0xE8)))
             .border_1()
-            .border_color(rgba(theme::HAIRLINE | 0x22))
+            .border_color(rgba(theme::HAIRLINE | fade(0x22)))
             .shadow(
                 aurora_bands
                     .map(|bands| self.aurora_edge(bands, reduce_motion))
@@ -586,7 +591,7 @@ impl Render for Pill {
         // Enter rises in; the staged exit above sinks out along the same path.
         let root = div().size_full().relative();
         if self.closing {
-            root.child(pill.opacity(1. - sink).top(px(TOP_PAD + TRAVEL * sink)))
+            root.child(pill.top(px(TOP_PAD + TRAVEL * sink)))
         } else {
             root.child(pill.with_animation(
                 "enter",
