@@ -18,3 +18,8 @@ sha2 = "0.11"
 hex = "0.4"
 anyhow.workspace = true
 diktafon-protocol.workspace = true
+
+[features]
+# Experimental CoreML execution provider for the ASR model; see the asr_bench
+# example and docs/benchmarks.md.
+coreml = ["transcribe-rs/ort-coreml"]

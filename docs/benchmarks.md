@@ -39,3 +39,12 @@ Measured with `cargo run --release -p diktafond --example loopback_bench`: eval 
 | Cancel → Aborted, median of 200 (no inference) | 3.3µs | 14.6µs |
 
 The split costs ~11µs per roundtrip; per-chunk latency is inside run-to-run noise (the socket run even sampled faster). The Flush→Final gap is first-polish Metal warmup variance in each freshly started process, not transport, as the µs-scale roundtrip shows. Loopback overhead is invisible next to 200-560ms inference.
+
+## CoreML execution provider (2026-08-21)
+
+Evaluated with `cargo run --release -p diktafond --example asr_bench` (per-clip RTF over the eval set).
+
+- CPU int8 baseline: 126.6s of audio in 13.53s, 9.4x realtime (per clip 6.1-11.0x; model load 5.6s).
+- CoreML EP (`--features coreml -- coreml`): fails at session init with onnxruntime's "model_path must not be empty" - the CoreML EP cannot handle our external-data model (the 2.7GB `.onnx.data`) under ort 2.0.0-rc.12 / transcribe-rs 0.3.11.
+
+Decision: stay on CPU int8. 9.4x RT means a 5s chunk transcribes in ~0.5s, which is not the latency bottleneck. The `coreml` feature and the bench stay in-tree for a retry when ort's CoreML EP learns external data.
