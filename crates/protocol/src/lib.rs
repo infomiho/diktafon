@@ -2,6 +2,9 @@
 //! daemon. Messages are bincode-encoded and length-prefixed, so the same codec
 //! runs over any byte stream: a Unix socket locally, a WebSocket remotely.
 //!
+//! Half-close is not supported: closing either direction of the stream ends
+//! the whole connection.
+//!
 //! A connection starts with a `Hello` exchange carrying [`PROTOCOL_VERSION`],
 //! after which the daemon sends zero or more `DownloadProgress` frames (while
 //! it is still provisioning models) and then exactly one `Ready`. Each

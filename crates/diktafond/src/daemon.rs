@@ -39,6 +39,16 @@ const STARTUP_HEARTBEAT: Duration = Duration::from_secs(2);
 /// handover.
 const STARTUP_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// A serving client that stops reading blocks the relay once the socket
+/// buffer fills; after this long the client is dropped instead of wedging the
+/// daemon.
+const SERVE_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A connected client that goes silent this long is disconnected gracefully
+/// so it cannot block other clients forever; the real client reconnects with
+/// backoff on its next session, which costs one invisible roundtrip.
+const SERVE_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// Bind the socket, provision and load the models while streaming
 /// `DownloadProgress` to early clients, then serve clients one at a time until
 /// killed. SIGTERM and SIGINT remove the socket file and exit.
@@ -192,8 +202,8 @@ fn serve_startup_client(
         loop {
             if status.ready.load(Ordering::Relaxed) {
                 write_frame(&mut writer, &DaemonMsg::Ready)?;
-                stream.set_read_timeout(None)?;
-                stream.set_write_timeout(None)?;
+                stream.set_read_timeout(Some(SERVE_IDLE_TIMEOUT))?;
+                stream.set_write_timeout(Some(SERVE_WRITE_TIMEOUT))?;
                 let _ = handover.send(EarlyClient { reader, writer });
                 return Ok(());
             }
@@ -287,7 +297,8 @@ fn serve(stream: &UnixStream, inference: &Inference) -> (ServeCounts, Result<()>
         let mut writer = stream.try_clone()?;
         stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
         handshake(&mut reader, &mut writer)?;
-        stream.set_read_timeout(None)?;
+        stream.set_read_timeout(Some(SERVE_IDLE_TIMEOUT))?;
+        stream.set_write_timeout(Some(SERVE_WRITE_TIMEOUT))?;
         write_frame(&mut writer, &DaemonMsg::Ready)?;
         serve_established(reader, writer, inference, &counts)
     })();
@@ -355,7 +366,13 @@ fn forward_client_frames(
     counts: &ServeCounts,
 ) -> Result<()> {
     loop {
-        let msg = match read_frame::<ClientMsg>(reader)? {
+        let frame = match read_frame::<ClientMsg>(reader) {
+            Ok(frame) => frame,
+            // A long-idle client is dropped gracefully; it reconnects on use.
+            Err(e) if is_read_timeout(&e) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let msg = match frame {
             Some(ClientMsg::Start(config)) => Msg::Start(config),
             Some(ClientMsg::Chunk(samples)) => Msg::Chunk(samples),
             Some(ClientMsg::Flush) => Msg::Flush,
