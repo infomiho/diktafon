@@ -441,9 +441,9 @@ fn spawn_reader(stream: UnixStream, ledger: Arc<FlushLedger>) {
                 }
                 Ok(Some(DaemonMsg::Final(text))) => ledger.deliver(SessionResult::Final(text)),
                 Ok(Some(DaemonMsg::Error(e))) => ledger.deliver(SessionResult::Failed(e)),
-                // The client does not send Cancel yet (cancel gesture task), so
-                // an ack needs no handling; Hello, Ready, and DownloadProgress
-                // belong to the pre-adoption startup phase.
+                // Aborted needs no handling: Cancel never begins a flush, so no
+                // result is owed; Hello, Ready, and DownloadProgress belong to
+                // the pre-adoption startup phase.
                 Ok(Some(
                     DaemonMsg::Aborted
                     | DaemonMsg::Hello { .. }

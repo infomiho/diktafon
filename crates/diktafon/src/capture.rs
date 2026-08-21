@@ -41,6 +41,7 @@ pub struct Recorder {
 pub struct Session {
     stream: cpal::Stream,
     stop: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
     monitor: JoinHandle<()>,
     live_rx: mpsc::Receiver<()>,
 }
@@ -101,17 +102,19 @@ impl Recorder {
         stream.play()?;
 
         let stop = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::new(AtomicBool::new(false));
         *self.levels.lock().unwrap() = [0.0; LEVEL_BAR_COUNT];
         let monitor = thread::spawn({
             let buffer = buffer.clone();
             let stop = stop.clone();
+            let cancelled = cancelled.clone();
             let levels = self.levels.clone();
             move || {
                 let mut meter = LevelMeter::new();
                 let mut frame_tail: Vec<f32> = Vec::new();
                 loop {
                     thread::sleep(MONITOR_TICK);
-                    let done = stop.load(Ordering::Relaxed);
+                    let done = stop.load(Ordering::Acquire);
                     let fresh = resampler.drain(&buffer.lock().unwrap());
                     meter.push(&fresh);
                     *levels.lock().unwrap() = meter.compute();
@@ -125,10 +128,16 @@ impl Recorder {
                     }
                     frame_tail = frames.remainder().to_vec();
                     if done {
-                        if let Some(chunk) = chunker.finish(&frame_tail) {
-                            let _ = chunk_tx.send(Msg::Chunk(chunk));
+                        if cancelled.load(Ordering::Relaxed) {
+                            // Discard: the worker clears its parts and owes no
+                            // result, so nothing can paste late.
+                            let _ = chunk_tx.send(Msg::Cancel);
+                        } else {
+                            if let Some(chunk) = chunker.finish(&frame_tail) {
+                                let _ = chunk_tx.send(Msg::Chunk(chunk));
+                            }
+                            let _ = chunk_tx.send(Msg::Flush);
                         }
-                        let _ = chunk_tx.send(Msg::Flush);
                         *levels.lock().unwrap() = [0.0; LEVEL_BAR_COUNT];
                         break;
                     }
@@ -136,7 +145,7 @@ impl Recorder {
             }
         });
 
-        Ok(Session { stream, stop, monitor, live_rx })
+        Ok(Session { stream, stop, cancelled, monitor, live_rx })
     }
 
     fn build_stream(
@@ -180,9 +189,17 @@ impl Session {
     }
 
     pub fn stop(self) {
-        self.stop.store(true, Ordering::Relaxed);
+        // Release pairs with the monitor's Acquire load, publishing the
+        // `cancelled` store made by `cancel()` before this.
+        self.stop.store(true, Ordering::Release);
         self.monitor.join().ok();
         drop(self.stream);
+    }
+
+    /// End the session discarding everything captured; no result will follow.
+    pub fn cancel(self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+        self.stop();
     }
 }
 

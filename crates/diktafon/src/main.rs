@@ -91,7 +91,11 @@ fn main() -> Result<()> {
     println!("Mic: {}", recorder.describe());
 
     let manager = GlobalHotKeyManager::new().context("registering global hotkey manager")?;
-    manager.register(HotKey::new(Some(Modifiers::ALT), Code::Space))?;
+    let record_key = HotKey::new(Some(Modifiers::ALT), Code::Space);
+    // Registered only while a session is live, so Escape works normally
+    // otherwise; see the phase observer below.
+    let escape_key = HotKey::new(None, Code::Escape);
+    manager.register(record_key)?;
 
     // Scripted phase walk for developing the pill without dictating:
     // `DIKTAFON_PILL_DEMO=1 diktafon`.
@@ -111,13 +115,14 @@ fn main() -> Result<()> {
         });
     }
 
-    let (event_tx, event_rx) = mpsc::channel::<HotKeyState>();
-    thread::spawn(move || control_loop(recorder, daemon, event_rx, phase_tx));
+    let (event_tx, event_rx) = mpsc::channel::<GlobalHotKeyEvent>();
+    let hotkeys = Hotkeys { record: record_key.id(), escape: escape_key.id() };
+    thread::spawn(move || control_loop(recorder, daemon, event_rx, phase_tx, hotkeys));
 
     let receiver = GlobalHotKeyEvent::receiver();
     thread::spawn(move || {
         while let Ok(event) = receiver.recv() {
-            let _ = event_tx.send(event.state);
+            let _ = event_tx.send(event);
         }
     });
 
@@ -129,8 +134,25 @@ fn main() -> Result<()> {
         .run(move |cx| {
             hide_from_dock();
             let dictation = Dictation::spawn(cx, phase_rx);
-            cx.observe(&dictation, |dictation, cx| {
-                println!("[phase] {:?}", dictation.read(cx).phase);
+            // The Carbon hotkey manager lives on this thread; register Escape
+            // only while a session could still be cancelled.
+            let mut escape_registered = false;
+            cx.observe(&dictation, move |dictation, cx| {
+                let phase = dictation.read(cx).phase;
+                println!("[phase] {phase:?}");
+                let cancellable =
+                    matches!(phase, dictation::Phase::Arming | dictation::Phase::Recording);
+                if cancellable != escape_registered {
+                    let result = if cancellable {
+                        manager.register(escape_key)
+                    } else {
+                        manager.unregister(escape_key)
+                    };
+                    match result {
+                        Ok(()) => escape_registered = cancellable,
+                        Err(e) => eprintln!("escape hotkey change failed: {e}"),
+                    }
+                }
             })
             .detach();
             pill::manage(cx, dictation.clone(), levels);
@@ -155,15 +177,35 @@ fn hide_from_dock() {
 /// can need hundreds of milliseconds.
 const MIC_READY_TIMEOUT: Duration = Duration::from_millis(1500);
 
+/// Hotkey ids as seen in `GlobalHotKeyEvent`s.
+struct Hotkeys {
+    record: u32,
+    escape: u32,
+}
+
 fn control_loop(
     recorder: Recorder,
     daemon: DaemonClient,
-    events: mpsc::Receiver<HotKeyState>,
+    events: mpsc::Receiver<GlobalHotKeyEvent>,
     phases: futures::channel::mpsc::UnboundedSender<PhaseEvent>,
+    hotkeys: Hotkeys,
 ) {
     let mut session: Option<Session> = None;
-    for state in events {
-        match state {
+    for event in events {
+        if event.id == hotkeys.escape {
+            if event.state == HotKeyState::Pressed
+                && let Some(s) = session.take()
+            {
+                s.cancel();
+                println!("cancelled");
+                let _ = phases.unbounded_send(PhaseEvent::SessionEnded { error: None });
+            }
+            continue;
+        }
+        if event.id != hotkeys.record {
+            continue;
+        }
+        match event.state {
             HotKeyState::Pressed => {
                 if session.is_none() {
                     let _ = daemon.chunk_tx.send(Msg::Start(SessionConfig::default()));
