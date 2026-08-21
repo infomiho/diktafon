@@ -22,8 +22,14 @@ use objc2::MainThreadMarker;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::time::Duration;
 
-const PILL_WIDTH: Pixels = px(256.);
-const PILL_HEIGHT: Pixels = px(46.);
+const PILL_WIDTH: Pixels = px(220.);
+const PILL_HEIGHT: Pixels = px(38.);
+/// The orbital level meter's box; the satellites orbit the phase dot inside.
+const METER_BOX: f32 = 28.;
+const SATELLITES: usize = 16;
+/// Trailing characters of the transcript the marquee shapes per frame; long
+/// dictations scroll through this window.
+const MARQUEE_CHARS: usize = 80;
 /// Vertical slide distance of the enter/exit transition.
 const TRAVEL: f32 = 8.;
 const TOP_PAD: f32 = 0.;
@@ -157,6 +163,8 @@ pub struct Pill {
     closing: bool,
     /// What the fading pill keeps showing after the phase already went Idle.
     last_active: Phase,
+    /// Smoothed marquee scroll offset, eased toward its target every frame.
+    marquee_offset: f32,
 }
 
 impl Pill {
@@ -180,24 +188,85 @@ impl Pill {
             levels,
             closing: false,
             last_active: Phase::Recording,
+            marquee_offset: 0.,
         }
     }
 
-    fn bars(&self) -> AnyElement {
+    /// The pill's identity element: the phase dot with the voice level as
+    /// satellites orbiting it. Present in every phase; the satellites rest on
+    /// a quiet ring when there is no signal.
+    fn orbital_meter(&self, display: Phase, breathing: bool) -> AnyElement {
         let levels = *self.levels.lock().unwrap();
-        let (width, gap) = (5., 4.);
+        let center = METER_BOX / 2.;
+        let satellites = (0..SATELLITES).map(move |i| {
+            let level = levels[i];
+            let angle = i as f32 * std::f32::consts::TAU / SATELLITES as f32;
+            let radius = 8. + level * 5.;
+            let size = 2.;
+            div()
+                .absolute()
+                .left(px(center + angle.cos() * radius - size / 2.))
+                .top(px(center + angle.sin() * radius - size / 2.))
+                .size(px(size))
+                .rounded_full()
+                .bg(rgba(0xFFFFFF00 | (0x50 + (level * 170.) as u32)))
+        });
         div()
-            .flex()
-            .items_center()
-            .gap(px(gap))
-            .h(px(30.))
-            .children(levels.into_iter().map(|level| {
+            .relative()
+            .size(px(METER_BOX))
+            .flex_none()
+            .child(
                 div()
-                    .w(px(width))
-                    .h(px(4. + level * 26.))
+                    .absolute()
+                    .left(px(center - 3.))
+                    .top(px(center - 3.))
+                    .size(px(6.))
                     .rounded_full()
-                    .bg(rgba(0xFFFFFFCC))
-            }))
+                    .child(dot_core(display, breathing)),
+            )
+            .children(satellites)
+            .into_any_element()
+    }
+
+    /// A single clipped line where recognized words appear left to right and
+    /// scroll left once the line fills. The offset eases toward its target on
+    /// every 30fps repaint, so per-chunk text jumps read as smooth motion.
+    fn marquee(&mut self, text: &str, width: f32, window: &mut Window) -> AnyElement {
+        let total = text.chars().count();
+        let shown: String = text
+            .chars()
+            .skip(total.saturating_sub(MARQUEE_CHARS))
+            .collect();
+        let style = window.text_style();
+        let font_size = px(13.);
+        let run = style.to_run(shown.len());
+        let measured = window
+            .text_system()
+            .shape_line(shown.clone().into(), font_size, &[run], None)
+            .width;
+        let target = (f32::from(measured) - width).max(0.);
+        self.marquee_offset += (target - self.marquee_offset) * 0.18;
+        if (target - self.marquee_offset).abs() < 0.5 {
+            self.marquee_offset = target;
+        }
+        div()
+            .relative()
+            .w(px(width))
+            .h_full()
+            .overflow_hidden()
+            .child(
+                div()
+                    .absolute()
+                    .left(px(-self.marquee_offset))
+                    .top_0()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .text_size(font_size)
+                    .text_color(rgba(0xFFFFFFD9))
+                    .whitespace_nowrap()
+                    .child(shown),
+            )
             .into_any_element()
     }
 }
@@ -209,7 +278,7 @@ fn label(text: String, busy: bool) -> AnyElement {
         .text_color(rgba(0xFFFFFFD9))
         .whitespace_nowrap()
         .overflow_hidden()
-        .max_w(px(200.))
+        .max_w(px(170.))
         .child(text);
     if busy {
         text_el
@@ -226,15 +295,14 @@ fn label(text: String, busy: bool) -> AnyElement {
     }
 }
 
-fn dot(phase: Phase, breathing: bool) -> AnyElement {
+fn dot_core(phase: Phase, breathing: bool) -> AnyElement {
     let color = match phase {
-        Phase::Arming => rgb(0x8F8F94),
+        Phase::Arming | Phase::Idle => rgb(0x8F8F94),
         Phase::Recording => rgb(0xE5484D),
         Phase::Transcribing => rgb(0xF0B429),
         Phase::Polishing => rgb(0x46A758),
-        Phase::Idle => rgb(0x8F8F94),
     };
-    let dot = div().size_2().rounded_full().bg(color);
+    let dot = div().size_full().rounded_full().bg(color);
     // The breath means "live microphone"; processing phases hold steady.
     if breathing {
         dot.with_animation(
@@ -252,16 +320,6 @@ fn dot(phase: Phase, breathing: bool) -> AnyElement {
 
 /// Deliberately not `phase as u64`: these keys are animation element ids and
 /// must stay stable even if the enum is ever reordered.
-/// The last `chars` characters, front-ellipsized.
-fn tail(text: &str, chars: usize) -> String {
-    let total = text.chars().count();
-    if total <= chars {
-        return text.to_string();
-    }
-    let tail: String = text.chars().skip(total - chars).collect();
-    format!("…{tail}")
-}
-
 fn phase_key(phase: Phase) -> u64 {
     match phase {
         Phase::Idle => 0,
@@ -273,7 +331,7 @@ fn phase_key(phase: Phase) -> u64 {
 }
 
 impl Render for Pill {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let reduce_motion = cx.reduce_motion();
         let phase = self.dictation.read(cx).phase;
         if phase != Phase::Idle {
@@ -286,10 +344,11 @@ impl Render for Pill {
             phase
         };
         let partial = self.dictation.read(cx).partial.clone();
+        let text_width = f64::from(PILL_WIDTH) as f32 - METER_BOX - 3. * 12.;
         let content = match display {
-            // Bars until the first words arrive, then the words rolling in.
-            Phase::Recording if partial.is_empty() => self.bars(),
-            Phase::Recording => label(tail(&partial, 26), false),
+            // Words appear as they are recognized and scroll once the line
+            // fills; empty until then.
+            Phase::Recording => self.marquee(&partial, text_width, window),
             Phase::Arming => label("starting".into(), false),
             // The words themselves are about to be pasted; the label just has
             // to feel alive, so it pulses.
@@ -305,13 +364,13 @@ impl Render for Pill {
             .h(PILL_HEIGHT)
             .flex()
             .items_center()
-            .justify_center()
+            .px_3()
             .gap_2()
             .rounded_full()
             .bg(rgba(0x16161AE8))
             .border_1()
             .border_color(rgba(0xFFFFFF14))
-            .child(dot(display, phase == Phase::Recording && !reduce_motion))
+            .child(self.orbital_meter(display, phase == Phase::Recording && !reduce_motion))
             .child(
                 // Cross-fade the content on phase changes and on the bars ->
                 // words swap; the changing key restarts the fade.
