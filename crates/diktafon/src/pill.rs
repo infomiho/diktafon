@@ -162,17 +162,14 @@ pub struct Pill {
 impl Pill {
     fn new(dictation: Entity<Dictation>, levels: LevelBars, cx: &mut Context<Self>) -> Self {
         cx.observe(&dictation, |_, _, cx| cx.notify()).detach();
-        // Drive repaints while the bars are showing; phase changes repaint via
-        // the dictation observer. Ends when the window removes the entity.
+        // Drive repaints for the pill's whole (short) life: this non-activating
+        // panel gets no frames on its own, so every animation - bars, fades,
+        // the dot breath - advances only when we notify. Ends when the window
+        // removes the entity.
         cx.spawn(async move |pill, cx| {
             loop {
                 cx.background_executor().timer(BAR_FRAME).await;
-                let alive = pill.update(cx, |pill, cx| {
-                    if pill.dictation.read(cx).phase == Phase::Recording {
-                        cx.notify();
-                    }
-                });
-                if alive.is_err() {
+                if pill.update(cx, |_, cx| cx.notify()).is_err() {
                     return;
                 }
             }
@@ -279,7 +276,6 @@ impl Render for Pill {
         } else {
             div()
                 .text_sm()
-                .font_family("Helvetica")
                 .text_color(rgba(0xFFFFFFD9))
                 .max_w(px(210.))
                 .overflow_hidden()
