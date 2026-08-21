@@ -198,16 +198,16 @@ fn content_range_start(response: &reqwest::Response) -> Result<u64> {
         .with_context(|| format!("unparseable Content-Range {header:?}"))
 }
 
+/// Minimal HTTP/1.1 test server shared by the fetch and manifest tests.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::BufRead;
+pub(crate) mod test_server {
+    use std::io::{BufRead, Write};
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
     use std::thread;
 
     #[derive(Clone, Copy)]
-    enum Behavior {
+    pub enum Behavior {
         Normal,
         IgnoreRange,
         WrongContentRange,
@@ -216,9 +216,8 @@ mod tests {
         NotFound,
     }
 
-    /// Minimal HTTP/1.1 server for one file; records the Range offset of every
-    /// request it serves.
-    fn serve(body: Vec<u8>, behavior: Behavior) -> (String, Arc<Mutex<Vec<Option<u64>>>>) {
+    /// Serves one file at any path; records the Range offset of every request.
+    pub fn serve(body: Vec<u8>, behavior: Behavior) -> (String, Arc<Mutex<Vec<Option<u64>>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://127.0.0.1:{}/file.bin", listener.local_addr().unwrap().port());
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -279,9 +278,15 @@ mod tests {
         (url, requests)
     }
 
-    fn test_body() -> Vec<u8> {
+    pub fn test_body() -> Vec<u8> {
         (0..100_000u32).flat_map(|i| i.to_le_bytes()).collect()
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_server::{serve, test_body, Behavior};
+    use super::*;
 
     fn remote(url: String, body: &[u8]) -> RemoteFile {
         RemoteFile {

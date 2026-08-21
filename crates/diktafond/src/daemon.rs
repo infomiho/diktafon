@@ -26,6 +26,15 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Load the models, then serve clients one at a time until killed. SIGTERM and
 /// SIGINT remove the socket file and exit.
 pub fn run(models_dir: &Path, socket: &Path) -> Result<()> {
+    let mut last_print = Instant::now();
+    crate::manifest::ensure_models(models_dir, &mut |file, done, total| {
+        if last_print.elapsed() >= Duration::from_secs(1) || done == total {
+            println!("  {file}: {}/{} MB", done / 1_000_000, total / 1_000_000);
+            last_print = Instant::now();
+        }
+    })
+    .context("provisioning models")?;
+
     println!("Loading models...");
     let load_start = Instant::now();
     let inference = Inference::spawn(models_dir)?;
