@@ -10,13 +10,15 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-cargo build --release -p diktafon
+cargo build --release -p diktafon -p diktafond
 
 app=target/diktafon.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 cp crates/diktafon/resources/Info.plist "$app/Contents/Info.plist"
 cp target/release/diktafon "$app/Contents/MacOS/diktafon"
+# Next to the client so its auto-spawn finds it.
+cp target/release/diktafond "$app/Contents/MacOS/diktafond"
 
 codesign --force --sign - "$app"
 codesign --verify --deep "$app"

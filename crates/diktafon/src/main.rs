@@ -18,8 +18,25 @@ fn vad_model_path() -> PathBuf {
         .join("Library/Application Support/diktafon/models/silero_vad_v4.onnx")
 }
 
+/// The diktafond binary to auto-spawn: `DIKTAFOND_BIN` override, or the one
+/// sitting next to this executable (cargo target dir, or the app bundle).
+fn daemon_bin() -> Option<PathBuf> {
+    if let Some(bin) = std::env::var_os("DIKTAFOND_BIN") {
+        return Some(PathBuf::from(bin));
+    }
+    let sibling = std::env::current_exe().ok()?.parent()?.join("diktafond");
+    if !sibling.exists() {
+        eprintln!(
+            "diktafond not found at {}; auto-spawn disabled, start the daemon manually",
+            sibling.display()
+        );
+        return None;
+    }
+    Some(sibling)
+}
+
 fn main() -> Result<()> {
-    let daemon = DaemonClient::spawn(socket_path());
+    let daemon = DaemonClient::spawn(socket_path(), daemon_bin());
 
     if let Some(text) = std::env::args().nth(1) {
         daemon.chunk_tx.send(Msg::Flush)?;

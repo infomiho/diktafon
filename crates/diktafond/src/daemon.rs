@@ -34,11 +34,7 @@ pub fn run(models_dir: &Path, socket: &Path) -> Result<()> {
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    // A leftover file from a crashed daemon blocks bind. Single-instance
-    // locking is the supervision task's concern (diktafon-otu.5).
-    if socket.exists() {
-        std::fs::remove_file(socket)?;
-    }
+    ensure_sole_daemon(socket)?;
     let listener = UnixListener::bind(socket)
         .with_context(|| format!("binding {}", socket.display()))?;
     remove_socket_on_termination(socket);
@@ -55,6 +51,23 @@ pub fn run(models_dir: &Path, socket: &Path) -> Result<()> {
         // accepting clients that can never be served.
         reset_worker(&inference, unacked_cancels).context("resetting inference worker")?;
         println!("client disconnected");
+    }
+}
+
+/// Exit instead of binding over a live daemon (two clients can race their
+/// auto-spawns; the loser would otherwise leak a resident daemon on an
+/// unlinked socket). A connect probe distinguishes alive from a stale file
+/// left by a crash, which is removed so bind can succeed.
+fn ensure_sole_daemon(socket: &Path) -> Result<()> {
+    if !socket.exists() {
+        return Ok(());
+    }
+    match UnixStream::connect(socket) {
+        Ok(_) => bail!("another diktafond is already serving {}", socket.display()),
+        Err(_) => {
+            std::fs::remove_file(socket).context("removing stale socket file")?;
+            Ok(())
+        }
     }
 }
 

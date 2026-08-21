@@ -4,7 +4,8 @@ use std::cell::Cell;
 use std::io::BufReader;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -15,6 +16,15 @@ const FINISH_TIMEOUT: Duration = Duration::from_secs(60);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
 const MAX_BACKOFF: Duration = Duration::from_secs(8);
+
+/// How long a spawned daemon may take to load its models and bind the socket.
+/// Kept well under FINISH_TIMEOUT so a session that triggered a cold spawn can
+/// still transcribe and finish before its own deadline.
+const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(30);
+const DAEMON_READY_POLL: Duration = Duration::from_millis(250);
+/// Minimum gap between spawn attempts, so a daemon that dies on startup does
+/// not get relaunched in a tight loop.
+const SPAWN_COOLDOWN: Duration = Duration::from_secs(5);
 
 enum SessionResult {
     Final(String),
@@ -37,11 +47,13 @@ pub struct DaemonClient {
 }
 
 impl DaemonClient {
-    pub fn spawn(socket: PathBuf) -> Self {
+    /// `daemon_bin`: the diktafond binary to auto-spawn when the socket is
+    /// dead; `None` disables auto-spawn (the daemon must be started manually).
+    pub fn spawn(socket: PathBuf, daemon_bin: Option<PathBuf>) -> Self {
         let (chunk_tx, cmd_rx) = mpsc::channel::<Msg>();
         let (results_tx, results_rx) = mpsc::channel();
         let ledger = Arc::new(FlushLedger { results_tx, pending_flushes: Mutex::new(0) });
-        thread::spawn(move || Transport::new(socket, ledger).run(cmd_rx));
+        thread::spawn(move || Transport::new(socket, daemon_bin, ledger).run(cmd_rx));
         Self { chunk_tx, results_rx, stale_results: Cell::new(0) }
     }
 
@@ -107,9 +119,96 @@ impl FlushLedger {
     }
 }
 
+/// Why a connection attempt failed: only `NoDaemon` (nothing listening) may
+/// trigger an auto-spawn; a daemon that answered the handshake, however badly,
+/// must not be spawned over.
+enum ConnectFailure {
+    NoDaemon(std::io::Error),
+    Rejected(anyhow::Error),
+}
+
+impl std::fmt::Display for ConnectFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConnectFailure::NoDaemon(e) => write!(f, "nothing listening: {e}"),
+            ConnectFailure::Rejected(e) => write!(f, "{e:#}"),
+        }
+    }
+}
+
+/// Ollama-style supervision: spawn diktafond when the socket is dead, respawn
+/// after it crashes. The daemon is never stopped by the client, so models stay
+/// warm across client restarts.
+struct Supervisor {
+    bin: Option<PathBuf>,
+    child: Option<std::process::Child>,
+    last_spawn: Option<Instant>,
+}
+
+impl Supervisor {
+    /// Spawn the daemon if allowed: auto-spawn enabled, no live child of ours,
+    /// and not within the crash-loop cooldown.
+    fn try_spawn(&mut self, socket: &Path) -> bool {
+        let Some(bin) = &self.bin else { return false };
+        if let Some(child) = &mut self.child {
+            match child.try_wait() {
+                Ok(None) => return false,
+                Ok(Some(status)) => eprintln!("diktafond exited: {status}"),
+                Err(e) => eprintln!("checking diktafond status failed: {e}"),
+            }
+            self.child = None;
+        }
+        if let Some(last) = self.last_spawn
+            && last.elapsed() < SPAWN_COOLDOWN
+        {
+            return false;
+        }
+        // Its own process group so Ctrl+C or terminal close on the client
+        // doesn't take the daemon (and the warm models) down with it; stdio
+        // goes to a log file next to the socket for the same reason.
+        use std::os::unix::process::CommandExt;
+        let log_path = socket.with_extension("log");
+        let log = std::fs::File::options().create(true).append(true).open(&log_path);
+        let (stdout, stderr) = match log {
+            Ok(f) => match f.try_clone() {
+                Ok(clone) => (Stdio::from(clone), Stdio::from(f)),
+                Err(_) => (Stdio::null(), Stdio::from(f)),
+            },
+            Err(_) => (Stdio::null(), Stdio::null()),
+        };
+        println!("starting diktafond (logs: {})...", log_path.display());
+        match std::process::Command::new(bin)
+            .env("DIKTAFOND_SOCKET", socket)
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(stdout)
+            .stderr(stderr)
+            .spawn()
+        {
+            Ok(child) => {
+                self.child = Some(child);
+                self.last_spawn = Some(Instant::now());
+                true
+            }
+            Err(e) => {
+                eprintln!("starting diktafond failed ({}): {e}", bin.display());
+                self.last_spawn = Some(Instant::now());
+                false
+            }
+        }
+    }
+
+    /// Exit status of our spawned daemon, if it has died. A `try_wait` error is
+    /// folded into "still running"; the next `try_spawn` will report it.
+    fn child_exit_status(&mut self) -> Option<std::process::ExitStatus> {
+        self.child.as_mut()?.try_wait().ok().flatten()
+    }
+}
+
 struct Transport {
     socket: PathBuf,
     ledger: Arc<FlushLedger>,
+    supervisor: Supervisor,
     conn: Option<UnixStream>,
     backoff: Duration,
     next_attempt: Instant,
@@ -120,10 +219,11 @@ struct Transport {
 }
 
 impl Transport {
-    fn new(socket: PathBuf, ledger: Arc<FlushLedger>) -> Self {
+    fn new(socket: PathBuf, daemon_bin: Option<PathBuf>, ledger: Arc<FlushLedger>) -> Self {
         Self {
             socket,
             ledger,
+            supervisor: Supervisor { bin: daemon_bin, child: None, last_spawn: None },
             conn: None,
             backoff: INITIAL_BACKOFF,
             next_attempt: Instant::now(),
@@ -198,38 +298,79 @@ impl Transport {
         if Instant::now() < self.next_attempt {
             return false;
         }
-        match self.connect() {
-            Ok(stream) => {
-                self.backoff = INITIAL_BACKOFF;
-                println!("connected to diktafond");
-                self.conn = Some(stream);
-                true
-            }
-            Err(e) => {
-                eprintln!(
-                    "connecting to diktafond failed: {e:#}; next attempt in {:.2?}",
-                    self.backoff
-                );
-                self.next_attempt = Instant::now() + self.backoff;
-                self.backoff = (self.backoff * 2).min(MAX_BACKOFF);
-                false
+        let failure = match self.connect() {
+            Ok(stream) => return self.adopt(stream),
+            Err(f) => f,
+        };
+        if matches!(failure, ConnectFailure::NoDaemon(_)) && self.supervisor.try_spawn(&self.socket)
+        {
+            match self.wait_for_spawned_daemon() {
+                Some(stream) => return self.adopt(stream),
+                // The wait already printed why it gave up.
+                None => return self.schedule_retry(),
             }
         }
+        eprintln!("connecting to diktafond failed: {failure}; next attempt in {:.2?}", self.backoff);
+        self.schedule_retry()
     }
 
-    fn connect(&self) -> Result<UnixStream> {
-        let stream = UnixStream::connect(&self.socket)?;
+    fn schedule_retry(&mut self) -> bool {
+        self.next_attempt = Instant::now() + self.backoff;
+        self.backoff = (self.backoff * 2).min(MAX_BACKOFF);
+        false
+    }
+
+    fn adopt(&mut self, stream: UnixStream) -> bool {
+        self.backoff = INITIAL_BACKOFF;
+        println!("connected to diktafond");
+        self.conn = Some(stream);
+        true
+    }
+
+    /// Poll until the daemon we just spawned answers the handshake, it dies, or
+    /// the model-load deadline passes. Blocking the transport thread here is
+    /// deliberate: queued session messages flow on as soon as the daemon is up.
+    fn wait_for_spawned_daemon(&mut self) -> Option<UnixStream> {
+        let deadline = Instant::now() + DAEMON_READY_TIMEOUT;
+        while Instant::now() < deadline {
+            if let Some(status) = self.supervisor.child_exit_status() {
+                eprintln!("diktafond died during startup: {status}");
+                return None;
+            }
+            match self.connect() {
+                Ok(stream) => return Some(stream),
+                Err(ConnectFailure::NoDaemon(_)) => thread::sleep(DAEMON_READY_POLL),
+                Err(ConnectFailure::Rejected(e)) => {
+                    eprintln!("spawned diktafond rejected the handshake: {e:#}");
+                    return None;
+                }
+            }
+        }
+        eprintln!("diktafond did not become ready within {DAEMON_READY_TIMEOUT:?}");
+        None
+    }
+
+    fn connect(&self) -> Result<UnixStream, ConnectFailure> {
+        let stream = UnixStream::connect(&self.socket).map_err(ConnectFailure::NoDaemon)?;
+        self.handshake(&stream).map_err(ConnectFailure::Rejected)?;
+        spawn_reader(
+            stream.try_clone().map_err(|e| ConnectFailure::Rejected(e.into()))?,
+            self.ledger.clone(),
+        );
+        Ok(stream)
+    }
+
+    fn handshake(&self, stream: &UnixStream) -> Result<()> {
         stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
-        write_frame(&mut &stream, &ClientMsg::Hello { version: PROTOCOL_VERSION })?;
-        match read_frame::<DaemonMsg>(&mut &stream)? {
+        write_frame(&mut &*stream, &ClientMsg::Hello { version: PROTOCOL_VERSION })?;
+        match read_frame::<DaemonMsg>(&mut &*stream)? {
             Some(DaemonMsg::Hello { .. }) => {}
             Some(DaemonMsg::Error(e)) => bail!("daemon refused the connection: {e}"),
             Some(other) => bail!("unexpected handshake reply: {other:?}"),
             None => bail!("daemon closed the connection during the handshake"),
         }
         stream.set_read_timeout(None)?;
-        spawn_reader(stream.try_clone()?, self.ledger.clone());
-        Ok(stream)
+        Ok(())
     }
 
     fn drop_conn(&mut self) {
@@ -313,7 +454,7 @@ mod tests {
         // First fake daemon: serves two sessions on one connection, then dies.
         let first = thread::spawn(move || serve_conn(listener.accept().unwrap().0, 2));
 
-        let client = DaemonClient::spawn(socket.clone());
+        let client = DaemonClient::spawn(socket.clone(), None);
         assert_eq!(run_session(&client, 2).unwrap(), "2 chunks");
         assert_eq!(run_session(&client, 3).unwrap(), "3 chunks");
 
@@ -337,9 +478,47 @@ mod tests {
 
     #[test]
     fn finish_fails_fast_when_daemon_never_existed() {
-        let client = DaemonClient::spawn(test_socket("absent"));
+        let client = DaemonClient::spawn(test_socket("absent"), None);
         let start = Instant::now();
         assert!(run_session(&client, 0).is_err());
         assert!(start.elapsed() < FINISH_TIMEOUT / 2, "should not wait out the full timeout");
+    }
+
+    /// A daemon binary that exits immediately must fail the session quickly
+    /// instead of waiting out the whole ready deadline or respawning in a loop.
+    #[test]
+    fn failed_spawn_fails_session_fast() {
+        let client = DaemonClient::spawn(
+            test_socket("badspawn"),
+            Some(PathBuf::from("/usr/bin/false")),
+        );
+        let start = Instant::now();
+        assert!(run_session(&client, 0).is_err());
+        assert!(start.elapsed() < Duration::from_secs(10), "took {:?}", start.elapsed());
+    }
+
+    /// Spawns the real daemon (real models); needs `cargo build -p diktafond`
+    /// first. Run with `cargo test -p diktafon -- --ignored`.
+    #[test]
+    #[ignore = "spawns the real daemon"]
+    fn auto_spawns_the_real_daemon() {
+        let socket = test_socket("autospawn");
+        let bin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/diktafond");
+        assert!(bin.exists(), "build diktafond first: cargo build -p diktafond");
+        let client = DaemonClient::spawn(socket.clone(), Some(bin));
+        assert_eq!(run_session(&client, 0).unwrap(), "");
+
+        // Kill the daemon we spawned: every process on the socket that is not
+        // this test process.
+        let lsof = std::process::Command::new("lsof")
+            .args(["-t", socket.to_str().unwrap()])
+            .output()
+            .unwrap();
+        let own_pid = std::process::id().to_string();
+        for pid in String::from_utf8_lossy(&lsof.stdout).split_whitespace() {
+            if pid != own_pid {
+                std::process::Command::new("kill").args(["-TERM", pid]).status().unwrap();
+            }
+        }
     }
 }

@@ -58,6 +58,15 @@ fn daemon_serves_sessions_over_the_socket() {
     write_frame(&mut mismatched, &ClientMsg::Hello { version: PROTOCOL_VERSION + 1 }).unwrap();
     assert!(matches!(read_daemon_msg(&mut mismatched), DaemonMsg::Error(_)));
 
+    // A second daemon on the same socket must refuse to start instead of
+    // binding over the live one.
+    let second = Command::new(env!("CARGO_BIN_EXE_diktafond"))
+        .env("DIKTAFOND_SOCKET", &socket)
+        .output()
+        .unwrap();
+    assert!(!second.status.success(), "second daemon should refuse to start");
+    assert!(socket.exists(), "live socket must survive the refused start");
+
     // SIGTERM removes the socket file on the way out.
     Command::new("kill")
         .args(["-TERM", &daemon.id().to_string()])
