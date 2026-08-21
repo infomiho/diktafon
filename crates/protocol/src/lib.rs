@@ -16,6 +16,17 @@ use std::path::PathBuf;
 
 pub const PROTOCOL_VERSION: u32 = 3;
 
+/// Prefix of the daemon's handshake rejection for a version mismatch; the
+/// client matches on it to decide a resident daemon needs replacing. Every
+/// daemon version so far has used this exact wording.
+pub const VERSION_MISMATCH_PREFIX: &str = "protocol version mismatch";
+
+/// Where the daemon records its pid, next to the socket, so a newer client can
+/// retire an older resident daemon.
+pub fn pid_path() -> PathBuf {
+    socket_path().with_extension("pid")
+}
+
 /// Sample rate of the audio chunks the client delivers and the daemon's ASR
 /// model expects.
 pub const TARGET_RATE: u32 = 16_000;

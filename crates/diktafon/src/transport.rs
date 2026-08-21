@@ -1,6 +1,8 @@
 use crate::dictation::PhaseEvent;
 use anyhow::{Context, Result, anyhow, bail};
-use diktafon_protocol::{ClientMsg, DaemonMsg, Msg, PROTOCOL_VERSION, read_frame, write_frame};
+use diktafon_protocol::{
+    ClientMsg, DaemonMsg, Msg, PROTOCOL_VERSION, VERSION_MISMATCH_PREFIX, read_frame, write_frame,
+};
 use std::cell::Cell;
 use std::io::BufReader;
 use std::net::Shutdown;
@@ -244,6 +246,10 @@ struct Transport {
     /// pasting silently truncated text would be worse than failing, so the
     /// session's flush turns into a Cancel plus an error.
     dropped_chunks: usize,
+    /// A mismatched daemon is retired at most once; if its replacement also
+    /// mismatches, the spawn binary itself is stale and retiring again would
+    /// churn forever.
+    retired_mismatch: bool,
 }
 
 impl Transport {
@@ -260,6 +266,7 @@ impl Transport {
             backoff: INITIAL_BACKOFF,
             next_attempt: Instant::now(),
             dropped_chunks: 0,
+            retired_mismatch: false,
         }
     }
 
@@ -332,10 +339,26 @@ impl Transport {
         if Instant::now() < self.next_attempt {
             return false;
         }
-        let failure = match self.connect() {
+        let mut failure = match self.connect() {
             Ok(stream) => return self.adopt(stream),
             Err(f) => f,
         };
+        // A resident daemon from an older build refuses our handshake forever;
+        // retire it and fall through to spawning our own.
+        if let ConnectFailure::Rejected(e) = &failure
+            && format!("{e:#}").contains(VERSION_MISMATCH_PREFIX)
+        {
+            if self.retired_mismatch {
+                eprintln!(
+                    "daemon still version-mismatched after a restart; the spawned binary is stale"
+                );
+            } else {
+                self.retired_mismatch = true;
+                if retire_mismatched_daemon(&self.socket) {
+                    failure = ConnectFailure::NoDaemon(std::io::Error::other("retired old daemon"));
+                }
+            }
+        }
         if matches!(failure, ConnectFailure::NoDaemon(_)) && self.supervisor.try_spawn(&self.socket)
         {
             match self.wait_for_spawned_daemon() {
@@ -459,6 +482,39 @@ impl Transport {
             let _ = conn.shutdown(Shutdown::Both);
         }
     }
+}
+
+/// SIGTERM the daemon recorded in the pidfile next to the socket, after
+/// checking the pid still names a diktafond (pids get recycled), and wait
+/// briefly for its socket to vanish.
+fn retire_mismatched_daemon(socket: &Path) -> bool {
+    let pid_file = socket.with_extension("pid");
+    let Ok(pid) = std::fs::read_to_string(&pid_file) else {
+        eprintln!("version-mismatched daemon has no pid file; stop it manually");
+        return false;
+    };
+    let pid = pid.trim();
+    let comm = std::process::Command::new("ps")
+        .args(["-o", "comm=", "-p", pid])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if !comm.ends_with("diktafond") {
+        eprintln!("pid file {pid} is not a diktafond ({comm:?}); stop the old daemon manually");
+        return false;
+    }
+    eprintln!("retiring version-mismatched diktafond (pid {pid})");
+    let _ = std::process::Command::new("kill")
+        .args(["-TERM", pid])
+        .status();
+    for _ in 0..20 {
+        if !socket.exists() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    eprintln!("old diktafond did not exit within 2s");
+    false
 }
 
 fn spawn_reader(stream: UnixStream, ledger: Arc<FlushLedger>) {

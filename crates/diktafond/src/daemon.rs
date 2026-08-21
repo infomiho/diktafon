@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
-use diktafon_protocol::{ClientMsg, DaemonMsg, Msg, PROTOCOL_VERSION, read_frame, write_frame};
+use diktafon_protocol::{
+    ClientMsg, DaemonMsg, Msg, PROTOCOL_VERSION, VERSION_MISMATCH_PREFIX, read_frame, write_frame,
+};
 use std::io::{BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
@@ -47,6 +49,9 @@ pub fn run(models_dir: &Path, socket: &Path) -> Result<()> {
     ensure_sole_daemon(socket)?;
     let listener =
         UnixListener::bind(socket).with_context(|| format!("binding {}", socket.display()))?;
+    let pid_file = socket.with_extension("pid");
+    std::fs::write(&pid_file, std::process::id().to_string())
+        .with_context(|| format!("writing {}", pid_file.display()))?;
     remove_socket_on_termination(socket);
     println!("diktafond listening on {}", socket.display());
 
@@ -261,6 +266,7 @@ fn remove_socket_on_termination(socket: &Path) {
         signal_hook::iterator::Signals::new([SIGTERM, SIGINT]).expect("registering signal handler");
     thread::spawn(move || {
         if signals.forever().next().is_some() {
+            let _ = std::fs::remove_file(socket.with_extension("pid"));
             let _ = std::fs::remove_file(&socket);
             // _exit, not exit: atexit runs ggml's Metal destructor, which
             // asserts (and aborts) while the model is still resident.
@@ -330,7 +336,7 @@ fn handshake(reader: &mut impl Read, writer: &mut impl Write) -> Result<()> {
         ),
         Some(ClientMsg::Hello { version }) => {
             let error =
-                format!("protocol version mismatch: client {version}, daemon {PROTOCOL_VERSION}");
+                format!("{VERSION_MISMATCH_PREFIX}: client {version}, daemon {PROTOCOL_VERSION}");
             let _ = write_frame(writer, &DaemonMsg::Error(error.clone()));
             bail!(error);
         }
