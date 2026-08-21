@@ -37,6 +37,11 @@ struct Models {
     polisher: Polisher,
 }
 
+/// Display names for the status file and UI; keep in step with the paths
+/// loaded below and the manifest.
+pub const ASR_MODEL_NAME: &str = "cohere-transcribe-int8";
+pub const LLM_MODEL_NAME: &str = "s1-mini-q4_k_m";
+
 fn load_models(models_dir: &Path) -> Result<Models> {
     let start = Instant::now();
     let asr = CohereModel::load(&models_dir.join("cohere-int8"), &Quantization::Int8)

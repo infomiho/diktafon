@@ -172,10 +172,22 @@ struct Supervisor {
     last_spawn: Option<Instant>,
 }
 
+/// Set on the quit-everything path before the daemon is SIGTERMed, so a
+/// transport hiccup during shutdown (a chunk write failing as the daemon
+/// dies) cannot auto-respawn the daemon the user just asked to stop.
+static SHUTTING_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn disable_daemon_spawn() {
+    SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 impl Supervisor {
-    /// Spawn the daemon if allowed: auto-spawn enabled, no live child of ours,
-    /// and not within the crash-loop cooldown.
+    /// Spawn the daemon if allowed: auto-spawn enabled, not shutting down, no
+    /// live child of ours, and not within the crash-loop cooldown.
     fn try_spawn(&mut self, socket: &Path) -> bool {
+        if SHUTTING_DOWN.load(std::sync::atomic::Ordering::Relaxed) {
+            return false;
+        }
         let Some(bin) = &self.bin else { return false };
         if let Some(child) = &mut self.child {
             match child.try_wait() {

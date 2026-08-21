@@ -14,19 +14,18 @@ struct Status {
 
 /// Rewrite the status file; called on every model load and unload. Failures
 /// are logged, not fatal: status is best-effort decoration.
-pub fn write(models_loaded: bool) {
+pub fn write(path: &std::path::Path, models_loaded: bool) {
     let status = Status {
         pid: std::process::id(),
         models_loaded,
-        asr_model: "cohere-transcribe-int8",
-        llm_model: "s1-mini-q4_k_m",
+        asr_model: crate::inference::ASR_MODEL_NAME,
+        llm_model: crate::inference::LLM_MODEL_NAME,
     };
-    let path = diktafon_protocol::status_path();
     let result = (|| -> anyhow::Result<()> {
         let json = serde_json::to_vec(&status)?;
         let tmp = path.with_extension("json.tmp");
         std::fs::write(&tmp, json)?;
-        std::fs::rename(&tmp, &path)?;
+        std::fs::rename(&tmp, path)?;
         Ok(())
     })();
     if let Err(e) = result {
@@ -34,6 +33,6 @@ pub fn write(models_loaded: bool) {
     }
 }
 
-pub fn remove() {
-    let _ = std::fs::remove_file(diktafon_protocol::status_path());
+pub fn remove(path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
 }

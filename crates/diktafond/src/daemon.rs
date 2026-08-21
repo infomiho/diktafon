@@ -62,11 +62,12 @@ pub fn run(models_dir: &Path, socket: &Path) -> Result<()> {
     let pid_file = socket.with_extension("pid");
     std::fs::write(&pid_file, std::process::id().to_string())
         .with_context(|| format!("writing {}", pid_file.display()))?;
-    crate::status::write(false);
+    let status_file = diktafon_protocol::status_path_for(socket);
+    crate::status::write(&status_file, false);
     remove_socket_on_termination(socket);
     println!("diktafond listening on {}", socket.display());
 
-    let (inference, early_clients) = start_up(&listener, models_dir)?;
+    let (inference, early_clients) = start_up(&listener, models_dir, &status_file)?;
     listener.set_nonblocking(false)?;
 
     // Clients that connected during startup already got their Ready; serve
@@ -122,13 +123,18 @@ struct StartupStatus {
 /// Provision and load the models on a worker thread while accepting
 /// connections and streaming them download progress; returns the loaded
 /// `Inference` plus every connection that survived to `Ready`.
-fn start_up(listener: &UnixListener, models_dir: &Path) -> Result<(Inference, Vec<EarlyClient>)> {
+fn start_up(
+    listener: &UnixListener,
+    models_dir: &Path,
+    status_file: &Path,
+) -> Result<(Inference, Vec<EarlyClient>)> {
     let status = Arc::new(StartupStatus::default());
     let (loaded_tx, loaded_rx) = mpsc::channel();
     let (handover_tx, handover_rx) = mpsc::channel::<EarlyClient>();
     thread::spawn({
         let status = status.clone();
         let models_dir = models_dir.to_path_buf();
+        let status_file = status_file.to_path_buf();
         move || {
             let mut last_log = Instant::now();
             let result = crate::manifest::ensure_models(&models_dir, &mut |file, done, total| {
@@ -149,7 +155,9 @@ fn start_up(listener: &UnixListener, models_dir: &Path) -> Result<(Inference, Ve
                 let inference = Inference::spawn(
                     &models_dir,
                     Some(history),
-                    Some(Box::new(crate::status::write)),
+                    Some(Box::new(move |loaded| {
+                        crate::status::write(&status_file, loaded)
+                    })),
                 );
                 if inference.is_ok() {
                     println!("Models loaded in {:.2?}", load_start.elapsed());
@@ -282,8 +290,8 @@ fn remove_socket_on_termination(socket: &Path) {
     thread::spawn(move || {
         if signals.forever().next().is_some() {
             let _ = std::fs::remove_file(socket.with_extension("pid"));
+            crate::status::remove(&diktafon_protocol::status_path_for(&socket));
             let _ = std::fs::remove_file(&socket);
-            crate::status::remove();
             // _exit, not exit: atexit runs ggml's Metal destructor, which
             // asserts (and aborts) while the model is still resident.
             signal_hook::low_level::exit(0);

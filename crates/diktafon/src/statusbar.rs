@@ -23,6 +23,8 @@ use std::cell::{Cell, OnceCell, RefCell};
 const HISTORY_SHOWN: usize = 5;
 /// Menu titles stay skimmable; the full text goes in the tooltip.
 const HISTORY_TITLE_CHARS: usize = 44;
+/// More than enough bytes for the last [`HISTORY_SHOWN`] entries.
+const HISTORY_TAIL_BYTES: u64 = 256 * 1024;
 
 enum MenuAction {
     Quit,
@@ -247,13 +249,14 @@ fn pid_is_diktafond(pid: u64) -> bool {
 }
 
 /// Newest first. Prefers the polished text; falls back to the raw transcript.
+/// Reads only the file's tail: this runs synchronously while the menu opens,
+/// and the history grows without bound.
 fn recent_history(count: usize) -> Vec<String> {
     let path = diktafon_protocol::data_dir().join("history.jsonl");
-    let Ok(raw) = std::fs::read_to_string(&path) else {
+    let Ok(raw) = read_tail(&path, HISTORY_TAIL_BYTES) else {
         return Vec::new();
     };
-    let mut texts: Vec<String> = raw
-        .lines()
+    raw.lines()
         .rev()
         .filter_map(|line| {
             let entry = serde_json::from_str::<serde_json::Value>(line).ok()?;
@@ -264,9 +267,26 @@ fn recent_history(count: usize) -> Vec<String> {
             (!text.is_empty()).then(|| text.to_string())
         })
         .take(count)
-        .collect();
-    texts.shrink_to_fit();
-    texts
+        .collect()
+}
+
+/// The file's last `max_bytes`, starting at the first complete line (the
+/// seek can land mid-line and even mid-UTF-8-character, so trim to the byte
+/// after the first newline before decoding).
+fn read_tail(path: &std::path::Path, max_bytes: u64) -> std::io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let mut tail = Vec::new();
+    if len > max_bytes {
+        file.seek(SeekFrom::Start(len - max_bytes))?;
+        file.read_to_end(&mut tail)?;
+        let first_line_end = tail.iter().position(|&b| b == b'\n').map(|i| i + 1);
+        tail.drain(..first_line_end.unwrap_or(tail.len()));
+    } else {
+        file.read_to_end(&mut tail)?;
+    }
+    Ok(String::from_utf8_lossy(&tail).into_owned())
 }
 
 /// SIGTERM the daemon named by its pidfile; quiet no-op if none is running.
@@ -309,6 +329,7 @@ pub fn install(cx: &mut App, dictation: &Entity<Dictation>) {
     cx.spawn(async move |cx| {
         while let Some(action) = actions_rx.next().await {
             if let MenuAction::QuitDaemonToo = action {
+                crate::transport::disable_daemon_spawn();
                 stop_daemon();
             }
             cx.update(|cx| cx.quit());
