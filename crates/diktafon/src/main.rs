@@ -1,5 +1,6 @@
 mod capture;
 mod dictation;
+mod keymap;
 mod paste;
 mod pill;
 mod sounds;
@@ -13,7 +14,8 @@ use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use gpui::{Entity, Global};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 use transport::DaemonClient;
@@ -87,7 +89,8 @@ fn main() -> Result<()> {
         daemon.finish().context("daemon roundtrip failed")?;
         println!("Pasting in 3s, focus a text field...");
         thread::sleep(std::time::Duration::from_secs(3));
-        return paste::insert(&text);
+        // main() is the main thread here, as the TIS scan requires.
+        return paste::insert(&text, keymap::v_keycode());
     }
 
     let levels: capture::LevelBars = Default::default();
@@ -124,7 +127,13 @@ fn main() -> Result<()> {
         record: record_key.id(),
         escape: escape_key.id(),
     };
-    thread::spawn(move || control_loop(recorder, daemon, event_rx, phase_tx, hotkeys));
+    // Resolved on the main thread (TIS requirement) and refreshed at each
+    // session start by the phase observer; the control loop only reads it.
+    let v_keycode = Arc::new(AtomicU32::new(keymap::ANSI_V.into()));
+    let paste_keycode = v_keycode.clone();
+    thread::spawn(move || {
+        control_loop(recorder, daemon, event_rx, phase_tx, hotkeys, paste_keycode)
+    });
 
     let receiver = GlobalHotKeyEvent::receiver();
     thread::spawn(move || {
@@ -147,6 +156,11 @@ fn main() -> Result<()> {
             cx.observe(&dictation, move |dictation, cx| {
                 let phase = dictation.read(cx).phase;
                 println!("[phase] {phase:?}");
+                if phase == dictation::Phase::Arming {
+                    // Refresh per session so layout switches are picked up;
+                    // must happen on this (main) thread.
+                    v_keycode.store(keymap::v_keycode().into(), Ordering::Relaxed);
+                }
                 let cancellable = matches!(
                     phase,
                     dictation::Phase::Arming | dictation::Phase::Recording
@@ -198,6 +212,7 @@ fn control_loop(
     events: mpsc::Receiver<GlobalHotKeyEvent>,
     phases: futures::channel::mpsc::UnboundedSender<PhaseEvent>,
     hotkeys: Hotkeys,
+    v_keycode: Arc<AtomicU32>,
 ) {
     // Created on this thread: the output stream is not Send.
     let sounds = match sounds::Sounds::new() {
@@ -275,7 +290,8 @@ fn control_loop(
                         }
                         Ok(text) => {
                             println!(">>> {text}");
-                            if let Err(e) = paste::insert(&text) {
+                            let keycode = v_keycode.load(Ordering::Relaxed) as u16;
+                            if let Err(e) = paste::insert(&text, keycode) {
                                 eprintln!("paste failed (Accessibility permission?): {e}");
                             }
                             println!("stop-to-paste: {:.2?}", stopped_at.elapsed());
