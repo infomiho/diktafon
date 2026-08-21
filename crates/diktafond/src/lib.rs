@@ -1,4 +1,5 @@
 pub mod daemon;
+pub mod fetch;
 mod inference;
 mod llm;
 
