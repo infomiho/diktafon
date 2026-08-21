@@ -2,3 +2,7 @@
 name = "diktafon-protocol"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bincode = { version = "2", features = ["derive"] }
