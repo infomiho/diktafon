@@ -5,9 +5,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crate::inference::Msg;
-
-pub const TARGET_RATE: u32 = 16_000;
+use diktafon_protocol::{Msg, TARGET_RATE};
 
 const FRAME_MS: usize = 30;
 const SILENCE_MS: usize = 500;

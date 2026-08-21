@@ -1,0 +1,4 @@
+[package]
+name = "diktafon-protocol"
+version.workspace = true
+edition.workspace = true

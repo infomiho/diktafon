@@ -1,0 +1,11 @@
+[package]
+name = "diktafond"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+transcribe-rs = { version = "0.3.11", features = ["onnx"] }
+llama-cpp-2 = { version = "0.1.154", features = ["metal"] }
+encoding_rs = "0.8"
+anyhow.workspace = true
+diktafon-protocol.workspace = true

@@ -1,13 +1,12 @@
 mod capture;
-mod inference;
-mod llm;
 mod paste;
 
 use anyhow::{Context, Result};
 use capture::{Recorder, Session};
+use diktafon_protocol::Msg;
+use diktafond::Inference;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
-use inference::Inference;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
@@ -34,7 +33,7 @@ fn main() -> Result<()> {
     if let Some(text) = std::env::args().nth(1) {
         println!("Polishing and pasting in 3s, focus a text field...");
         thread::sleep(std::time::Duration::from_secs(3));
-        inference.chunk_tx.send(inference::Msg::Flush)?;
+        inference.chunk_tx.send(Msg::Flush)?;
         inference.finish()?;
         return paste::insert(&text);
     }

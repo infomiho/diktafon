@@ -8,13 +8,9 @@ use std::time::{Duration, Instant};
 use transcribe_rs::onnx::cohere::{CohereModel, CohereParams};
 use transcribe_rs::onnx::Quantization;
 
-use crate::capture::TARGET_RATE;
-use crate::llm::Polisher;
+use diktafon_protocol::{Msg, TARGET_RATE};
 
-pub enum Msg {
-    Chunk(Vec<f32>),
-    Flush,
-}
+use crate::llm::Polisher;
 
 /// Upper bound on transcribing the queued chunks plus one polish pass. Hit when
 /// the worker thread died or is far behind; `finish` errors instead of blocking

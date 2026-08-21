@@ -425,9 +425,23 @@ dependencies = [
  "anyhow",
  "arboard",
  "cpal",
- "encoding_rs",
+ "diktafon-protocol",
+ "diktafond",
  "enigo",
  "global-hotkey",
+]
+
+[[package]]
+name = "diktafon-protocol"
+version = "0.1.0"
+
+[[package]]
+name = "diktafond"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "diktafon-protocol",
+ "encoding_rs",
  "llama-cpp-2",
  "transcribe-rs",
 ]

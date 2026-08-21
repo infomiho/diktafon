@@ -1,17 +1,15 @@
-[package]
-name = "diktafon"
+[workspace]
+resolver = "3"
+members = ["crates/diktafon", "crates/diktafond", "crates/protocol"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-transcribe-rs = { version = "0.3.11", features = ["onnx"] }
-llama-cpp-2 = { version = "0.1.154", features = ["metal"] }
-encoding_rs = "0.8"
-cpal = "0.16"
-global-hotkey = "0.8"
-arboard = "3"
-enigo = "0.6"
+[workspace.dependencies]
 anyhow = "1"
+diktafon-protocol = { path = "crates/protocol" }
+diktafond = { path = "crates/diktafond" }
 
 [profile.dev.package."*"]
 opt-level = 2
