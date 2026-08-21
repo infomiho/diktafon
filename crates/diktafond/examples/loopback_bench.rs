@@ -127,12 +127,11 @@ fn main() {
     )
     .unwrap();
     loop {
-        match read_frame::<DaemonMsg>(&mut reader)
+        if let DaemonMsg::Ready = read_frame::<DaemonMsg>(&mut reader)
             .unwrap()
             .expect("daemon closed")
         {
-            DaemonMsg::Ready => break,
-            _ => {}
+            break;
         }
     }
 
