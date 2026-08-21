@@ -98,18 +98,23 @@ impl MenuController {
 
     fn set_phase(&self, phase: Phase) {
         self.ivars().phase.set(phase);
-        let symbol = match phase {
-            Phase::Idle => "mic",
-            Phase::Arming | Phase::Recording => "mic.fill",
-            Phase::Transcribing | Phase::Polishing => "waveform",
+        // Abstract marks echoing the pill's orbit; deliberately not the mic
+        // glyphs, which read as macOS's own mic-in-use indicator. Fallbacks
+        // cover older SF Symbols sets.
+        let candidates: &[&str] = match phase {
+            Phase::Idle => &["circle.dotted", "circle"],
+            Phase::Arming | Phase::Recording => &["record.circle", "largecircle.fill.circle"],
+            Phase::Transcribing | Phase::Polishing => &["waveform.circle", "ellipsis.circle"],
         };
         if let Some(item) = self.ivars().status_item.get()
             && let Some(button) = item.button(self.mtm())
         {
-            let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                &NSString::from_str(symbol),
-                None,
-            );
+            let image = candidates.iter().find_map(|symbol| {
+                NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                    &NSString::from_str(symbol),
+                    None,
+                )
+            });
             button.setImage(image.as_deref());
         }
     }
