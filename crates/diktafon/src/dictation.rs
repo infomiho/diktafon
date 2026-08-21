@@ -23,6 +23,8 @@ pub enum PhaseEvent {
     RecordingStarted,
     RecordingStopped,
     PolishingStarted,
+    /// A chunk finished transcribing while the session is still running.
+    Partial(String),
     /// The session produced a final text, an error, or nothing.
     SessionEnded {
         error: Option<String>,
@@ -31,6 +33,8 @@ pub enum PhaseEvent {
 
 pub struct Dictation {
     pub phase: Phase,
+    /// Transcribed text accumulated so far in the current session.
+    pub partial: String,
     pub last_error: Option<String>,
 }
 
@@ -42,6 +46,7 @@ impl Dictation {
     pub fn spawn(cx: &mut App, mut events: UnboundedReceiver<PhaseEvent>) -> Entity<Dictation> {
         let entity = cx.new(|_| Dictation {
             phase: Phase::Idle,
+            partial: String::new(),
             last_error: None,
         });
         cx.spawn({
@@ -62,7 +67,17 @@ impl Dictation {
     fn apply(&mut self, event: PhaseEvent) {
         self.phase = match event {
             PhaseEvent::RecordingArmed => Phase::Arming,
-            PhaseEvent::RecordingStarted => Phase::Recording,
+            PhaseEvent::RecordingStarted => {
+                self.partial.clear();
+                Phase::Recording
+            }
+            PhaseEvent::Partial(text) => {
+                if !self.partial.is_empty() {
+                    self.partial.push(' ');
+                }
+                self.partial.push_str(&text);
+                self.phase
+            }
             PhaseEvent::RecordingStopped => Phase::Transcribing,
             // Only a live session's polish matters; a stale frame from a
             // timed-out session must not flip Idle or a new Recording.

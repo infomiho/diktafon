@@ -116,7 +116,15 @@ fn main() -> Result<()> {
             };
             thread::sleep(std::time::Duration::from_secs(2));
             step(PhaseEvent::RecordingArmed, 1);
-            step(PhaseEvent::RecordingStarted, 4);
+            step(PhaseEvent::RecordingStarted, 2);
+            step(
+                PhaseEvent::Partial("penguin enterprises flagship".into()),
+                2,
+            );
+            step(
+                PhaseEvent::Partial("utilizes a proprietary polymer blend".into()),
+                2,
+            );
             step(PhaseEvent::RecordingStopped, 3);
             step(PhaseEvent::PolishingStarted, 3);
             step(PhaseEvent::SessionEnded { error: None }, 0);

@@ -466,7 +466,12 @@ fn spawn_reader(stream: UnixStream, ledger: Arc<FlushLedger>) {
         let mut reader = BufReader::new(stream);
         loop {
             match read_frame::<DaemonMsg>(&mut reader) {
-                Ok(Some(DaemonMsg::Partial(text))) => println!("  partial: {text}"),
+                Ok(Some(DaemonMsg::Partial(text))) => {
+                    println!("  partial: {text}");
+                    if let Some(tx) = &ledger.phase_tx {
+                        let _ = tx.unbounded_send(PhaseEvent::Partial(text));
+                    }
+                }
                 Ok(Some(DaemonMsg::Polishing)) => {
                     if let Some(tx) = &ledger.phase_tx {
                         let _ = tx.unbounded_send(PhaseEvent::PolishingStarted);

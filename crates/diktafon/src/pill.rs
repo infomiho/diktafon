@@ -170,16 +170,18 @@ impl Pill {
         }
     }
 
-    fn bars(&self) -> AnyElement {
+    /// Compact bars leave room for the live transcript tail beside them.
+    fn bars(&self, compact: bool) -> AnyElement {
         let levels = *self.levels.lock().unwrap();
+        let (width, gap) = if compact { (3., 2.) } else { (5., 4.) };
         div()
             .flex()
             .items_center()
-            .gap(px(4.))
+            .gap(px(gap))
             .h(px(30.))
             .children(levels.into_iter().map(|level| {
                 div()
-                    .w(px(5.))
+                    .w(px(width))
                     .h(px(4. + level * 26.))
                     .rounded_full()
                     .bg(rgba(0xFFFFFFCC))
@@ -214,6 +216,16 @@ fn dot(phase: Phase, breathing: bool) -> AnyElement {
 
 /// Deliberately not `phase as u64`: these keys are animation element ids and
 /// must stay stable even if the enum is ever reordered.
+/// The last `chars` characters, front-ellipsized.
+fn tail(text: &str, chars: usize) -> String {
+    let total = text.chars().count();
+    if total <= chars {
+        return text.to_string();
+    }
+    let tail: String = text.chars().skip(total - chars).collect();
+    format!("…{tail}")
+}
+
 fn phase_key(phase: Phase) -> u64 {
     match phase {
         Phase::Idle => 0,
@@ -237,14 +249,33 @@ impl Render for Pill {
         } else {
             phase
         };
-        let label = match display {
-            Phase::Arming => "starting",
-            Phase::Transcribing => "transcribing",
-            Phase::Polishing => "polishing",
-            _ => "",
+        let partial = self.dictation.read(cx).partial.clone();
+        let label: String = match display {
+            Phase::Arming => "starting".into(),
+            // Show the transcript so far instead of a static label once any
+            // text exists; the dot color still names the phase.
+            Phase::Transcribing | Phase::Polishing if !partial.is_empty() => tail(&partial, 34),
+            Phase::Transcribing => "transcribing".into(),
+            Phase::Polishing => "polishing".into(),
+            _ => String::new(),
         };
         let content = if display == Phase::Recording {
-            self.bars()
+            let row = div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(self.bars(!partial.is_empty()));
+            let row = if partial.is_empty() {
+                row
+            } else {
+                row.child(
+                    div()
+                        .text_xs()
+                        .text_color(rgba(0xFFFFFF8C))
+                        .child(tail(&partial, 18)),
+                )
+            };
+            row.into_any_element()
         } else {
             div()
                 .text_sm()

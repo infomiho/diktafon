@@ -623,7 +623,7 @@ mod silero_tests {
     fn detects_speech_segments_in_eval_clip() {
         let silero = SileroVad::new(
             diktafon_protocol::models_dir().join("silero_vad_v4.onnx"),
-            SPEECH_THRESHOLD,
+            CONFIG.speech_threshold,
         )
         .unwrap();
         let mut chunker = VadChunker::new(Box::new(silero));
