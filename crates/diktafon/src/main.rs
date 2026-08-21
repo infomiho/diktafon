@@ -2,6 +2,7 @@ mod capture;
 mod dictation;
 mod paste;
 mod pill;
+mod sounds;
 mod transport;
 
 use anyhow::{Context, Result};
@@ -190,6 +191,19 @@ fn control_loop(
     phases: futures::channel::mpsc::UnboundedSender<PhaseEvent>,
     hotkeys: Hotkeys,
 ) {
+    // Created on this thread: the output stream is not Send.
+    let sounds = match sounds::Sounds::new() {
+        Ok(sounds) => Some(sounds),
+        Err(e) => {
+            eprintln!("feedback sounds disabled: {e:#}");
+            None
+        }
+    };
+    let play = |cue| {
+        if let Some(sounds) = &sounds {
+            sounds.play(cue);
+        }
+    };
     let mut session: Option<Session> = None;
     for event in events {
         if event.id == hotkeys.escape {
@@ -197,6 +211,7 @@ fn control_loop(
                 && let Some(s) = session.take()
             {
                 s.cancel();
+                play(sounds::Cue::Cancel);
                 println!("cancelled");
                 let _ = phases.unbounded_send(PhaseEvent::SessionEnded { error: None });
             }
@@ -216,6 +231,7 @@ fn control_loop(
                             // flow yet; wait so slow mics don't eat first
                             // words. A queued Released is handled right after.
                             if s.wait_until_live(MIC_READY_TIMEOUT) {
+                                play(sounds::Cue::Start);
                                 println!("recording...");
                                 session = Some(s);
                                 let _ = phases.unbounded_send(PhaseEvent::RecordingStarted);
@@ -226,6 +242,7 @@ fn control_loop(
                                 // daemon; consume its result so it cannot be
                                 // misdelivered to the next session.
                                 s.stop();
+                                play(sounds::Cue::Error);
                                 recorder.mark_stream_failed();
                                 let _ = daemon.finish();
                                 let _ = phases.unbounded_send(PhaseEvent::SessionEnded {
@@ -256,6 +273,7 @@ fn control_loop(
                             None
                         }
                         Err(e) => {
+                            play(sounds::Cue::Error);
                             eprintln!("inference error: {e}");
                             Some(format!("{e:#}"))
                         }

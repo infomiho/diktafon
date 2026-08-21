@@ -10,6 +10,7 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "ef50ad95b522d4940
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "ef50ad95b522d49402d30ed11c484d63d57a0757" }
 cpal = "0.16"
 futures = "0.3"
+rodio = "0.22"
 rustfft = "6"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder", "NSScreen", "NSEvent"] }
