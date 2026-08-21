@@ -40,6 +40,9 @@ const ENTER: Duration = Duration::from_millis(200);
 const EXIT: Duration = Duration::from_millis(300);
 const CONTENT_FADE: Duration = Duration::from_millis(150);
 const DOT_BREATH: Duration = Duration::from_millis(1100);
+/// Aurora glow floor while recording: the wash never goes fully dark, so
+/// quiet moments read as embers rather than the effect blinking off.
+const AURORA_BASELINE: f32 = 0.25;
 
 /// Open the pill while a session is active; on idle, play the exit animation
 /// and then close it.
@@ -167,6 +170,9 @@ pub struct Pill {
     opened_at: std::time::Instant,
     /// DIKTAFON_AURORA=1: voice-driven glow wash prototype while recording.
     aurora: bool,
+    /// Per-band smoothed aurora intensity (fast attack, slow decay), so the
+    /// glow breathes with speech instead of flickering with the raw meter.
+    aurora_smooth: [f32; 3],
 }
 
 impl Pill {
@@ -193,56 +199,89 @@ impl Pill {
             recording_since: None,
             opened_at: std::time::Instant::now(),
             aurora: std::env::var("DIKTAFON_AURORA").is_ok_and(|v| v != "0"),
+            aurora_smooth: [0.; 3],
         }
     }
 
-    /// Prototype (DIKTAFON_AURORA=1): a voice-driven glow wash behind the
-    /// pill content while recording. Three soft blobs, each fed by one band
-    /// of the spectrum (lows left, highs right), drifting slowly; silence
-    /// means no glow, per the design system's signal rule.
-    fn aurora(&self, display: Phase, reduce_motion: bool) -> Option<AnyElement> {
-        if !self.aurora || display != Phase::Recording {
-            return None;
-        }
-        let t = self.opened_at.elapsed().as_secs_f32();
+    /// Spectrum thirds (lows, mids, highs) smoothed with fast attack and slow
+    /// decay; called once per frame while the aurora is active.
+    fn aurora_bands(&mut self) -> [f32; 3] {
         let levels = *self.levels.lock().unwrap();
         let band = |range: std::ops::Range<usize>| {
             let len = range.len() as f32;
             levels[range].iter().sum::<f32>() / len
         };
+        let raw = [band(0..5), band(5..11), band(11..16)];
+        for (smooth, value) in self.aurora_smooth.iter_mut().zip(raw) {
+            let rate = if value > *smooth { 0.55 } else { 0.08 };
+            *smooth += (value - *smooth) * rate;
+        }
+        self.aurora_smooth
+    }
+
+    /// Prototype (DIKTAFON_AURORA=1): a voice-driven glow wash behind the
+    /// pill content while recording, Siri-style. Three hue-shifted blobs
+    /// (ember, red, rose; lows left, highs right) drift inside the pill over
+    /// a constant baseline glow, so the wash breathes with speech instead of
+    /// flashing from black.
+    fn aurora_wash(&self, bands: [f32; 3], reduce_motion: bool) -> AnyElement {
+        let t = self.opened_at.elapsed().as_secs_f32();
         let blobs = [
-            (36., band(0..5), 0.),
-            (110., band(5..11), 2.1),
-            (184., band(11..16), 4.2),
+            (40., bands[0], theme::AURORA_EMBER, 0.),
+            (110., bands[1], theme::SIGNAL_RED, 2.1),
+            (180., bands[2], theme::AURORA_ROSE, 4.2),
         ];
         let mid = f64::from(PILL_HEIGHT) as f32 / 2.;
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .rounded_full()
-                .overflow_hidden()
-                .children(blobs.into_iter().map(|(x, level, seed)| {
-                    let drift = if reduce_motion {
-                        0.
-                    } else {
-                        (t * 0.4 + seed).sin() * 12.
-                    };
-                    let glow = rgba(theme::SIGNAL_RED | (level * 130.) as u32);
-                    div()
-                        .absolute()
-                        .left(px(x + drift - 3.))
-                        .top(px(mid - 3.))
-                        .size(px(6.))
-                        .rounded_full()
-                        .shadow(vec![
-                            BoxShadow::new(px(0.), px(0.), glow.into())
-                                .blur_radius(px(16.))
-                                .spread_radius(px(8.)),
-                        ])
-                }))
-                .into_any_element(),
-        )
+        div()
+            .absolute()
+            .inset_0()
+            .rounded_full()
+            .overflow_hidden()
+            .children(blobs.into_iter().map(|(x, level, hue, seed)| {
+                let drift = if reduce_motion {
+                    0.
+                } else {
+                    (t * 0.4 + seed).sin() * 16.
+                };
+                let intensity = (AURORA_BASELINE + level).min(1.);
+                let glow = rgba(hue | (intensity * 190.) as u32);
+                div()
+                    .absolute()
+                    .left(px(x + drift - 4.))
+                    .top(px(mid - 4.))
+                    .size(px(8.))
+                    .rounded_full()
+                    .shadow(vec![
+                        BoxShadow::new(px(0.), px(0.), glow.into())
+                            .blur_radius(px(22.))
+                            .spread_radius(px(11.)),
+                    ])
+            }))
+            .into_any_element()
+    }
+
+    /// The Siri move: layered inset glows hugging the capsule's edge, in two
+    /// hues whose dominance slowly trades places so the colors read as moving
+    /// around the border. Brightness rides the overall voice level.
+    fn aurora_edge(&self, bands: [f32; 3], reduce_motion: bool) -> Vec<BoxShadow> {
+        let t = self.opened_at.elapsed().as_secs_f32();
+        let overall = (bands.iter().sum::<f32>() / 3. + AURORA_BASELINE).min(1.);
+        let trade = if reduce_motion {
+            0.5
+        } else {
+            0.5 + 0.5 * (t * 0.7).sin()
+        };
+        let edge = |hue: u32, weight: f32| {
+            let alpha = (overall * weight * 150.) as u32;
+            BoxShadow::new(px(0.), px(0.), rgba(hue | alpha).into())
+                .blur_radius(px(12.))
+                .spread_radius(px(2.))
+                .inset()
+        };
+        vec![
+            edge(theme::SIGNAL_RED, 0.6 + 0.4 * trade),
+            edge(theme::AURORA_ROSE, 0.6 + 0.4 * (1. - trade)),
+        ]
     }
 
     /// The pill's identity element: an orbit of satellites that IS the phase
@@ -373,6 +412,8 @@ impl Render for Pill {
         if display == Phase::Recording && self.recording_since.is_none() {
             self.recording_since = Some(std::time::Instant::now());
         }
+        let aurora_bands =
+            (self.aurora && display == Phase::Recording).then(|| self.aurora_bands());
         let elapsed = self.recording_since.filter(|_| display == Phase::Recording);
         let content = match display {
             // The orbit carries the liveness while recording; the label just
@@ -399,7 +440,12 @@ impl Render for Pill {
             .bg(rgba(theme::SURFACE | 0xE8))
             .border_1()
             .border_color(rgba(theme::HAIRLINE | 0x22))
-            .children(self.aurora(display, reduce_motion))
+            .shadow(
+                aurora_bands
+                    .map(|bands| self.aurora_edge(bands, reduce_motion))
+                    .unwrap_or_default(),
+            )
+            .children(aurora_bands.map(|bands| self.aurora_wash(bands, reduce_motion)))
             .child(self.orbital_meter(display, reduce_motion))
             .child(
                 // Cross-fade the content on phase changes; the changing key

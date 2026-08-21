@@ -17,3 +17,7 @@ pub const SIGNAL_WHITE: u32 = 0xFFFFFF00;
 pub const SIGNAL_MAGENTA: u32 = 0xCE5CFF00;
 /// Orbit at rest; muted, never glows.
 pub const RING_IDLE: u32 = 0x8E90BE00;
+/// Aurora wash companions to SIGNAL_RED: a warm ember and a red-magenta
+/// rose, so the recording glow spans a hot-red family instead of one flat hue.
+pub const AURORA_EMBER: u32 = 0xFF5A3600;
+pub const AURORA_ROSE: u32 = 0xE0459E00;
