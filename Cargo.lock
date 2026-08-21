@@ -1621,6 +1621,7 @@ dependencies = [
  "cpal",
  "diktafon-protocol",
  "enigo",
+ "futures",
  "global-hotkey",
  "gpui",
  "gpui_platform",

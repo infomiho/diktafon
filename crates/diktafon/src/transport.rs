@@ -1,3 +1,4 @@
+use crate::dictation::PhaseEvent;
 use anyhow::{anyhow, bail, Context, Result};
 use diktafon_protocol::{read_frame, write_frame, ClientMsg, DaemonMsg, Msg, PROTOCOL_VERSION};
 use std::cell::Cell;
@@ -54,10 +55,17 @@ pub struct DaemonClient {
 impl DaemonClient {
     /// `daemon_bin`: the diktafond binary to auto-spawn when the socket is
     /// dead; `None` disables auto-spawn (the daemon must be started manually).
-    pub fn spawn(socket: PathBuf, daemon_bin: Option<PathBuf>) -> Self {
+    /// `phase_tx`: receives pipeline phase signals arriving over the
+    /// connection, for the UI's state entity.
+    pub fn spawn(
+        socket: PathBuf,
+        daemon_bin: Option<PathBuf>,
+        phase_tx: Option<futures::channel::mpsc::UnboundedSender<PhaseEvent>>,
+    ) -> Self {
         let (chunk_tx, cmd_rx) = mpsc::channel::<Msg>();
         let (results_tx, results_rx) = mpsc::channel();
-        let ledger = Arc::new(FlushLedger { results_tx, pending_flushes: Mutex::new(0) });
+        let ledger =
+            Arc::new(FlushLedger { results_tx, pending_flushes: Mutex::new(0), phase_tx });
         thread::spawn(move || Transport::new(socket, daemon_bin, ledger).run(cmd_rx));
         Self { chunk_tx, results_rx, stale_results: Cell::new(0) }
     }
@@ -94,6 +102,9 @@ impl DaemonClient {
 struct FlushLedger {
     results_tx: mpsc::Sender<SessionResult>,
     pending_flushes: Mutex<usize>,
+    /// UI phase signals; piggybacks on the ledger since the reader thread
+    /// already holds it.
+    phase_tx: Option<futures::channel::mpsc::UnboundedSender<PhaseEvent>>,
 }
 
 impl FlushLedger {
@@ -423,6 +434,11 @@ fn spawn_reader(stream: UnixStream, ledger: Arc<FlushLedger>) {
         loop {
             match read_frame::<DaemonMsg>(&mut reader) {
                 Ok(Some(DaemonMsg::Partial(text))) => println!("  partial: {text}"),
+                Ok(Some(DaemonMsg::Polishing)) => {
+                    if let Some(tx) = &ledger.phase_tx {
+                        let _ = tx.unbounded_send(PhaseEvent::PolishingStarted);
+                    }
+                }
                 Ok(Some(DaemonMsg::Final(text))) => ledger.deliver(SessionResult::Final(text)),
                 Ok(Some(DaemonMsg::Error(e))) => ledger.deliver(SessionResult::Failed(e)),
                 // The client does not send Cancel yet (cancel gesture task), so
@@ -497,22 +513,32 @@ mod tests {
         // First fake daemon: serves two sessions on one connection, then dies.
         let first = thread::spawn(move || serve_conn(listener.accept().unwrap().0, 2));
 
-        let client = DaemonClient::spawn(socket.clone(), None);
+        let client = DaemonClient::spawn(socket.clone(), None, None);
         assert_eq!(run_session(&client, 2).unwrap(), "2 chunks");
         assert_eq!(run_session(&client, 3).unwrap(), "3 chunks");
 
-        // Daemon died; the next session fails instead of hanging, and reports
-        // the dropped audio rather than pasting truncated text.
+        // Daemon died; the next session fails instead of hanging. Whether the
+        // error reports the dropped audio or the closed connection depends on
+        // when the old connection's reader observed EOF; both are honest.
         std::fs::remove_file(&socket).unwrap();
         first.join().unwrap();
-        let err = run_session(&client, 1).unwrap_err();
-        assert!(err.to_string().contains("lost"), "{err}");
+        let err = run_session(&client, 1).unwrap_err().to_string();
+        assert!(err.contains("lost") || err.contains("closed"), "{err}");
 
-        // Daemon comes back; after the backoff the next session succeeds.
+        // Daemon comes back; once the backoff elapses a session succeeds. The
+        // exact backoff state depends on how many attempts the failed session
+        // made, so retry instead of sleeping a guessed amount.
         let listener = UnixListener::bind(&socket).unwrap();
         let second = thread::spawn(move || serve_conn(listener.accept().unwrap().0, 1));
-        thread::sleep(2 * INITIAL_BACKOFF);
-        assert_eq!(run_session(&client, 1).unwrap(), "1 chunks");
+        let mut result = run_session(&client, 1);
+        for _ in 0..30 {
+            if result.is_ok() {
+                break;
+            }
+            thread::sleep(INITIAL_BACKOFF);
+            result = run_session(&client, 1);
+        }
+        assert_eq!(result.unwrap(), "1 chunks");
 
         drop(client);
         second.join().unwrap();
@@ -521,7 +547,7 @@ mod tests {
 
     #[test]
     fn finish_fails_fast_when_daemon_never_existed() {
-        let client = DaemonClient::spawn(test_socket("absent"), None);
+        let client = DaemonClient::spawn(test_socket("absent"), None, None);
         let start = Instant::now();
         assert!(run_session(&client, 0).is_err());
         assert!(start.elapsed() < FINISH_TIMEOUT / 2, "should not wait out the full timeout");
@@ -534,6 +560,7 @@ mod tests {
         let client = DaemonClient::spawn(
             test_socket("badspawn"),
             Some(PathBuf::from("/usr/bin/false")),
+            None,
         );
         let start = Instant::now();
         assert!(run_session(&client, 0).is_err());
@@ -548,7 +575,7 @@ mod tests {
         let socket = test_socket("autospawn");
         let bin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/diktafond");
         assert!(bin.exists(), "build diktafond first: cargo build -p diktafond");
-        let client = DaemonClient::spawn(socket.clone(), Some(bin));
+        let client = DaemonClient::spawn(socket.clone(), Some(bin), None);
         assert_eq!(run_session(&client, 0).unwrap(), "");
 
         // Kill the daemon we spawned: every process on the socket that is not

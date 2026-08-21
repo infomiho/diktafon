@@ -1,10 +1,13 @@
 mod capture;
+mod dictation;
 mod paste;
 mod transport;
 
 use anyhow::{Context, Result};
 use capture::{Recorder, Session};
+use dictation::{Dictation, PhaseEvent};
 use diktafon_protocol::{socket_path, Msg, SessionConfig};
+use gpui::{Entity, Global};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use std::path::{Path, PathBuf};
@@ -61,8 +64,18 @@ fn daemon_bin() -> Option<PathBuf> {
     Some(sibling)
 }
 
+/// App-scoped GPUI state (cadence's AppServices pattern); keeps the entities
+/// alive for windows to consume later.
+struct AppServices {
+    #[expect(dead_code, reason = "the pill window will read it; observers log it today")]
+    dictation: Entity<Dictation>,
+}
+
+impl Global for AppServices {}
+
 fn main() -> Result<()> {
-    let daemon = DaemonClient::spawn(socket_path(), daemon_bin());
+    let (phase_tx, phase_rx) = futures::channel::mpsc::unbounded::<PhaseEvent>();
+    let daemon = DaemonClient::spawn(socket_path(), daemon_bin(), Some(phase_tx.clone()));
 
     if let Some(text) = std::env::args().nth(1) {
         daemon.chunk_tx.send(Msg::Flush)?;
@@ -79,7 +92,7 @@ fn main() -> Result<()> {
     manager.register(HotKey::new(Some(Modifiers::ALT), Code::Space))?;
 
     let (event_tx, event_rx) = mpsc::channel::<HotKeyState>();
-    thread::spawn(move || control_loop(recorder, daemon, event_rx));
+    thread::spawn(move || control_loop(recorder, daemon, event_rx, phase_tx));
 
     let receiver = GlobalHotKeyEvent::receiver();
     thread::spawn(move || {
@@ -93,8 +106,14 @@ fn main() -> Result<()> {
     // not). Explicit quit mode keeps the windowless app alive.
     gpui_platform::application()
         .with_quit_mode(gpui::QuitMode::Explicit)
-        .run(|_cx| {
+        .run(move |cx| {
             hide_from_dock();
+            let dictation = Dictation::spawn(cx, phase_rx);
+            cx.observe(&dictation, |dictation, cx| {
+                println!("[phase] {:?}", dictation.read(cx).phase);
+            })
+            .detach();
+            cx.set_global(AppServices { dictation });
             println!("Ready. Hold Option+Space to dictate, release to paste.");
         });
     Ok(())
@@ -111,7 +130,12 @@ fn hide_from_dock() {
         .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 }
 
-fn control_loop(recorder: Recorder, daemon: DaemonClient, events: mpsc::Receiver<HotKeyState>) {
+fn control_loop(
+    recorder: Recorder,
+    daemon: DaemonClient,
+    events: mpsc::Receiver<HotKeyState>,
+    phases: futures::channel::mpsc::UnboundedSender<PhaseEvent>,
+) {
     let mut session: Option<Session> = None;
     for state in events {
         match state {
@@ -122,6 +146,7 @@ fn control_loop(recorder: Recorder, daemon: DaemonClient, events: mpsc::Receiver
                         Ok(s) => {
                             println!("recording...");
                             session = Some(s);
+                            let _ = phases.unbounded_send(PhaseEvent::RecordingStarted);
                         }
                         Err(e) => eprintln!("failed to start recording: {e}"),
                     }
@@ -131,17 +156,26 @@ fn control_loop(recorder: Recorder, daemon: DaemonClient, events: mpsc::Receiver
                 if let Some(s) = session.take() {
                     let stopped_at = Instant::now();
                     s.stop();
-                    match daemon.finish() {
-                        Ok(text) if text.is_empty() => println!("(no speech)"),
+                    let _ = phases.unbounded_send(PhaseEvent::RecordingStopped);
+                    let error = match daemon.finish() {
+                        Ok(text) if text.is_empty() => {
+                            println!("(no speech)");
+                            None
+                        }
                         Ok(text) => {
                             println!(">>> {text}");
                             if let Err(e) = paste::insert(&text) {
                                 eprintln!("paste failed (Accessibility permission?): {e}");
                             }
                             println!("stop-to-paste: {:.2?}", stopped_at.elapsed());
+                            None
                         }
-                        Err(e) => eprintln!("inference error: {e}"),
-                    }
+                        Err(e) => {
+                            eprintln!("inference error: {e}");
+                            Some(format!("{e:#}"))
+                        }
+                    };
+                    let _ = phases.unbounded_send(PhaseEvent::SessionEnded { error });
                 }
             }
         }

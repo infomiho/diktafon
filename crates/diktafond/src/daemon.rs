@@ -190,10 +190,9 @@ fn serve_startup_client(
                 return Ok(());
             }
             let download = status.download.lock().unwrap().clone();
-            if download.is_some()
+            if let Some(d) = &download
                 && (download != last_sent || last_sent_at.elapsed() >= STARTUP_HEARTBEAT)
             {
-                let d = download.as_ref().expect("checked is_some");
                 write_frame(
                     &mut writer,
                     &DaemonMsg::DownloadProgress {

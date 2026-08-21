@@ -14,7 +14,7 @@ use bincode::{Decode, Encode};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Sample rate of the audio chunks the client delivers and the daemon's ASR
 /// model expects.
@@ -126,6 +126,10 @@ pub enum DaemonMsg {
     /// after the handshake: immediately on a warm daemon, or after the last
     /// `DownloadProgress` on a cold one. (v2)
     Ready,
+    /// All chunks are transcribed and the polish pass started; `Final` follows.
+    /// (v3: the version was bumped because a resident v2-era daemon serving a
+    /// newer client would otherwise emit a variant the client cannot decode.)
+    Polishing,
 }
 
 pub fn write_frame<T: Encode>(writer: &mut impl Write, msg: &T) -> Result<()> {
@@ -254,6 +258,10 @@ mod tests {
         let mut buf = Vec::new();
         write_frame(&mut buf, &DaemonMsg::Ready).unwrap();
         assert_eq!(buf, vec![1, 0, 0, 0, 6]);
+
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &DaemonMsg::Polishing).unwrap();
+        assert_eq!(buf, vec![1, 0, 0, 0, 7]);
     }
 
     #[test]

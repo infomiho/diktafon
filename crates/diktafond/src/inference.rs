@@ -109,6 +109,7 @@ impl Inference {
                         let text = if raw.trim().is_empty() {
                             String::new()
                         } else {
+                            let _ = events_tx.send(DaemonMsg::Polishing);
                             let start = Instant::now();
                             let polished =
                                 catch_panic("polish", || polisher.polish(&raw, &config.control_line))
