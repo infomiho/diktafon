@@ -1,9 +1,11 @@
+mod assets;
 mod autostart;
 mod bench;
 mod capture;
 mod config;
 mod dictation;
 mod keymap;
+mod mark;
 mod paste;
 mod permissions;
 mod pill;
@@ -99,6 +101,9 @@ fn main() -> Result<()> {
     }
     if args.first().is_some_and(|a| a == "--autostart") {
         return autostart::run(args.get(1).map(String::as_str).unwrap_or("status"));
+    }
+    if args.first().is_some_and(|a| a == "--gen-mark") {
+        return Ok(mark::write_assets()?);
     }
 
     let (phase_tx, phase_rx) = futures::channel::mpsc::unbounded::<PhaseEvent>();
@@ -213,7 +218,7 @@ fn main() -> Result<()> {
     // target, which GPUI's NSApp run loop dispatches (a bare CFRunLoop would
     // not). Explicit quit mode keeps the windowless app alive.
     gpui_platform::application()
-        .with_assets(gpui_component_assets::Assets)
+        .with_assets(assets::Assets)
         .with_quit_mode(gpui::QuitMode::Explicit)
         .run(move |cx| {
             hide_from_dock();

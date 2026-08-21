@@ -4,6 +4,7 @@
 //! model status, opening the settings window, and quitting.
 
 use crate::dictation::{Dictation, Phase};
+use crate::mark;
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use gpui::{App, Entity};
@@ -128,58 +129,65 @@ impl MenuController {
     }
 }
 
-/// The app's mark: the T3-landscape device (a Rams T3 pocket radio lying
-/// flat - dial left, grille right; also assets/diktafon-mark.svg and the app
-/// icon), rendered as a template image so the menu bar recolors it for
-/// light/dark and for the pressed state. The phase modulates the face: a hub
-/// dot in the dial while recording, alternating grille dot sizes while
-/// processing.
+/// The app's mark, rendered as a template image so the menu bar recolors it
+/// for light/dark and for the pressed state. Geometry comes from `mark` (the
+/// single source shared with the app icon and the settings brand row); the
+/// phase modulates the face: a hub dot in the dial while recording,
+/// alternating grille dot sizes while processing.
 fn mark_icon(phase: Phase) -> Retained<NSImage> {
     const WIDTH: f64 = 20.;
     const HEIGHT: f64 = 18.;
-    const BODY_W: f64 = 19.;
-    const BODY_H: f64 = 10.6;
+    const SCALE: f64 = 0.475;
+    // Menu-bar pixels need more meat than a straight scale gives: the holes
+    // and the hub get a small optical boost.
+    const HOLE_BOOST: f64 = 1.15;
+    const HUB_BOOST: f64 = 1.3;
     let handler = block2::RcBlock::new(move |_rect| {
         use objc2_foundation::{NSPoint, NSRect, NSSize};
-        let oval = |path: &objc2_app_kit::NSBezierPath, x: f64, y: f64, radius: f64| {
+        let origin = NSPoint::new(
+            (WIDTH - f64::from(mark::BODY_W) * SCALE) / 2.,
+            (HEIGHT - f64::from(mark::BODY_H) * SCALE) / 2.,
+        );
+        let oval = |path: &objc2_app_kit::NSBezierPath, x: f32, y: f32, radius: f64| {
+            let x = origin.x + f64::from(x - mark::BODY_X) * SCALE;
+            let y = origin.y + f64::from(y - mark::BODY_Y) * SCALE;
             let rect = NSRect::new(
                 NSPoint::new(x - radius, y - radius),
                 NSSize::new(radius * 2., radius * 2.),
             );
-            unsafe { path.appendBezierPathWithOvalInRect(rect) };
+            path.appendBezierPathWithOvalInRect(rect);
         };
         objc2_app_kit::NSColor::blackColor().set();
 
         // Face with the dial and grille punched out via even-odd.
         let body = NSRect::new(
-            NSPoint::new((WIDTH - BODY_W) / 2., (HEIGHT - BODY_H) / 2.),
-            NSSize::new(BODY_W, BODY_H),
+            origin,
+            NSSize::new(
+                f64::from(mark::BODY_W) * SCALE,
+                f64::from(mark::BODY_H) * SCALE,
+            ),
         );
-        let face = objc2_app_kit::NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
-            body, 3.2, 3.2,
-        );
+        let radius = f64::from(mark::BODY_R) * SCALE;
+        let face =
+            objc2_app_kit::NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(body, radius, radius);
         face.setWindingRule(objc2_app_kit::NSWindingRule::EvenOdd);
-        let dial = NSPoint::new(body.origin.x + 5., HEIGHT / 2.);
-        oval(&face, dial.x, dial.y, 3.1);
-        let mut i = 0;
-        for gy in [-2.55, 0., 2.55] {
-            for gx in [10.4, 12.95, 15.5] {
-                let radius = match phase {
-                    // Alternating dot sizes read as "working".
-                    Phase::Transcribing | Phase::Polishing if i % 2 == 0 => 1.2,
-                    Phase::Transcribing | Phase::Polishing => 0.7,
-                    _ => 0.95,
-                };
-                oval(&face, body.origin.x + gx, HEIGHT / 2. + gy, radius);
-                i += 1;
-            }
+        oval(&face, mark::DIAL_X, mark::DIAL_Y, f64::from(mark::DIAL_R) * SCALE);
+        for (i, (gx, gy)) in mark::grille().enumerate() {
+            let dot = f64::from(mark::GRILLE_R) * SCALE * HOLE_BOOST;
+            let dot = match phase {
+                // Alternating dot sizes read as "working".
+                Phase::Transcribing | Phase::Polishing if i % 2 == 0 => dot * 1.3,
+                Phase::Transcribing | Phase::Polishing => dot * 0.75,
+                _ => dot,
+            };
+            oval(&face, gx, gy, dot);
         }
         face.fill();
 
         // The dial hub is the REC light.
         if matches!(phase, Phase::Arming | Phase::Recording) {
             let hub = objc2_app_kit::NSBezierPath::new();
-            oval(&hub, dial.x, dial.y, 1.35);
+            oval(&hub, mark::DIAL_X, mark::DIAL_Y, f64::from(mark::HUB_R) * SCALE * HUB_BOOST);
             hub.fill();
         }
         objc2::runtime::Bool::YES

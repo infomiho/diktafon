@@ -12,7 +12,7 @@ use gpui::{
     Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px, rgba, size,
 };
 use gpui_component::form::{field, v_form};
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{InputEvent, Textarea, TextareaState};
 use gpui_component::label::Label;
 use gpui_component::searchable_list::SearchableVec;
 use gpui_component::select::{Select, SelectEvent, SelectState};
@@ -91,7 +91,7 @@ impl Section {
 pub struct SettingsWindow {
     settings: Arc<Mutex<SessionSettings>>,
     section: Section,
-    control_input: Entity<InputState>,
+    control_input: Entity<TextareaState>,
     language_select: Entity<SelectState<SearchableVec<SharedString>>>,
     /// Codes parallel to the dropdown items. Parallel indexing is only valid
     /// while the selects stay non-searchable: with `.searchable(true)` the
@@ -177,7 +177,8 @@ impl SettingsWindow {
         let current = settings.lock().unwrap().clone();
 
         let control_input = cx.new(|cx| {
-            InputState::new(window, cx)
+            TextareaState::new(window, cx)
+                .auto_grow(2, 6)
                 .placeholder("[Styling: ...] [Structure: ...] [Context: ...]")
                 .default_value(current.control_line.clone())
         });
@@ -244,9 +245,11 @@ impl SettingsWindow {
         })
         .detach();
 
-        // Settings apply as they change, macOS-style; there is no Save button.
+        // Settings apply as they change, macOS-style; there is no Save
+        // button. Enter inserts a newline in the textarea, so only Blur
+        // (and closing the window) commits the prompt.
         cx.subscribe(&control_input, |view, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+            if matches!(event, InputEvent::Blur) {
                 view.save(cx);
             }
         })
@@ -285,7 +288,15 @@ impl SettingsWindow {
     /// would silently degrade S1-mini, which needs its exact format.
     fn save(&mut self, cx: &mut Context<Self>) {
         let defaults = SessionSettings::default();
-        let control_line = self.control_input.read(cx).value().trim().to_string();
+        // S1-mini's control line is strictly one line; the textarea only
+        // wraps for editing comfort.
+        let control_line = self
+            .control_input
+            .read(cx)
+            .value()
+            .replace('\n', " ")
+            .trim()
+            .to_string();
         let language = self
             .language_select
             .read(cx)
@@ -335,43 +346,14 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// The T3-landscape mark (see docs/design.md "The mark") at 27x15,
-    /// drawn from the same 48-box geometry as the app icon and menu bar.
-    fn brand_mark() -> impl IntoElement {
-        let hole = rgba(theme::SURFACE_SUNKEN | 0xFF);
-        let dot = move |x: f32, y: f32, r: f32, color: gpui::Rgba| {
-            div()
-                .absolute()
-                .left(px(x - r))
-                .top(px(y - r))
-                .size(px(r * 2.))
-                .rounded_full()
-                .bg(color)
-        };
-        let mut mark = div()
-            .relative()
-            .w(px(32.5))
-            .h(px(18.))
-            .flex_none()
-            .rounded(px(4.9))
-            .bg(rgba(theme::TEXT_PRIMARY | 0xFF))
-            .child(dot(8.5, 8.9, 5.35, hole))
-            .child(dot(8.5, 8.9, 1.8, rgba(theme::SIGNAL_MAGENTA | 0xFF)));
-        for gy in [4.5, 8.9, 13.4] {
-            for gx in [18.6, 22.3, 25.9] {
-                mark = mark.child(dot(gx, gy, 1.38, hole));
-            }
-        }
-        mark
-    }
-
     fn brand_row(cx: &App) -> impl IntoElement {
         h_flex()
             .items_center()
             .gap(px(9.))
             .px_3()
             .pb(px(14.))
-            .child(Self::brand_mark())
+            // The canonical mark SVG, served by the app's asset source.
+            .child(gpui::img(crate::assets::MARK_FLAT).w(px(32.5)).h(px(18.)))
             .child(
                 div()
                     .font_family(theme::FONT_DISPLAY)
@@ -486,7 +468,7 @@ impl SettingsWindow {
                 field()
                     .label("Post-processing prompt")
                     .description("Shapes how your words are polished; applies to the next dictation")
-                    .child(Input::new(&self.control_input).large()),
+                    .child(Textarea::new(&self.control_input)),
             )
             .child(
                 field()
@@ -526,7 +508,7 @@ impl SettingsWindow {
         // White = alive, muted = not; the dot never glows (glow means live
         // signal, and a resident daemon is not one).
         let (dot, word) = if status.running {
-            (rgba(theme::SIGNAL_WHITE | 0xE6), "Running")
+            (rgba(theme::SIGNAL_MAGENTA | 0xFF), "Running")
         } else {
             (rgba(theme::RING_IDLE | 0x80), "Not running")
         };

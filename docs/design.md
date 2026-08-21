@@ -71,6 +71,9 @@ components:
     backgroundColor: "{background}"
     borderColor: "{outline} @ 13%"
     focusRing: "{accent}"
+  textarea:                    # multi-line values (the prompt); auto-grows 2-6 rows
+    backgroundColor: "{background}"
+    borderColor: "{outline} @ 13%"
   switch:
     trackColor: "#5A6086"      # own lighter step; raised surface vanishes at track size
     checkedColor: "{accent}"
@@ -94,7 +97,7 @@ components:
     backgroundColor: "{surface}"
     borderColor: "{outline} @ 13%"
     rounded: "{rounded.lg}"
-    dot: 8px                   # white = alive, ring-idle = not; never glows
+    dot: 8px                   # signal-magenta = alive, ring-idle = not; never glows
     rows: muted label left, truncating mono value right
   pill:
     size: 220x38px
@@ -207,17 +210,22 @@ a fourth level ("material") without changing the rules above.
 ## The mark
 
 The T3-landscape: a Rams-style pocket device lying flat - dial left, dot
-grille right - drawn as an original mark (no third-party license). One
-geometry everywhere, from a 48x48 design box: a 40x22 rounded rect (r6) at
-(4,13); dial center (14.5,24) r6.6 with an r2.2 hub; 3x3 grille dots r1.7 at
-x 27/31.5/36, y 18.5/24/29.5.
+grille right - an original mark (no third-party license). The single source
+of truth is `crates/diktafon/src/mark.rs` (a 48x48 design box: 40x22 body
+r6 at (4,13); dial (14.5,24) r6.6, hub r2.2; 3x3 grille dots r1.7 at
+x 27/31.5/36, y 18.5/24/29.5). Everything else derives from it:
 
-- App icon (`scripts/icon.swift` -> `crates/diktafon/resources/diktafon.icns`):
-  white device on the Signal gradient squircle with an aurora ember foot;
-  the hub is accent magenta.
-- Menu bar (`statusbar.rs`): the device as a template image; the dial hub
+- `diktafon --gen-mark` regenerates the SVG assets: the README tile
+  (`assets/diktafon-mark.svg`), the bare mark
+  (`assets/diktafon-mark-flat.svg`), and the app icon art
+  (`assets/AppIcon.svg`).
+- `scripts/build-icon.sh` renders `AppIcon.svg` into
+  `crates/diktafon/resources/diktafon.icns`.
+- The settings brand row renders the bare SVG itself via the app's asset
+  source (`assets.rs`), so it cannot drift.
+- The menu bar (`statusbar.rs`) is the one programmatic rendering, drawn
+  from the same `mark` constants because its face is dynamic: the dial hub
   appears while recording, grille dots alternate size while processing.
-- README (`assets/diktafon-mark.svg`): the device on an indigo tile.
 
 ## Provenance
 
