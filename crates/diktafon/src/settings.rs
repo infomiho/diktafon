@@ -335,6 +335,53 @@ impl SettingsWindow {
         .detach();
     }
 
+    /// The T3-landscape mark (see docs/design.md "The mark") at 27x15,
+    /// drawn from the same 48-box geometry as the app icon and menu bar.
+    fn brand_mark() -> impl IntoElement {
+        let hole = rgba(theme::SURFACE_SUNKEN | 0xFF);
+        let dot = move |x: f32, y: f32, r: f32, color: gpui::Rgba| {
+            div()
+                .absolute()
+                .left(px(x - r))
+                .top(px(y - r))
+                .size(px(r * 2.))
+                .rounded_full()
+                .bg(color)
+        };
+        let mut mark = div()
+            .relative()
+            .w(px(32.5))
+            .h(px(18.))
+            .flex_none()
+            .rounded(px(4.9))
+            .bg(rgba(theme::TEXT_PRIMARY | 0xFF))
+            .child(dot(8.5, 8.9, 5.35, hole))
+            .child(dot(8.5, 8.9, 1.8, rgba(theme::SIGNAL_MAGENTA | 0xFF)));
+        for gy in [4.5, 8.9, 13.4] {
+            for gx in [18.6, 22.3, 25.9] {
+                mark = mark.child(dot(gx, gy, 1.38, hole));
+            }
+        }
+        mark
+    }
+
+    fn brand_row(cx: &App) -> impl IntoElement {
+        h_flex()
+            .items_center()
+            .gap(px(9.))
+            .px_3()
+            .pb(px(14.))
+            .child(Self::brand_mark())
+            .child(
+                div()
+                    .font_family(theme::FONT_DISPLAY)
+                    .text_size(px(16.))
+                    .font_semibold()
+                    .text_color(cx.theme().foreground)
+                    .child("diktafon"),
+            )
+    }
+
     /// Hand-rolled nav row on the shared control height: the kit's
     /// SidebarMenuItem hardcodes a 28px compact height that would sit
     /// undersized next to the 40px controls.
@@ -551,6 +598,7 @@ impl Render for SettingsWindow {
             .pt(px(48.))
             .px_3()
             .gap_1p5()
+            .child(Self::brand_row(cx))
             .children({
                 let mut items = Vec::new();
                 for entry in Section::ALL {

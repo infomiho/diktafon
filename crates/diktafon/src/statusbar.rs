@@ -78,7 +78,7 @@ impl MenuController {
         if let Some(item) = self.ivars().status_item.get()
             && let Some(button) = item.button(self.mtm())
         {
-            button.setImage(Some(&orbit_icon(phase)));
+            button.setImage(Some(&mark_icon(phase)));
         }
     }
 
@@ -128,46 +128,64 @@ impl MenuController {
     }
 }
 
-/// The app's mark, drawn instead of shipped: the pill's satellite orbit as a
-/// ring of dots, rendered as a template image so the menu bar recolors it for
-/// light/dark and for the pressed state. The phase modulates the ring the
-/// same way the pill does: a center dot while recording, alternating dot
-/// sizes while processing.
-fn orbit_icon(phase: Phase) -> Retained<NSImage> {
-    const SIZE: f64 = 18.;
-    const DOTS: usize = 8;
-    const RING_RADIUS: f64 = 6.4;
+/// The app's mark: the T3-landscape device (a Rams T3 pocket radio lying
+/// flat - dial left, grille right; also assets/diktafon-mark.svg and the app
+/// icon), rendered as a template image so the menu bar recolors it for
+/// light/dark and for the pressed state. The phase modulates the face: a hub
+/// dot in the dial while recording, alternating grille dot sizes while
+/// processing.
+fn mark_icon(phase: Phase) -> Retained<NSImage> {
+    const WIDTH: f64 = 20.;
+    const HEIGHT: f64 = 18.;
+    const BODY_W: f64 = 19.;
+    const BODY_H: f64 = 10.6;
     let handler = block2::RcBlock::new(move |_rect| {
-        objc2_app_kit::NSColor::blackColor().set();
-        let dot = |x: f64, y: f64, radius: f64| {
-            let rect = objc2_foundation::NSRect::new(
-                objc2_foundation::NSPoint::new(x - radius, y - radius),
-                objc2_foundation::NSSize::new(radius * 2., radius * 2.),
+        use objc2_foundation::{NSPoint, NSRect, NSSize};
+        let oval = |path: &objc2_app_kit::NSBezierPath, x: f64, y: f64, radius: f64| {
+            let rect = NSRect::new(
+                NSPoint::new(x - radius, y - radius),
+                NSSize::new(radius * 2., radius * 2.),
             );
-            objc2_app_kit::NSBezierPath::bezierPathWithOvalInRect(rect).fill();
+            unsafe { path.appendBezierPathWithOvalInRect(rect) };
         };
-        let center = SIZE / 2.;
-        for i in 0..DOTS {
-            let angle = i as f64 * std::f64::consts::TAU / DOTS as f64;
-            let radius = match phase {
-                // Alternating dot sizes read as "working".
-                Phase::Transcribing | Phase::Polishing if i % 2 == 0 => 1.7,
-                Phase::Transcribing | Phase::Polishing => 1.1,
-                _ => 1.4,
-            };
-            dot(
-                center + angle.cos() * RING_RADIUS,
-                center + angle.sin() * RING_RADIUS,
-                radius,
-            );
+        objc2_app_kit::NSColor::blackColor().set();
+
+        // Face with the dial and grille punched out via even-odd.
+        let body = NSRect::new(
+            NSPoint::new((WIDTH - BODY_W) / 2., (HEIGHT - BODY_H) / 2.),
+            NSSize::new(BODY_W, BODY_H),
+        );
+        let face = objc2_app_kit::NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+            body, 3.2, 3.2,
+        );
+        face.setWindingRule(objc2_app_kit::NSWindingRule::EvenOdd);
+        let dial = NSPoint::new(body.origin.x + 5., HEIGHT / 2.);
+        oval(&face, dial.x, dial.y, 3.1);
+        let mut i = 0;
+        for gy in [-2.55, 0., 2.55] {
+            for gx in [10.4, 12.95, 15.5] {
+                let radius = match phase {
+                    // Alternating dot sizes read as "working".
+                    Phase::Transcribing | Phase::Polishing if i % 2 == 0 => 1.2,
+                    Phase::Transcribing | Phase::Polishing => 0.7,
+                    _ => 0.95,
+                };
+                oval(&face, body.origin.x + gx, HEIGHT / 2. + gy, radius);
+                i += 1;
+            }
         }
+        face.fill();
+
+        // The dial hub is the REC light.
         if matches!(phase, Phase::Arming | Phase::Recording) {
-            dot(center, center, 2.4);
+            let hub = objc2_app_kit::NSBezierPath::new();
+            oval(&hub, dial.x, dial.y, 1.35);
+            hub.fill();
         }
         objc2::runtime::Bool::YES
     });
     let image = NSImage::imageWithSize_flipped_drawingHandler(
-        objc2_foundation::NSSize::new(SIZE, SIZE),
+        objc2_foundation::NSSize::new(WIDTH, HEIGHT),
         false,
         &handler,
     );

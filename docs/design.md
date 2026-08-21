@@ -204,6 +204,21 @@ a fourth level ("material") without changing the rules above.
 - Convert relative motion to information: if an animation stops meaning
   something (level, progress, phase), cut it.
 
+## The mark
+
+The T3-landscape: a Rams-style pocket device lying flat - dial left, dot
+grille right - drawn as an original mark (no third-party license). One
+geometry everywhere, from a 48x48 design box: a 40x22 rounded rect (r6) at
+(4,13); dial center (14.5,24) r6.6 with an r2.2 hub; 3x3 grille dots r1.7 at
+x 27/31.5/36, y 18.5/24/29.5.
+
+- App icon (`scripts/icon.swift` -> `crates/diktafon/resources/diktafon.icns`):
+  white device on the Signal gradient squircle with an aurora ember foot;
+  the hub is accent magenta.
+- Menu bar (`statusbar.rs`): the device as a template image; the dial hub
+  appears while recording, grille dots alternate size while processing.
+- README (`assets/diktafon-mark.svg`): the device on an indigo tile.
+
 ## Provenance
 
 - Palette and mood: Pixflow "Cyberpunk Equalizers" reference.
