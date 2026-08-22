@@ -80,6 +80,31 @@ pub fn models_dir() -> PathBuf {
     data_dir().join("models")
 }
 
+/// Where the daemon appends finished dictations, one JSON object per line.
+/// Plaintext of everything dictated, so treat it as sensitive.
+pub fn history_path() -> PathBuf {
+    data_dir().join("history.jsonl")
+}
+
+/// One finished dictation as recorded in `history.jsonl`: written by the
+/// daemon after each polish pass, read by the client's History pane. The
+/// metrics default so lines from older daemons still parse.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct HistoryEntry {
+    /// RFC3339 UTC.
+    pub at: String,
+    pub raw: String,
+    pub polished: String,
+    #[serde(default)]
+    pub chunks: usize,
+    #[serde(default)]
+    pub audio_secs: f32,
+    #[serde(default)]
+    pub asr_ms: u64,
+    #[serde(default)]
+    pub polish_ms: u64,
+}
+
 /// Where the daemon listens locally; shared so client and daemon agree without
 /// the client depending on the daemon crate. `DIKTAFOND_SOCKET` overrides it
 /// (winning even over a `DIKTAFON_DATA_DIR`-derived path), mainly for tests.

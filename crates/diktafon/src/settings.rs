@@ -1,18 +1,21 @@
 //! Settings window, opened from the menu bar: a sidebar of sections
-//! (General / Dictation / Advanced) with a titled content pane, built from
-//! gpui-component widgets. Edits persist to config.json; the prompt and
-//! language apply to the next dictation, the idle-unload time when the
-//! daemon restarts.
+//! (General / Dictation / History / Advanced) with a titled content pane,
+//! built from gpui-component widgets. Edits persist to config.json; the
+//! prompt and language apply to the next dictation, the idle-unload time
+//! when the daemon restarts.
 
 use crate::config::SessionSettings;
 use crate::statusbar::DaemonStatus;
 use crate::{autostart, statusbar, theme};
+use chrono::{Datelike, Local, NaiveDate};
+use diktafon_protocol::HistoryEntry;
 use gpui::{
-    App, AppContext, Bounds, Context, Entity, ParentElement, Render, SharedString, TitlebarOptions,
-    Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px, rgba, size,
+    App, AppContext, Bounds, ClipboardItem, Context, Entity, ParentElement, Render, SharedString,
+    TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px,
+    relative, rems, rgba, size,
 };
-use gpui_component::form::{field, v_form};
-use gpui_component::input::{InputEvent, Textarea, TextareaState};
+use gpui_component::form::{Form, field, v_form};
+use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::label::Label;
 use gpui_component::searchable_list::SearchableVec;
 use gpui_component::select::{Select, SelectEvent, SelectState};
@@ -65,16 +68,23 @@ const IDLE_OPTIONS: &[(u64, &str)] = &[
 enum Section {
     General,
     Dictation,
+    History,
     Advanced,
 }
 
 impl Section {
-    const ALL: [Section; 3] = [Section::General, Section::Dictation, Section::Advanced];
+    const ALL: [Section; 4] = [
+        Section::General,
+        Section::Dictation,
+        Section::History,
+        Section::Advanced,
+    ];
 
     fn title(self) -> &'static str {
         match self {
             Section::General => "General",
             Section::Dictation => "Dictation",
+            Section::History => "History",
             Section::Advanced => "Advanced",
         }
     }
@@ -83,9 +93,57 @@ impl Section {
         match self {
             Section::General => IconName::Settings,
             Section::Dictation => IconName::ALargeSmall,
+            Section::History => IconName::Calendar,
             Section::Advanced => IconName::Cpu,
         }
     }
+}
+
+/// Bounds a pathological file; the real history is tens of KB, well under it.
+const HISTORY_CAP: usize = 500;
+
+/// The recorded dictations, newest first. Unparseable lines are skipped
+/// rather than failing the whole pane.
+fn load_history() -> Vec<HistoryEntry> {
+    let Ok(content) = std::fs::read_to_string(diktafon_protocol::history_path()) else {
+        return Vec::new();
+    };
+    let mut entries: Vec<HistoryEntry> = content
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    entries.reverse();
+    entries.truncate(HISTORY_CAP);
+    entries
+}
+
+/// The local calendar day an entry belongs to, for grouping under one label.
+fn local_day(at: &str) -> Option<NaiveDate> {
+    chrono::DateTime::parse_from_rfc3339(at)
+        .ok()
+        .map(|t| t.with_timezone(&Local).date_naive())
+}
+
+fn day_label(day: Option<NaiveDate>) -> String {
+    let Some(day) = day else {
+        return "Earlier".into();
+    };
+    let today = Local::now().date_naive();
+    if day == today {
+        "Today".into()
+    } else if Some(day) == today.pred_opt() {
+        "Yesterday".into()
+    } else if day.year() == today.year() {
+        day.format("%B %-d").to_string()
+    } else {
+        day.format("%B %-d, %Y").to_string()
+    }
+}
+
+fn local_time(at: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(at)
+        .map(|t| t.with_timezone(&Local).format("%H:%M").to_string())
+        .unwrap_or_else(|_| "--:--".into())
 }
 
 pub struct SettingsWindow {
@@ -104,6 +162,13 @@ pub struct SettingsWindow {
     autostart: bool,
     /// Cached at open: reading it does file IO and must not run per render.
     daemon_status: DaemonStatus,
+    /// Read at open and again when the History section is entered; newest
+    /// first.
+    history: Vec<HistoryEntry>,
+    history_search: Entity<InputState>,
+    /// Index into `history` whose copy button just fired; drives the brief
+    /// check-mark flash.
+    copied: Option<usize>,
     /// Keeps the window on the action dispatch path, so the global Cmd+W
     /// binding reaches the CloseWindow handler even with no control focused.
     focus_handle: gpui::FocusHandle,
@@ -181,6 +246,16 @@ impl SettingsWindow {
 
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
+
+        let history = load_history();
+        let history_search = cx.new(|cx| {
+            let placeholder = match history.len() {
+                0 => "Search".to_string(),
+                1 => "Search 1 dictation".to_string(),
+                n => format!("Search {n} dictations"),
+            };
+            InputState::new(window, cx).placeholder(placeholder)
+        });
 
         let control_input = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -260,6 +335,12 @@ impl SettingsWindow {
             }
         })
         .detach();
+        cx.subscribe(&history_search, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
         cx.subscribe(
             &language_select,
             |view, _, event: &SelectEvent<SearchableVec<SharedString>>, cx| {
@@ -287,6 +368,9 @@ impl SettingsWindow {
             idle_values,
             autostart: false,
             daemon_status: statusbar::daemon_status(),
+            history,
+            history_search,
+            copied: None,
             focus_handle,
         }
     }
@@ -395,6 +479,11 @@ impl SettingsWindow {
                 move |el| el.hover(move |el| el.bg(hover_bg))
             })
             .on_click(cx.listener(move |view, _, _, cx| {
+                // Dictations land while the window is open; entering the
+                // pane rereads them.
+                if entry == Section::History {
+                    view.history = load_history();
+                }
                 view.section = entry;
                 cx.notify();
             }))
@@ -416,7 +505,7 @@ impl SettingsWindow {
             .gap_6()
             .py_1()
             .child(
-                v_flex().gap_1p5().child(Label::new(label)).child(
+                v_flex().gap_1p5().child(Label::new(label).font_medium()).child(
                     Label::new(description)
                         .text_sm()
                         .text_color(cx.theme().muted_foreground),
@@ -468,9 +557,15 @@ impl SettingsWindow {
             ))
     }
 
+    /// The one form recipe every pane shares, so the kit's field labels
+    /// match the hand-rolled `control_row` labels (15px medium): the kit's
+    /// default label is text_sm, a step too small next to 40px controls.
+    fn form() -> Form {
+        v_form().large().label_text_size(rems(1.))
+    }
+
     fn dictation_pane(&self, _cx: &mut Context<Self>) -> impl IntoElement {
-        v_form()
-            .large()
+        Self::form()
             .child(
                 field()
                     .label("Post-processing prompt")
@@ -560,15 +655,164 @@ impl SettingsWindow {
         v_flex()
             .gap_8()
             .child(
-                field()
-                    .label("Unload models when idle")
-                    .description(
-                        "Frees a few GB of RAM; models reload on the next dictation. \
-                         Applies when the daemon restarts.",
-                    )
-                    .child(Select::new(&self.idle_select).large()),
+                Self::form().child(
+                    field()
+                        .label("Unload models when idle")
+                        .description(
+                            "Frees a few GB of RAM; models reload on the next dictation. \
+                             Applies when the daemon restarts.",
+                        )
+                        .child(Select::new(&self.idle_select).large()),
+                ),
             )
-            .child(field().label("Daemon").child(self.daemon_card(cx)))
+            .child(Self::form().child(field().label("Daemon").child(self.daemon_card(cx))))
+    }
+
+    fn day_header(text: String, first: bool, cx: &App) -> impl IntoElement {
+        div()
+            .when(!first, |el| el.mt(px(20.)))
+            .mb(px(4.))
+            .px(px(14.))
+            .text_size(px(13.))
+            .font_medium()
+            .text_color(cx.theme().muted_foreground)
+            .child(text)
+    }
+
+    fn history_row(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let entry = &self.history[ix];
+        let time = local_time(&entry.at);
+        let text = SharedString::from(entry.polished.clone());
+        let copy_text = entry.polished.clone();
+        let copied = self.copied == Some(ix);
+        h_flex()
+            .items_start()
+            .gap(px(14.))
+            .px(px(14.))
+            .py(px(13.))
+            .rounded(px(8.))
+            .hover(|el| el.bg(rgba(theme::SURFACE_RAISED | 0xFF)))
+            .child(
+                div()
+                    .w(px(40.))
+                    .flex_none()
+                    .pt(px(1.))
+                    .text_size(px(13.))
+                    .text_color(rgba(theme::TEXT_FAINT | 0xFF))
+                    .child(time),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(15.))
+                    .line_height(relative(1.5))
+                    .line_clamp(2)
+                    .child(text),
+            )
+            .child(
+                div()
+                    .id(("copy", ix))
+                    .size(px(28.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .text_color(if copied {
+                        rgba(theme::SIGNAL_MAGENTA | 0xFF)
+                    } else {
+                        rgba(theme::TEXT_FAINT | 0xFF)
+                    })
+                    .hover(|el| {
+                        el.bg(rgba(theme::HAIRLINE | 0x22))
+                            .text_color(rgba(theme::TEXT_PRIMARY | 0xFF))
+                    })
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+                        view.copied = Some(ix);
+                        cx.notify();
+                        cx.spawn(async move |view, cx| {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(1500))
+                                .await;
+                            let _ = view.update(cx, |view: &mut Self, cx| {
+                                if view.copied == Some(ix) {
+                                    view.copied = None;
+                                    cx.notify();
+                                }
+                            });
+                        })
+                        .detach();
+                    }))
+                    .child(Icon::new(if copied { IconName::Check } else { IconName::Copy }).small()),
+            )
+    }
+
+    fn history_empty(text: &'static str) -> gpui::AnyElement {
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .text_size(px(15.))
+            .text_color(rgba(theme::TEXT_DIM | 0xFF))
+            .child(text)
+            .into_any_element()
+    }
+
+    fn history_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let query = self
+            .history_search
+            .read(cx)
+            .value()
+            .trim()
+            .to_lowercase();
+        let visible: Vec<usize> = (0..self.history.len())
+            .filter(|&ix| {
+                let entry = &self.history[ix];
+                query.is_empty()
+                    || entry.polished.to_lowercase().contains(&query)
+                    || entry.raw.to_lowercase().contains(&query)
+            })
+            .collect();
+
+        let mut items: Vec<gpui::AnyElement> = Vec::new();
+        let mut last_day: Option<Option<NaiveDate>> = None;
+        for ix in visible {
+            let day = local_day(&self.history[ix].at);
+            if last_day != Some(day) {
+                let first = items.is_empty();
+                items.push(Self::day_header(day_label(day), first, cx).into_any_element());
+                last_day = Some(day);
+            }
+            items.push(self.history_row(ix, cx).into_any_element());
+        }
+
+        let body = if self.history.is_empty() {
+            Self::history_empty("No dictations yet")
+        } else if items.is_empty() {
+            Self::history_empty("No matches")
+        } else {
+            v_flex().gap(px(6.)).children(items).into_any_element()
+        };
+
+        v_flex()
+            .size_full()
+            .gap(px(20.))
+            .child(Input::new(&self.history_search).large().cleanable(true))
+            .child(
+                div()
+                    .id("history-list")
+                    .flex_1()
+                    .min_h_0()
+                    // Rows pad 14px past the text column so the hover pill
+                    // has bleed, mirroring the pane edge alignment of the
+                    // search well above.
+                    .mx(px(-14.))
+                    .overflow_y_scroll()
+                    .child(body),
+            )
     }
 }
 
@@ -599,6 +843,7 @@ impl Render for SettingsWindow {
         let pane: gpui::AnyElement = match section {
             Section::General => self.general_pane(cx).into_any_element(),
             Section::Dictation => self.dictation_pane(cx).into_any_element(),
+            Section::History => self.history_pane(cx).into_any_element(),
             Section::Advanced => self.advanced_pane(cx).into_any_element(),
         };
 
@@ -628,7 +873,7 @@ impl Render for SettingsWindow {
                             .font_semibold()
                             .child(section.title()),
                     )
-                    .child(div().mt_8().child(pane)),
+                    .child(v_flex().mt_8().flex_1().min_h_0().child(pane)),
             )
     }
 }

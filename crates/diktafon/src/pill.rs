@@ -556,7 +556,7 @@ fn status_label(text: String) -> AnyElement {
     div()
         .flex_1()
         .text_size(px(13.))
-        .text_color(rgba(theme::TEXT_DIM | 0x8C))
+        .text_color(rgba(theme::TEXT_FAINT | 0xFF))
         .text_right()
         .whitespace_nowrap()
         .overflow_hidden()
@@ -576,7 +576,7 @@ fn time_readout(since: std::time::Instant) -> AnyElement {
         .flex()
         .justify_end()
         .text_size(px(11.))
-        .text_color(rgba(theme::TEXT_DIM | 0x8C))
+        .text_color(rgba(theme::TEXT_FAINT | 0xFF))
         .children(text.chars().map(|c| {
             let cell = if c == ':' { 4. } else { 7. };
             div()

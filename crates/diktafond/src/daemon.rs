@@ -151,7 +151,7 @@ fn start_up(
             .and_then(|()| {
                 println!("Loading models...");
                 let load_start = Instant::now();
-                let history = diktafon_protocol::data_dir().join("history.jsonl");
+                let history = diktafon_protocol::history_path();
                 let inference = Inference::spawn(
                     &models_dir,
                     Some(history),

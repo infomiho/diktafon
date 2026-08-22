@@ -226,7 +226,7 @@ impl Inference {
                         if let Some(history_path) = &history
                             && !raw.trim().is_empty()
                         {
-                            let mut entry = crate::history::Entry::now(&raw, &text);
+                            let mut entry = crate::history::entry_now(&raw, &text);
                             entry.chunks = chunks;
                             entry.audio_secs = audio_secs;
                             entry.asr_ms = asr_ms;

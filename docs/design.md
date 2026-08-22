@@ -6,7 +6,8 @@ colors:
   surface-raised: "#242849"    # hover fills, active nav, popovers
   surface-sunken: "#0B0D20"    # sidebar; deepest step
   on-surface: "#F1F2FF"        # words and labels; cool white
-  on-surface-muted: "#AAACD6"  # descriptions, secondary readouts
+  on-surface-muted: "#AAACD6"  # supporting prose: descriptions, group labels, status words
+  on-surface-faint: "#7F84A2"  # metadata scanned, not read: timestamps, counters, ghost icons
   outline: "#9B9DFF"           # hairline borders; violet-tinted, at ~13% alpha
   accent: "#9843C0"            # the polishing magenta deepened for fills; buttons, focus ring, links
   accent-hover: "#A853D1"
@@ -93,6 +94,16 @@ components:
     borderColor: "{outline} @ 13%"
     borderBottom: 2px          # reads as a physical key
     rounded: "{rounded.md}"
+  group-label:                 # quiet header inside grouped lists (History days)
+    fontSize: 13px
+    fontWeight: 500
+    color: "{on-surface-muted}"
+    case: sentence            # no uppercase anywhere in the system
+  list-row:                    # hover-highlighted content rows (History)
+    padding: 13px 14px
+    rounded: "{rounded.lg}"
+    hoverBackground: "{surface-raised}"
+    spine: 40px muted tabular time column; body 15 text, 2-line clamp; 28px ghost action right
   status-card:                 # structured state display (daemon); never raw text lines
     backgroundColor: "{surface}"
     borderColor: "{outline} @ 13%"
@@ -148,6 +159,22 @@ Chrome, text, and containers never glow.
   on signal, not on chrome.
 - Text is never tinted by phase or accent color: the grille carries the
   color, text carries the words.
+
+## Hierarchy
+
+Three text levels, expressed by color; one lever changes per level step.
+
+- **Primary** `on-surface`: the content itself - dictation text, values,
+  control labels. Weight 400; 500 only when naming something actionable
+  (field labels, status leads).
+- **Secondary** `on-surface-muted`: supporting prose read when engaged -
+  field descriptions, group labels, phase words.
+- **Faint** `on-surface-faint`: metadata scanned rather than read -
+  timestamps, counters, placeholder text, ghost icon controls at rest.
+
+Values outrank labels in data displays (the daemon card's white mono values
+under muted labels); labels outrank descriptions in forms. Size stays fixed
+by the ramp role - hierarchy never borrows a second lever it does not need.
 
 ## Elevation & depth
 

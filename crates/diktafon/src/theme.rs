@@ -22,6 +22,9 @@ pub const HAIRLINE: u32 = 0x9B9DFF00;
 pub const TEXT_PRIMARY: u32 = 0xF1F2FF00;
 /// Descriptions, secondary readouts.
 pub const TEXT_DIM: u32 = 0xAAACD600;
+/// The third and last text level: timestamps, ghost icon buttons,
+/// placeholders. Present but out of the way; never for words that must be read.
+pub const TEXT_FAINT: u32 = 0x7F84A200;
 
 // The phase language. Status colors derive from it: danger is SIGNAL_RED,
 // warning is AURORA_EMBER, success/completion is white (Signal has no green).
