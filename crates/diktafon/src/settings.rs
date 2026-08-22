@@ -517,7 +517,7 @@ impl SettingsWindow {
         let residency = match (status.running, status.models_loaded) {
             (false, _) => None,
             (true, true) => Some("Models loaded"),
-            (true, false) => Some("Models idle"),
+            (true, false) => Some("Loading models"),
         };
         let card = v_flex()
             .rounded_lg()

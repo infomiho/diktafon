@@ -21,7 +21,6 @@ use std::cell::{Cell, OnceCell};
 enum MenuAction {
     OpenSettings,
     Quit,
-    QuitDaemonToo,
 }
 
 struct ControllerIvars {
@@ -55,11 +54,6 @@ define_class!(
         #[unsafe(method(quit:))]
         fn quit(&self, _sender: &NSMenuItem) {
             let _ = self.ivars().actions.unbounded_send(MenuAction::Quit);
-        }
-
-        #[unsafe(method(quitAll:))]
-        fn quit_all(&self, _sender: &NSMenuItem) {
-            let _ = self.ivars().actions.unbounded_send(MenuAction::QuitDaemonToo);
         }
     }
 );
@@ -98,7 +92,6 @@ impl MenuController {
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 
         self.add_action(menu, "Quit Diktafon", sel!(quit:));
-        self.add_action(menu, "Quit Diktafon and Daemon", sel!(quitAll:));
     }
 
     /// A disabled line of information (no action, so AppKit disables it).
@@ -354,12 +347,11 @@ pub fn install(
                         settings_window = crate::settings::open(settings_window, settings, cx);
                     });
                 }
-                MenuAction::QuitDaemonToo => {
+                // Quit takes the daemon down too: with exit-on-idle there
+                // is nothing worth keeping warm after the client leaves.
+                MenuAction::Quit => {
                     crate::transport::disable_daemon_spawn();
                     stop_daemon();
-                    cx.update(|cx| cx.quit());
-                }
-                MenuAction::Quit => {
                     cx.update(|cx| cx.quit());
                 }
             }
