@@ -159,9 +159,10 @@ Three levels, no stacking beyond them:
 - **Glow** (signal only): zero-offset colored `BoxShadow`, blur 4-22px,
   alpha scaled by the live level; at level zero there is no glow.
 
-The pill window disables the system shadow and lets clicks pass through. A
-future blurred-window material for the pill (bead diktafon-7r4) slots in as
-a fourth level ("material") without changing the rules above.
+The pill window disables the system shadow and lets clicks pass through.
+A system-blur material for the pill was tried and declined (diktafon-7r4):
+over light content the blur washes out the Signal indigo and collapses the
+muted text's contrast. The chip stays painted at 91%.
 
 ## Type
 
