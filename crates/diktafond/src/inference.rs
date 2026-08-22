@@ -20,7 +20,7 @@ pub type Residency = Option<Box<dyn Fn(bool) + Send>>;
 const IDLE_POLL: Duration = Duration::from_secs(30);
 
 /// The resident models cost gigabytes of RAM; after this long without any
-/// message they are dropped and reloaded on demand (`DIKTAFOND_IDLE_SECS`
+/// message the daemon exits and is respawned on demand (`DIKTAFOND_IDLE_SECS`
 /// overrides, mainly for testing).
 const IDLE_UNLOAD: Duration = Duration::from_secs(5 * 60);
 
@@ -123,7 +123,7 @@ impl Inference {
                 Ok(models) => {
                     let _ = ready_tx.send(Ok(()));
                     notify_residency(true);
-                    Some(models)
+                    models
                 }
                 Err(e) => {
                     let _ = ready_tx.send(Err(e));
@@ -143,39 +143,24 @@ impl Inference {
                 let msg = match chunk_rx.recv_timeout(idle_poll) {
                     Ok(msg) => msg,
                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                        // Never unload mid-session, however long the pause.
-                        if models.is_some() && !in_session && last_activity.elapsed() >= idle_unload
-                        {
-                            models = None;
-                            notify_residency(false);
-                            println!("models unloaded after {idle_unload:?} idle");
+                        // Never exit mid-session, however long the pause.
+                        if !in_session && last_activity.elapsed() >= idle_unload {
+                            // Exiting IS the unload: dropping the models in
+                            // place leaves ~950MB cached by macOS's malloc,
+                            // and the allocator knobs that release it cost 2x
+                            // ASR latency. The client respawns the daemon on
+                            // the next session, which had to load models
+                            // anyway; SIGTERM takes the same cleanup path as
+                            // a user quit.
+                            println!("idle for {idle_unload:?}; exiting to free model memory");
+                            let _ = signal_hook::low_level::raise(signal_hook::consts::SIGTERM);
+                            return;
                         }
                         continue;
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => return,
                 };
                 last_activity = Instant::now();
-                // Reload on any session traffic; Start arrives at hotkey press,
-                // so a cold reload overlaps with the user speaking.
-                if models.is_none() && !matches!(msg, Msg::Cancel) {
-                    match load_models(&models_dir) {
-                        Ok(loaded) => {
-                            models = Some(loaded);
-                            notify_residency(true);
-                        }
-                        Err(e) => {
-                            eprintln!("reloading models failed: {e:#}");
-                            if let Msg::Flush = msg {
-                                // One result per Flush, but as the error it is,
-                                // not as silence.
-                                let _ = events_tx.send(DaemonMsg::Error(format!(
-                                    "reloading models failed: {e:#}"
-                                )));
-                            }
-                            continue;
-                        }
-                    }
-                }
                 match msg {
                     Msg::Start(new_config) => {
                         in_session = true;
@@ -185,7 +170,7 @@ impl Inference {
                         config = new_config;
                     }
                     Msg::Chunk(mut samples) => {
-                        let asr = &mut models.as_mut().expect("loaded above").asr;
+                        let asr = &mut models.asr;
                         pad_short_clip(&mut samples);
                         let secs = samples.len() as f32 / TARGET_RATE as f32;
                         let start = Instant::now();
@@ -224,7 +209,7 @@ impl Inference {
                         } else {
                             let _ = events_tx.send(DaemonMsg::Polishing);
                             let start = Instant::now();
-                            let polisher = &models.as_ref().expect("loaded above").polisher;
+                            let polisher = &models.polisher;
                             let polished = catch_panic("polish", || {
                                 polisher.polish(&raw, &config.control_line)
                             })
