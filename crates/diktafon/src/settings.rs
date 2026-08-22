@@ -99,11 +99,13 @@ impl Section {
     }
 }
 
-/// Bounds a pathological file; the real history is tens of KB, well under it.
-const HISTORY_CAP: usize = 500;
+/// The pane is a "what did I just say" surface, not an archive; only the
+/// freshest entries are shown. The full file stays intact for recovery.
+const HISTORY_CAP: usize = 20;
 
-/// The recorded dictations, newest first. Unparseable lines are skipped
-/// rather than failing the whole pane.
+/// The recorded dictations, newest first. Unparseable lines and entries
+/// whose polish came out empty (nothing to show or copy) are skipped rather
+/// than failing the whole pane.
 fn load_history() -> Vec<HistoryEntry> {
     let Ok(content) = std::fs::read_to_string(diktafon_protocol::history_path()) else {
         return Vec::new();
@@ -111,6 +113,7 @@ fn load_history() -> Vec<HistoryEntry> {
     let mut entries: Vec<HistoryEntry> = content
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
+        .filter(|entry: &HistoryEntry| !entry.polished.trim().is_empty())
         .collect();
     entries.reverse();
     entries.truncate(HISTORY_CAP);
