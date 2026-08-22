@@ -85,7 +85,6 @@ impl MenuController {
             menu,
             &format!("Diktafon: {}", phase_label(self.ivars().phase.get())),
         );
-        self.add_info(menu, &format!("Daemon: {}", daemon_summary()));
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 
         self.add_action(menu, "Settings…", sel!(openSettings:));
@@ -256,19 +255,6 @@ pub fn daemon_status() -> DaemonStatus {
         models_loaded: status["models_loaded"].as_bool().unwrap_or(false),
         asr: status["asr_model"].as_str().map(str::to_string),
         llm: status["llm_model"].as_str().map(str::to_string),
-    }
-}
-
-/// One-line form of [`daemon_status`] for the menu bar.
-pub fn daemon_summary() -> String {
-    let status = daemon_status();
-    if !status.running {
-        return "not running".into();
-    }
-    match (&status.asr, &status.llm, status.models_loaded) {
-        (Some(asr), Some(llm), true) => format!("running · {asr} + {llm} loaded"),
-        (_, _, true) => "running · models loaded".into(),
-        _ => "running · models idle".into(),
     }
 }
 

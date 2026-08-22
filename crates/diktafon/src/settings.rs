@@ -104,6 +104,9 @@ pub struct SettingsWindow {
     autostart: bool,
     /// Cached at open: reading it does file IO and must not run per render.
     daemon_status: DaemonStatus,
+    /// Keeps the window on the action dispatch path, so the global Cmd+W
+    /// binding reaches the CloseWindow handler even with no control focused.
+    focus_handle: gpui::FocusHandle,
 }
 
 /// Open the settings window, or bring the existing one to the front.
@@ -175,6 +178,9 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> Self {
         let current = settings.lock().unwrap().clone();
+
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window, cx);
 
         let control_input = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -281,6 +287,7 @@ impl SettingsWindow {
             idle_values,
             autostart: false,
             daemon_status: statusbar::daemon_status(),
+            focus_handle,
         }
     }
 
@@ -597,6 +604,7 @@ impl Render for SettingsWindow {
 
         h_flex()
             .size_full()
+            .track_focus(&self.focus_handle)
             .bg(cx.theme().background)
             // A pending prompt edit would be lost on Cmd+W: Blur never fires
             // for a closing window.
