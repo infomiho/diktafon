@@ -16,7 +16,7 @@ pub const SURFACE_SUNKEN: u32 = 0x0B0D2000;
 /// Borders: violet-tinted hairline, ~13% alpha at the call site.
 pub const HAIRLINE: u32 = 0x9B9DFF00;
 
-// Text is never tinted by phase or accent color: the orbit carries the
+// Text is never tinted by phase or accent color: the grille carries the
 // color, text carries the words.
 /// Words and labels: cool white.
 pub const TEXT_PRIMARY: u32 = 0xF1F2FF00;
@@ -31,7 +31,7 @@ pub const SIGNAL_RED: u32 = 0xFF3B4D00;
 pub const SIGNAL_WHITE: u32 = 0xFFFFFF00;
 /// Polishing signal.
 pub const SIGNAL_MAGENTA: u32 = 0xCE5CFF00;
-/// Orbit at rest; muted, never glows.
+/// The meter at rest; muted, never glows.
 pub const RING_IDLE: u32 = 0x8E90BE00;
 /// Aurora wash companions to SIGNAL_RED: a warm ember and a red-magenta
 /// rose, so the recording glow spans a hot-red family instead of one flat hue.
@@ -85,74 +85,68 @@ pub fn apply_settings_theme(cx: &mut gpui::App) {
     gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
 }
 
+// ThemeConfigColors keeps its base-color fields private, so it cannot be
+// built with struct-literal syntax; assigning onto its Default is the only
+// typo-proof construction left.
+#[allow(clippy::field_reassign_with_default)]
 fn signal_theme_config() -> gpui_component::ThemeConfig {
-    let hairline = hex_a(HAIRLINE, 0x22);
-    let colors: serde_json::Map<String, serde_json::Value> = [
-        ("background", hex(BACKGROUND)),
-        ("foreground", hex(TEXT_PRIMARY)),
-        ("border", hairline.clone()),
-        ("input.border", hairline.clone()),
-        ("window.border", hairline.clone()),
-        ("title_bar.background", hex(BACKGROUND)),
-        ("title_bar.border", hairline.clone()),
-        ("muted.background", hex(SURFACE_RAISED)),
-        ("muted.foreground", hex(TEXT_DIM)),
-        ("accent.background", hex(SURFACE_RAISED)),
-        ("accent.foreground", hex(TEXT_PRIMARY)),
-        ("primary.background", hex(ACCENT)),
-        ("primary.hover.background", hex(ACCENT_HOVER)),
-        ("primary.active.background", hex(ACCENT_ACTIVE)),
-        ("primary.foreground", hex(TEXT_PRIMARY)),
-        ("secondary.background", hex(SURFACE_RAISED)),
-        ("secondary.hover.background", hex(RAISED_HOVER)),
-        ("secondary.active.background", hex(RAISED_ACTIVE)),
-        ("secondary.foreground", hex(TEXT_PRIMARY)),
-        ("sidebar.background", hex(SURFACE_SUNKEN)),
-        ("sidebar.foreground", hex(TEXT_DIM)),
-        ("sidebar.accent.background", hex(SURFACE_RAISED)),
-        ("sidebar.accent.foreground", hex(TEXT_PRIMARY)),
-        ("sidebar.border", hairline),
-        ("popover.background", hex(SURFACE_RAISED)),
-        ("popover.foreground", hex(TEXT_PRIMARY)),
-        ("list.background", hex(SURFACE_RAISED)),
-        ("list.even.background", hex(SURFACE_RAISED)),
-        ("list.hover.background", hex(RAISED_HOVER)),
-        ("list.active.background", hex_a(ACCENT, 0x30)),
-        ("selection.background", hex_a(ACCENT, 0x40)),
-        ("ring", hex(ACCENT)),
-        ("caret", hex(TEXT_PRIMARY)),
-        ("link.foreground", hex(ACCENT)),
-        ("switch.background", hex(SWITCH_TRACK)),
-        ("scrollbar.thumb.background", hex_a(HAIRLINE, 0x50)),
-        ("overlay", hex_a(SURFACE_SUNKEN, 0x80)),
-        ("danger.background", hex(SIGNAL_RED)),
-        ("danger.foreground", "#ff6b78".into()),
-        ("warning.background", hex(AURORA_EMBER)),
-        ("warning.foreground", "#ff7e5c".into()),
-        ("success.background", hex(SIGNAL_WHITE)),
-        ("success.foreground", hex(TEXT_PRIMARY)),
-    ]
-    .into_iter()
-    .map(|(key, value)| (key.to_string(), value.into()))
-    .collect();
-    let config = serde_json::json!({
-        "name": "Signal Dark",
-        "mode": "dark",
-        "font.size": 15,
-        "mono_font.family": FONT_MONO,
-        "radius": 6,
-        "radius_lg": 8,
-        "shadow": false,
-        "colors": colors,
-    });
-    serde_json::from_value(config).expect("signal theme config is valid")
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn signal_theme_config_parses() {
-        let config = super::signal_theme_config();
-        assert!(config.mode.is_dark());
+    use gpui_component::{ThemeConfig, ThemeConfigColors, ThemeMode};
+    let color = |c: u32| Some(hex(c).into());
+    let alpha = |c: u32, a: u8| Some(hex_a(c, a).into());
+    let hairline = || alpha(HAIRLINE, 0x22);
+    let mut colors = ThemeConfigColors::default();
+    colors.background = color(BACKGROUND);
+    colors.foreground = color(TEXT_PRIMARY);
+    colors.border = hairline();
+    colors.input = hairline();
+    colors.window_border = hairline();
+    colors.title_bar = color(BACKGROUND);
+    colors.title_bar_border = hairline();
+    colors.muted = color(SURFACE_RAISED);
+    colors.muted_foreground = color(TEXT_DIM);
+    colors.accent = color(SURFACE_RAISED);
+    colors.accent_foreground = color(TEXT_PRIMARY);
+    colors.primary = color(ACCENT);
+    colors.primary_hover = color(ACCENT_HOVER);
+    colors.primary_active = color(ACCENT_ACTIVE);
+    colors.primary_foreground = color(TEXT_PRIMARY);
+    colors.secondary = color(SURFACE_RAISED);
+    colors.secondary_hover = color(RAISED_HOVER);
+    colors.secondary_active = color(RAISED_ACTIVE);
+    colors.secondary_foreground = color(TEXT_PRIMARY);
+    colors.sidebar = color(SURFACE_SUNKEN);
+    colors.sidebar_foreground = color(TEXT_DIM);
+    colors.sidebar_accent = color(SURFACE_RAISED);
+    colors.sidebar_accent_foreground = color(TEXT_PRIMARY);
+    colors.sidebar_border = hairline();
+    colors.popover = color(SURFACE_RAISED);
+    colors.popover_foreground = color(TEXT_PRIMARY);
+    colors.list = color(SURFACE_RAISED);
+    colors.list_even = color(SURFACE_RAISED);
+    colors.list_hover = color(RAISED_HOVER);
+    colors.list_active = alpha(ACCENT, 0x30);
+    colors.selection = alpha(ACCENT, 0x40);
+    colors.ring = color(ACCENT);
+    colors.caret = color(TEXT_PRIMARY);
+    colors.link = color(ACCENT);
+    colors.switch = color(SWITCH_TRACK);
+    colors.scrollbar_thumb = alpha(HAIRLINE, 0x50);
+    colors.overlay = alpha(SURFACE_SUNKEN, 0x80);
+    colors.danger = color(SIGNAL_RED);
+    colors.danger_foreground = Some("#ff6b78".into());
+    colors.warning = color(AURORA_EMBER);
+    colors.warning_foreground = Some("#ff7e5c".into());
+    colors.success = color(SIGNAL_WHITE);
+    colors.success_foreground = color(TEXT_PRIMARY);
+    ThemeConfig {
+        name: "Signal Dark".into(),
+        mode: ThemeMode::Dark,
+        font_size: Some(15.),
+        mono_font_family: Some(FONT_MONO.into()),
+        radius: Some(6),
+        radius_lg: Some(8),
+        shadow: Some(false),
+        colors,
+        ..Default::default()
     }
 }

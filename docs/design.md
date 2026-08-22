@@ -16,7 +16,7 @@ colors:
   signal-red: "#FF3B4D"        # recording; doubles as danger
   signal-white: "#FFFFFF"      # transcribing; doubles as success/completion
   signal-magenta: "#CE5CFF"    # polishing; the accent is this hue deepened
-  ring-idle: "#8E90BE"         # orbit at rest; muted, never glows
+  ring-idle: "#8E90BE"         # the meter at rest; muted, never glows
   aurora-ember: "#FF5A36"      # recording wash companion; doubles as warning
   aurora-rose: "#E0459E"       # recording wash companion
 typography:
@@ -124,8 +124,9 @@ the windows cannot drift apart.
 
 ## Core rule
 
-Glow means live signal. Only the element that carries the signal (the orbit,
-the aurora wash) may glow, and its glow intensity rides the signal level.
+Glow means live signal. Only the element that carries the signal (the
+grille meter, the aurora wash) may glow, and its glow intensity rides the
+signal level.
 Chrome, text, and containers never glow.
 
 ## Color roles
@@ -141,11 +142,11 @@ Chrome, text, and containers never glow.
 - Magenta is the single interactive accent: primary buttons, focus rings,
   selection, links. It is the polishing hue deepened for large fills
   (white text passes AA on it); both mean "diktafon is acting". The vivid
-  SIGNAL_MAGENTA stays reserved for the pill's glowing orbit.
+  SIGNAL_MAGENTA stays reserved for the pill's glowing grille.
 - The palette is designed in OKLCH: every surface step sits on hue 277 with
   restrained chroma (large fills never exceed C 0.06); saturation is spent
   on signal, not on chrome.
-- Text is never tinted by phase or accent color: the orbit carries the
+- Text is never tinted by phase or accent color: the grille carries the
   color, text carries the words.
 
 ## Elevation & depth

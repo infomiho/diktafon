@@ -114,7 +114,7 @@ impl MenuController {
         menu.addItem(&item);
     }
 
-    fn add_action(&self, menu: &NSMenu, title: &str, action: Sel) -> Retained<NSMenuItem> {
+    fn add_action(&self, menu: &NSMenu, title: &str, action: Sel) {
         let item = unsafe {
             NSMenuItem::initWithTitle_action_keyEquivalent(
                 NSMenuItem::alloc(self.mtm()),
@@ -125,7 +125,6 @@ impl MenuController {
         };
         unsafe { item.setTarget(Some(self.as_ref())) };
         menu.addItem(&item);
-        item
     }
 }
 

@@ -117,11 +117,11 @@ fn app_icon_svg() -> String {
   <defs>
     <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#1B1E3F"/>
-      <stop offset="1" stop-color="#0B0D20"/>
+      <stop offset="1" stop-color="{sunken}"/>
     </linearGradient>
     <radialGradient id="ember" cx="0.5" cy="1.02" r="0.55">
-      <stop offset="0" stop-color="#FF5A36" stop-opacity="0.26"/>
-      <stop offset="1" stop-color="#FF5A36" stop-opacity="0"/>
+      <stop offset="0" stop-color="{ember}" stop-opacity="0.26"/>
+      <stop offset="1" stop-color="{ember}" stop-opacity="0"/>
     </radialGradient>
   </defs>
   <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#ground)"/>
@@ -130,6 +130,8 @@ fn app_icon_svg() -> String {
   <circle cx="{hx}" cy="{hy}" r="{hr}" fill="{accent}"/>
 </svg>
 "##,
+        ember = hex(theme::AURORA_EMBER),
+        sunken = hex(theme::SURFACE_SUNKEN),
         face = hex(theme::TEXT_PRIMARY),
         device = device_path(x, y, s),
         hx = x + (DIAL_X - BODY_X) * s,

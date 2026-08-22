@@ -157,13 +157,13 @@ fn force_dark_titlebar(window: &Window) {
         return;
     };
     if let RawWindowHandle::AppKit(appkit) = handle.as_raw() {
-        let ns_view = appkit.ns_view.as_ptr() as *mut objc2::runtime::AnyObject;
+        let ns_view = appkit.ns_view.as_ptr() as *const objc2_app_kit::NSView;
         let appearance = objc2_app_kit::NSAppearance::appearanceNamed(unsafe {
             objc2_app_kit::NSAppearanceNameDarkAqua
         });
-        unsafe {
-            let ns_window: *mut objc2::runtime::AnyObject = objc2::msg_send![&*ns_view, window];
-            let _: () = objc2::msg_send![&*ns_window, setAppearance: appearance.as_deref()];
+        if let Some(ns_window) = (unsafe { &*ns_view }).window() {
+            use objc2_app_kit::NSAppearanceCustomization;
+            ns_window.setAppearance(appearance.as_deref());
         }
     }
 }
@@ -541,14 +541,12 @@ impl SettingsWindow {
                         )
                     }),
             );
-        let card = match &status.asr {
-            Some(asr) => card.child(Self::daemon_row("Transcription model", asr.clone(), cx)),
-            None => card,
-        };
-        match &status.llm {
-            Some(llm) => card.child(Self::daemon_row("Polishing model", llm.clone(), cx)),
-            None => card,
-        }
+        card.when_some(status.asr.clone(), |card, asr| {
+            card.child(Self::daemon_row("Transcription model", asr, cx))
+        })
+        .when_some(status.llm.clone(), |card, llm| {
+            card.child(Self::daemon_row("Polishing model", llm, cx))
+        })
     }
 
     fn advanced_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {

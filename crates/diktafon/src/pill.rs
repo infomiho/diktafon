@@ -181,15 +181,14 @@ fn configure_overlay_window(window: &Window) {
         return;
     };
     if let RawWindowHandle::AppKit(appkit) = handle.as_raw() {
-        let ns_view = appkit.ns_view.as_ptr() as *mut objc2::runtime::AnyObject;
-        // NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
-        const STYLE_MASK: u64 = 1 << 7;
-        unsafe {
-            let ns_window: *mut objc2::runtime::AnyObject = objc2::msg_send![&*ns_view, window];
-            let _: () = objc2::msg_send![&*ns_window, setStyleMask: STYLE_MASK];
-            let _: () = objc2::msg_send![&*ns_window, setHasShadow: false];
-            let _: () = objc2::msg_send![&*ns_window, setIgnoresMouseEvents: true];
-        }
+        let ns_view = appkit.ns_view.as_ptr() as *const objc2_app_kit::NSView;
+        let Some(ns_window) = (unsafe { &*ns_view }).window() else {
+            return;
+        };
+        // Borderless is the empty mask; only the panel bit remains.
+        ns_window.setStyleMask(objc2_app_kit::NSWindowStyleMask::NonactivatingPanel);
+        ns_window.setHasShadow(false);
+        ns_window.setIgnoresMouseEvents(true);
     }
 }
 
@@ -639,21 +638,20 @@ impl Render for Pill {
         let recording = matches!(view, GrilleView::Phase(Phase::Recording));
         let aurora_bands = (recording && !self.closing).then(|| self.aurora_bands());
         let download = self.dictation.read(cx).download.clone();
-        let text = match &error {
-            Some(message) => message.clone(),
+        let text = if let Some(message) = &error {
+            message.clone()
+        } else if let Some(download) = &download {
             // A first-run model download outranks the session content: the
             // session is stalled on it and would otherwise look like a hang.
-            None if download.is_some() => {
-                let percent = download.as_ref().expect("guarded above").percent;
-                format!("Downloading models {percent}%")
-            }
+            format!("Downloading models {}%", download.percent)
+        } else {
             // The last status word stays through the ending beat; only the
             // exit fade takes it away.
-            None => match display {
+            match display {
                 Phase::Transcribing => "Transcribing".into(),
                 Phase::Polishing => "Polishing".into(),
                 _ => String::new(),
-            },
+            }
         };
         let chip_w = self.fit_width(&text, window, reduce_motion);
         let grille = self.grille(&view, reduce_motion);

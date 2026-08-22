@@ -36,6 +36,9 @@ objc2-app-kit = { version = "0.3", features = [
     "NSBezierPath",
     "NSColor",
     "NSAppearance",
+    "NSWindow",
+    "NSPanel",
+    "NSGraphics",
     "block2",
 ] }
 objc2-foundation = "0.3"
