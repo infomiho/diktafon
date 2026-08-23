@@ -749,14 +749,13 @@ impl SettingsWindow {
             .rounded(px(8.))
             .child(
                 h_flex()
-                    .items_start()
+                    .items_center()
                     .gap(px(14.))
                     .w_full()
                     .child(
                         div()
                             .w(px(40.))
                             .flex_none()
-                            .pt(px(2.))
                             .text_size(px(13.))
                             .text_color(rgba(theme::TEXT_FAINT | 0xFF))
                             .child(local_time(&entry.at)),
