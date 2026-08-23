@@ -311,6 +311,15 @@ impl SettingsWindow {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
 
+        let hotkey_focus = cx.focus_handle();
+        cx.on_focus_out(&hotkey_focus, window, |view, _, _, cx| {
+            if view.capturing_hotkey {
+                view.capturing_hotkey = false;
+                cx.notify();
+            }
+        })
+        .detach();
+
         let history = History::new();
         let history_search = cx.new(|cx| {
             InputState::new(window, cx).placeholder(search_placeholder(history.entries.len()))
@@ -431,7 +440,7 @@ impl SettingsWindow {
             sound_cues: current.sound_cues,
             hotkey: current.hotkey.clone(),
             capturing_hotkey: false,
-            hotkey_focus: cx.focus_handle(),
+            hotkey_focus,
             daemon_status: statusbar::daemon_status(),
             history,
             history_search,
@@ -636,7 +645,7 @@ impl SettingsWindow {
             ))
             .child(Self::control_row(
                 "Hotkey",
-                "Hold to dictate, release to paste; click to change",
+                "Hold to dictate, release to paste. Click to change.",
                 self.hotkey_control(cx),
                 cx,
             ))
@@ -761,7 +770,7 @@ impl SettingsWindow {
                 field()
                     .label("Post-processing prompt")
                     .description(
-                        "Shapes how your words are polished; applies to the next dictation",
+                        "Shapes how your words are polished. Applies to the next dictation.",
                     )
                     .child(Textarea::new(&self.control_input)),
             )
@@ -850,7 +859,7 @@ impl SettingsWindow {
                     field()
                         .label("Unload models when idle")
                         .description(
-                            "Frees a few GB of RAM; models reload on the next dictation. \
+                            "Frees a few GB of RAM. Models reload on the next dictation. \
                              Applies when the daemon restarts.",
                         )
                         .child(Select::new(&self.idle_select).large()),
