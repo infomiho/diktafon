@@ -12,10 +12,11 @@ use diktafon_protocol::HistoryEntry;
 use gpui::{
     App, AppContext, Bounds, ClipboardItem, Context, Entity, ParentElement, Render, SharedString,
     TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px,
-    relative, rems, rgba, size,
+    relative, rems, rgba, size, Task,
 };
 use gpui_component::form::{Form, field, v_form};
-use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_component::input::{InputEvent, Textarea, TextareaState};
+use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use gpui_component::label::Label;
 use gpui_component::searchable_list::SearchableVec;
 use gpui_component::select::{Select, SelectEvent, SelectState};
@@ -149,6 +150,222 @@ fn local_time(at: &str) -> String {
         .unwrap_or_else(|_| "--:--".into())
 }
 
+/// The dictation list behind the kit's `List`: days are sections, entries are
+/// rows. Clicking a row (or pressing Enter) copies its polished text.
+struct HistoryDelegate {
+    /// Everything shown, newest first.
+    entries: Vec<HistoryEntry>,
+    /// The filtered view: one `(day label, entry indices)` per section.
+    days: Vec<(String, Vec<usize>)>,
+    query: String,
+    selected: Option<IndexPath>,
+    /// Entry whose text was just copied; drives the brief check-mark flash.
+    copied: Option<usize>,
+}
+
+impl HistoryDelegate {
+    fn new() -> Self {
+        let mut delegate = Self {
+            entries: load_history(),
+            days: Vec::new(),
+            query: String::new(),
+            selected: None,
+            copied: None,
+        };
+        delegate.regroup();
+        delegate
+    }
+
+    fn reload(&mut self) {
+        self.entries = load_history();
+        self.regroup();
+    }
+
+    fn regroup(&mut self) {
+        self.days.clear();
+        for (ix, entry) in self.entries.iter().enumerate() {
+            if !self.query.is_empty()
+                && !entry.polished.to_lowercase().contains(&self.query)
+                && !entry.raw.to_lowercase().contains(&self.query)
+            {
+                continue;
+            }
+            let label = day_label(local_day(&entry.at));
+            match self.days.last_mut() {
+                Some((day, rows)) if *day == label => rows.push(ix),
+                _ => self.days.push((label, vec![ix])),
+            }
+        }
+    }
+
+    fn entry_index(&self, ix: IndexPath) -> Option<usize> {
+        self.days.get(ix.section)?.1.get(ix.row).copied()
+    }
+}
+
+impl ListDelegate for HistoryDelegate {
+    type Item = ListItem;
+
+    fn perform_search(
+        &mut self,
+        query: &str,
+        _: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> Task<()> {
+        self.query = query.trim().to_lowercase();
+        self.regroup();
+        cx.notify();
+        Task::ready(())
+    }
+
+    fn sections_count(&self, _: &App) -> usize {
+        self.days.len().max(1)
+    }
+
+    fn items_count(&self, section: usize, _: &App) -> usize {
+        self.days.get(section).map_or(0, |(_, rows)| rows.len())
+    }
+
+    fn render_section_header(
+        &mut self,
+        section: usize,
+        _: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> Option<impl IntoElement> {
+        let (label, _) = self.days.get(section)?;
+        Some(
+            h_flex()
+                .h(px(36.))
+                .items_end()
+                .pb(px(4.))
+                .px(px(10.))
+                .text_size(px(13.))
+                .font_medium()
+                .text_color(cx.theme().muted_foreground)
+                .child(SharedString::from(label.clone())),
+        )
+    }
+
+    fn render_item(
+        &mut self,
+        ix: IndexPath,
+        _: &mut Window,
+        _: &mut Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        let entry_ix = self.entry_index(ix)?;
+        let entry = self.entries.get(entry_ix)?;
+        let copied = self.copied == Some(entry_ix);
+        Some(
+            ListItem::new(("dictation", entry_ix))
+                .px(px(10.))
+                .py(px(10.))
+                .rounded(px(8.))
+                .child(
+                    h_flex()
+                        .items_start()
+                        .gap(px(14.))
+                        .w_full()
+                        .child(
+                            div()
+                                .w(px(40.))
+                                .flex_none()
+                                .pt(px(2.))
+                                .text_size(px(13.))
+                                .text_color(rgba(theme::TEXT_FAINT | 0xFF))
+                                .child(local_time(&entry.at)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                // Fixed two-line height: the kit's list is
+                                // virtualized and needs uniform rows.
+                                .h(px(45.))
+                                .overflow_hidden()
+                                .text_size(px(15.))
+                                .line_height(relative(1.5))
+                                .line_clamp(2)
+                                .child(SharedString::from(entry.polished.clone())),
+                        )
+                        .child(
+                            div()
+                                .size(px(28.))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_color(if copied {
+                                    rgba(theme::SIGNAL_MAGENTA | 0xFF)
+                                } else {
+                                    rgba(theme::TEXT_FAINT | 0xFF)
+                                })
+                                .child(
+                                    Icon::new(if copied {
+                                        IconName::Check
+                                    } else {
+                                        IconName::Copy
+                                    })
+                                    .small(),
+                                ),
+                        ),
+                ),
+        )
+    }
+
+    fn set_selected_index(
+        &mut self,
+        ix: Option<IndexPath>,
+        _: &mut Window,
+        _: &mut Context<ListState<Self>>,
+    ) {
+        self.selected = ix;
+    }
+
+    fn confirm(&mut self, _secondary: bool, _: &mut Window, cx: &mut Context<ListState<Self>>) {
+        let Some(entry_ix) = self.selected.and_then(|ix| self.entry_index(ix)) else {
+            return;
+        };
+        let Some(entry) = self.entries.get(entry_ix) else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(entry.polished.clone()));
+        self.copied = Some(entry_ix);
+        cx.notify();
+        cx.spawn(async move |state, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(1500))
+                .await;
+            let _ = state.update(cx, |state, cx| {
+                if state.delegate().copied == Some(entry_ix) {
+                    state.delegate_mut().copied = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn render_empty(
+        &mut self,
+        _: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> impl IntoElement {
+        let text = if self.entries.is_empty() {
+            "No dictations yet"
+        } else {
+            "No matches"
+        };
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .text_size(px(15.))
+            .text_color(cx.theme().muted_foreground)
+            .child(text)
+            .into_any_element()
+    }
+}
+
 pub struct SettingsWindow {
     settings: Arc<Mutex<SessionSettings>>,
     section: Section,
@@ -165,13 +382,9 @@ pub struct SettingsWindow {
     autostart: bool,
     /// Cached at open: reading it does file IO and must not run per render.
     daemon_status: DaemonStatus,
-    /// Read at open and again when the History section is entered; newest
-    /// first.
-    history: Vec<HistoryEntry>,
-    history_search: Entity<InputState>,
-    /// Index into `history` whose copy button just fired; drives the brief
-    /// check-mark flash.
-    copied: Option<usize>,
+    /// The day-grouped dictation list; reloaded when the History section is
+    /// entered.
+    history_list: Entity<ListState<HistoryDelegate>>,
     /// Keeps the window on the action dispatch path, so the global Cmd+W
     /// binding reaches the CloseWindow handler even with no control focused.
     focus_handle: gpui::FocusHandle,
@@ -250,15 +463,8 @@ impl SettingsWindow {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
 
-        let history = load_history();
-        let history_search = cx.new(|cx| {
-            let placeholder = match history.len() {
-                0 => "Search".to_string(),
-                1 => "Search 1 dictation".to_string(),
-                n => format!("Search {n} dictations"),
-            };
-            InputState::new(window, cx).placeholder(placeholder)
-        });
+        let history_list =
+            cx.new(|cx| ListState::new(HistoryDelegate::new(), window, cx).searchable(true));
 
         let control_input = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -338,12 +544,6 @@ impl SettingsWindow {
             }
         })
         .detach();
-        cx.subscribe(&history_search, |_, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
-            }
-        })
-        .detach();
         cx.subscribe(
             &language_select,
             |view, _, event: &SelectEvent<SearchableVec<SharedString>>, cx| {
@@ -371,9 +571,7 @@ impl SettingsWindow {
             idle_values,
             autostart: false,
             daemon_status: statusbar::daemon_status(),
-            history,
-            history_search,
-            copied: None,
+            history_list,
             focus_handle,
         }
     }
@@ -484,7 +682,11 @@ impl SettingsWindow {
                 // Dictations land while the window is open; entering the
                 // pane rereads them.
                 if entry == Section::History {
-                    view.history = load_history();
+                    view.history_list
+                        .update(cx, |list, cx| {
+                            list.delegate_mut().reload();
+                            cx.notify();
+                        });
                 }
                 view.section = entry;
                 cx.notify();
@@ -670,152 +872,15 @@ impl SettingsWindow {
             .child(Self::form().child(field().label("Daemon").child(self.daemon_card(cx))))
     }
 
-    fn day_header(text: String, first: bool, cx: &App) -> impl IntoElement {
-        div()
-            .when(!first, |el| el.mt(px(20.)))
-            .mb(px(4.))
-            .px(px(14.))
-            .text_size(px(13.))
-            .font_medium()
-            .text_color(cx.theme().muted_foreground)
-            .child(text)
-    }
-
-    fn history_row(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement {
-        let entry = &self.history[ix];
-        let time = local_time(&entry.at);
-        let text = SharedString::from(entry.polished.clone());
-        let copy_text = entry.polished.clone();
-        let copied = self.copied == Some(ix);
-        h_flex()
-            // Without an id gpui never repaints on hover change; the highlight
-            // would lag until the next unrelated frame.
-            .id(ix)
-            .items_start()
-            .gap(px(14.))
-            .px(px(14.))
-            .py(px(13.))
-            .rounded(px(8.))
-            .hover(|el| el.bg(rgba(theme::SURFACE_RAISED | 0xFF)))
-            .child(
-                div()
-                    .w(px(40.))
-                    .flex_none()
-                    .pt(px(1.))
-                    .text_size(px(13.))
-                    .text_color(rgba(theme::TEXT_FAINT | 0xFF))
-                    .child(time),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_size(px(15.))
-                    .line_height(relative(1.5))
-                    .line_clamp(2)
-                    .child(text),
-            )
-            .child(
-                div()
-                    .id(("copy", ix))
-                    .size(px(28.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(6.))
-                    .text_color(if copied {
-                        rgba(theme::SIGNAL_MAGENTA | 0xFF)
-                    } else {
-                        rgba(theme::TEXT_FAINT | 0xFF)
-                    })
-                    .hover(|el| {
-                        el.bg(rgba(theme::HAIRLINE | 0x22))
-                            .text_color(rgba(theme::TEXT_PRIMARY | 0xFF))
-                    })
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
-                        view.copied = Some(ix);
-                        cx.notify();
-                        cx.spawn(async move |view, cx| {
-                            cx.background_executor()
-                                .timer(std::time::Duration::from_millis(1500))
-                                .await;
-                            let _ = view.update(cx, |view: &mut Self, cx| {
-                                if view.copied == Some(ix) {
-                                    view.copied = None;
-                                    cx.notify();
-                                }
-                            });
-                        })
-                        .detach();
-                    }))
-                    .child(Icon::new(if copied { IconName::Check } else { IconName::Copy }).small()),
-            )
-    }
-
-    fn history_empty(text: &'static str) -> gpui::AnyElement {
-        v_flex()
-            .size_full()
-            .items_center()
-            .justify_center()
-            .text_size(px(15.))
-            .text_color(rgba(theme::TEXT_DIM | 0xFF))
-            .child(text)
-            .into_any_element()
-    }
-
     fn history_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let query = self
-            .history_search
-            .read(cx)
-            .value()
-            .trim()
-            .to_lowercase();
-        let visible: Vec<usize> = (0..self.history.len())
-            .filter(|&ix| {
-                let entry = &self.history[ix];
-                query.is_empty()
-                    || entry.polished.to_lowercase().contains(&query)
-                    || entry.raw.to_lowercase().contains(&query)
-            })
-            .collect();
-
-        let mut items: Vec<gpui::AnyElement> = Vec::new();
-        let mut last_day: Option<Option<NaiveDate>> = None;
-        for ix in visible {
-            let day = local_day(&self.history[ix].at);
-            if last_day != Some(day) {
-                let first = items.is_empty();
-                items.push(Self::day_header(day_label(day), first, cx).into_any_element());
-                last_day = Some(day);
-            }
-            items.push(self.history_row(ix, cx).into_any_element());
-        }
-
-        let body = if self.history.is_empty() {
-            Self::history_empty("No dictations yet")
-        } else if items.is_empty() {
-            Self::history_empty("No matches")
-        } else {
-            v_flex().gap(px(6.)).children(items).into_any_element()
+        let count = self.history_list.read(cx).delegate().entries.len();
+        let placeholder = match count {
+            1 => "Search 1 dictation".to_string(),
+            n => format!("Search {n} dictations"),
         };
-
-        v_flex()
+        div()
             .size_full()
-            .gap(px(20.))
-            .child(Input::new(&self.history_search).large().cleanable(true))
-            .child(
-                div()
-                    .id("history-list")
-                    .flex_1()
-                    .min_h_0()
-                    // Bleed for the row hover pills; their text column stays
-                    // aligned with the search well.
-                    .mx(px(-14.))
-                    .overflow_y_scroll()
-                    .child(body),
-            )
+            .child(List::new(&self.history_list).search_placeholder(placeholder))
     }
 }
 
