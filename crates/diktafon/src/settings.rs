@@ -741,7 +741,7 @@ impl SettingsWindow {
                     .border_color(rgba(theme::HAIRLINE | 0x44))
                     .text_size(px(13.))
                     .text_color(cx.theme().muted_foreground)
-                    .child("Press new keys, Esc keeps the old")
+                    .child("Press new keys")
                     .into_any_element()
             } else {
                 Self::keycaps(Self::hotkey_caps(&self.hotkey)).into_any_element()
