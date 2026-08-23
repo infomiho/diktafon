@@ -221,6 +221,7 @@ pub struct SettingsWindow {
     idle_values: Vec<u64>,
     /// Loaded asynchronously: the SMAppService query is a blocking XPC call.
     autostart: bool,
+    sound_cues: bool,
     /// Cached at open: reading it does file IO and must not run per render.
     daemon_status: DaemonStatus,
     /// Reloaded when the History section is entered.
@@ -422,6 +423,7 @@ impl SettingsWindow {
             idle_select,
             idle_values,
             autostart: false,
+            sound_cues: current.sound_cues,
             daemon_status: statusbar::daemon_status(),
             history,
             history_search,
@@ -462,6 +464,7 @@ impl SettingsWindow {
                 control_line
             },
             idle_unload_secs,
+            sound_cues: self.sound_cues,
         };
         if let Err(e) = updated.save() {
             eprintln!("saving settings failed: {e:#}");
@@ -607,6 +610,19 @@ impl SettingsWindow {
                     .on_click(
                         cx.listener(|view, checked: &bool, _, cx| view.set_autostart(*checked, cx)),
                     ),
+                cx,
+            ))
+            .child(Self::control_row(
+                "Sound cues",
+                "A cue when the mic goes live, and on cancel or error",
+                Switch::new("sound-cues")
+                    .large()
+                    .checked(self.sound_cues)
+                    .on_click(cx.listener(|view, checked: &bool, _, cx| {
+                        view.sound_cues = *checked;
+                        view.save(cx);
+                        cx.notify();
+                    })),
                 cx,
             ))
             .child(Self::control_row(

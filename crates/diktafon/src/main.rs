@@ -307,7 +307,9 @@ fn control_loop(
         }
     };
     let play = |cue| {
-        if let Some(sounds) = &sounds {
+        if settings.lock().unwrap().sound_cues
+            && let Some(sounds) = &sounds
+        {
             sounds.play(cue);
         }
     };

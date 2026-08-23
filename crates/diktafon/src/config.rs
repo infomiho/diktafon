@@ -56,6 +56,8 @@ pub struct SessionSettings {
     /// Seconds of daemon idleness before the models are unloaded; passed as
     /// DIKTAFOND_IDLE_SECS when the client spawns the daemon.
     pub idle_unload_secs: u64,
+    /// Audible cues: mic live, cancel, error.
+    pub sound_cues: bool,
 }
 
 impl Default for SessionSettings {
@@ -64,6 +66,7 @@ impl Default for SessionSettings {
             language: CONFIG.language.into(),
             control_line: CONFIG.control_line.into(),
             idle_unload_secs: 300,
+            sound_cues: true,
         }
     }
 }
