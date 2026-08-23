@@ -315,7 +315,15 @@ impl SettingsWindow {
         cx.on_focus_out(&hotkey_focus, window, |view, _, _, cx| {
             if view.capturing_hotkey {
                 view.capturing_hotkey = false;
+                cx.global::<crate::AppServices>().hotkey.resume();
                 cx.notify();
+            }
+        })
+        .detach();
+        // Closing the window mid-capture must not leave the hotkey suspended.
+        cx.on_release(|view: &mut Self, cx| {
+            if view.capturing_hotkey {
+                cx.global::<crate::AppServices>().hotkey.resume();
             }
         })
         .detach();
@@ -680,6 +688,7 @@ impl SettingsWindow {
         let mods = keystroke.modifiers;
         if keystroke.key == "escape" && !mods.modified() {
             self.capturing_hotkey = false;
+            cx.global::<crate::AppServices>().hotkey.resume();
             self.focus_handle.focus(window, cx);
             cx.notify();
             return;
@@ -705,7 +714,7 @@ impl SettingsWindow {
         let Some(hotkey) = crate::config::parse_hotkey(&candidate) else {
             return;
         };
-        match cx.global::<crate::AppServices>().hotkey.rebind(hotkey) {
+        match cx.global::<crate::AppServices>().hotkey.commit(hotkey) {
             Ok(()) => {
                 self.hotkey = candidate;
                 self.capturing_hotkey = false;
@@ -726,6 +735,7 @@ impl SettingsWindow {
             .when(!capturing, |el| {
                 el.on_click(cx.listener(|view, _, window, cx| {
                     view.capturing_hotkey = true;
+                    cx.global::<crate::AppServices>().hotkey.suspend();
                     view.hotkey_focus.focus(window, cx);
                     cx.notify();
                 }))

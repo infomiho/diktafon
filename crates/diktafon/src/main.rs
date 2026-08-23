@@ -92,15 +92,26 @@ struct HotkeyRebind {
 }
 
 impl HotkeyRebind {
-    fn rebind(&self, new: HotKey) -> anyhow::Result<()> {
-        let old = self.current.get();
-        if new.id() == old.id() {
-            return Ok(());
+    /// Unregister the chord while a new one is recorded, so pressing the
+    /// current hotkey during capture cannot start a dictation.
+    fn suspend(&self) {
+        if let Err(e) = self.manager.unregister(self.current.get()) {
+            eprintln!("suspending hotkey failed: {e}");
         }
-        self.manager.unregister(old)?;
+    }
+
+    /// Re-register the unchanged chord after a cancelled capture.
+    fn resume(&self) {
+        if let Err(e) = self.manager.register(self.current.get()) {
+            eprintln!("resuming hotkey failed: {e}");
+        }
+    }
+
+    /// Register the captured chord (the old one is suspended); falls back to
+    /// the old chord so a failed registration never leaves the app keyless.
+    fn commit(&self, new: HotKey) -> anyhow::Result<()> {
         if let Err(e) = self.manager.register(new) {
-            // Keep a working hotkey over the failed new one.
-            let _ = self.manager.register(old);
+            self.resume();
             return Err(e.into());
         }
         self.current.set(new);
