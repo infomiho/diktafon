@@ -83,12 +83,39 @@ pub(crate) fn daemon_bin() -> Option<PathBuf> {
 
 /// App-scoped GPUI state (cadence's AppServices pattern); keeps the entities
 /// alive for windows to consume later.
+/// Swaps the push-to-talk registration live: main thread only, where the
+/// Carbon manager lives. The control loop follows via the shared id.
+struct HotkeyRebind {
+    manager: std::rc::Rc<GlobalHotKeyManager>,
+    current: std::cell::Cell<HotKey>,
+    record_id: Arc<AtomicU32>,
+}
+
+impl HotkeyRebind {
+    fn rebind(&self, new: HotKey) -> anyhow::Result<()> {
+        let old = self.current.get();
+        if new.id() == old.id() {
+            return Ok(());
+        }
+        self.manager.unregister(old)?;
+        if let Err(e) = self.manager.register(new) {
+            // Keep a working hotkey over the failed new one.
+            let _ = self.manager.register(old);
+            return Err(e.into());
+        }
+        self.current.set(new);
+        self.record_id.store(new.id(), Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 struct AppServices {
     #[expect(
         dead_code,
         reason = "keeps the entity alive; windows receive their own clones"
     )]
     dictation: Entity<Dictation>,
+    hotkey: HotkeyRebind,
 }
 
 impl Global for AppServices {}
@@ -123,8 +150,11 @@ fn main() -> Result<()> {
     let recorder = Recorder::new(ensure_vad_model()?, levels.clone())?;
     println!("Mic: {}", recorder.describe());
 
-    let manager = GlobalHotKeyManager::new().context("registering global hotkey manager")?;
-    let record_key = config::CONFIG.hotkey();
+    let session_settings = Arc::new(std::sync::Mutex::new(config::SessionSettings::load()));
+
+    let manager =
+        std::rc::Rc::new(GlobalHotKeyManager::new().context("registering global hotkey manager")?);
+    let record_key = session_settings.lock().unwrap().hotkey();
     // Registered only while a session is live, so Escape works normally
     // otherwise; see the phase observer below.
     let escape_key = HotKey::new(None, Code::Escape);
@@ -183,11 +213,10 @@ fn main() -> Result<()> {
         });
     }
 
-    let session_settings = Arc::new(std::sync::Mutex::new(config::SessionSettings::load()));
-
     let (event_tx, event_rx) = mpsc::channel::<GlobalHotKeyEvent>();
+    let record_id = Arc::new(AtomicU32::new(record_key.id()));
     let hotkeys = Hotkeys {
-        record: record_key.id(),
+        record: record_id.clone(),
         escape: escape_key.id(),
     };
     // Resolved on the main thread (TIS requirement) and refreshed at each
@@ -232,6 +261,7 @@ fn main() -> Result<()> {
             ]);
             permissions::check_at_launch();
             let dictation = Dictation::spawn(cx, phase_rx);
+            let escape_manager = manager.clone();
             // The Carbon hotkey manager lives on this thread; register Escape
             // only while a session could still be cancelled.
             let mut escape_registered = false;
@@ -249,9 +279,9 @@ fn main() -> Result<()> {
                 );
                 if cancellable != escape_registered {
                     let result = if cancellable {
-                        manager.register(escape_key)
+                        escape_manager.register(escape_key)
                     } else {
-                        manager.unregister(escape_key)
+                        escape_manager.unregister(escape_key)
                     };
                     match result {
                         Ok(()) => escape_registered = cancellable,
@@ -262,8 +292,18 @@ fn main() -> Result<()> {
             .detach();
             pill::manage(cx, dictation.clone(), levels);
             statusbar::install(cx, &dictation, session_settings.clone());
-            cx.set_global(AppServices { dictation });
-            println!("Ready. Hold Option+Space to dictate, release to paste.");
+            cx.set_global(AppServices {
+                dictation,
+                hotkey: HotkeyRebind {
+                    manager,
+                    current: std::cell::Cell::new(record_key),
+                    record_id,
+                },
+            });
+            println!(
+                "Ready. Hold {} to dictate, release to paste.",
+                session_settings.lock().unwrap().hotkey
+            );
         });
     Ok(())
 }
@@ -285,7 +325,8 @@ const MIC_READY_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// Hotkey ids as seen in `GlobalHotKeyEvent`s.
 struct Hotkeys {
-    record: u32,
+    /// Repointed by [`HotkeyRebind`] when the user records a new chord.
+    record: Arc<AtomicU32>,
     escape: u32,
 }
 
@@ -329,7 +370,7 @@ fn control_loop(
             }
             continue;
         }
-        if event.id != hotkeys.record {
+        if event.id != hotkeys.record.load(Ordering::Relaxed) {
             continue;
         }
         match event.state {

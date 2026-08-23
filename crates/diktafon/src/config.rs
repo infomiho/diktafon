@@ -45,6 +45,16 @@ impl Config {
     }
 }
 
+/// `None` unless the string is a valid chord with at least one modifier: a
+/// bare key would fire on normal typing.
+pub fn parse_hotkey(s: &str) -> Option<HotKey> {
+    let hotkey = HotKey::try_from(s).ok()?;
+    if hotkey.mods.is_empty() {
+        return None;
+    }
+    Some(hotkey)
+}
+
 /// The user-editable subset, persisted as `config.json` in the data dir and
 /// edited live from the settings window; the compile-time [`CONFIG`] provides
 /// the defaults.
@@ -58,6 +68,8 @@ pub struct SessionSettings {
     pub idle_unload_secs: u64,
     /// Audible cues: mic live, cancel, error.
     pub sound_cues: bool,
+    /// Push-to-talk chord in global-hotkey syntax, e.g. "alt+space".
+    pub hotkey: String,
 }
 
 impl Default for SessionSettings {
@@ -67,6 +79,7 @@ impl Default for SessionSettings {
             control_line: CONFIG.control_line.into(),
             idle_unload_secs: 300,
             sound_cues: true,
+            hotkey: "alt+space".into(),
         }
     }
 }
@@ -93,10 +106,41 @@ impl SessionSettings {
         Ok(())
     }
 
+    /// The push-to-talk chord; an unparseable or modifier-less string falls
+    /// back to the compile-time default.
+    pub fn hotkey(&self) -> HotKey {
+        parse_hotkey(&self.hotkey).unwrap_or_else(|| CONFIG.hotkey())
+    }
+
     pub fn session(&self) -> SessionConfig {
         SessionConfig {
             language: self.language.clone(),
             control_line: self.control_line.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hotkey_strings_parse_and_bare_keys_are_rejected() {
+        assert_eq!(
+            parse_hotkey("alt+space").unwrap().id(),
+            CONFIG.hotkey().id()
+        );
+        assert!(parse_hotkey("ctrl+shift+a").is_some());
+        assert!(parse_hotkey("cmd+f5").is_some());
+        assert!(parse_hotkey("space").is_none());
+        assert!(parse_hotkey("alt+nonsense").is_none());
+        assert!(parse_hotkey("").is_none());
+    }
+
+    #[test]
+    fn settings_hotkey_falls_back_to_default() {
+        let mut settings = SessionSettings::default();
+        settings.hotkey = "garbage".into();
+        assert_eq!(settings.hotkey().id(), CONFIG.hotkey().id());
     }
 }

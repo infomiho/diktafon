@@ -222,6 +222,11 @@ pub struct SettingsWindow {
     /// Loaded asynchronously: the SMAppService query is a blocking XPC call.
     autostart: bool,
     sound_cues: bool,
+    /// The push-to-talk chord, in global-hotkey syntax.
+    hotkey: String,
+    /// True while the hotkey control waits for the user to press a new chord.
+    capturing_hotkey: bool,
+    hotkey_focus: gpui::FocusHandle,
     /// Cached at open: reading it does file IO and must not run per render.
     daemon_status: DaemonStatus,
     /// Reloaded when the History section is entered.
@@ -424,6 +429,9 @@ impl SettingsWindow {
             idle_values,
             autostart: false,
             sound_cues: current.sound_cues,
+            hotkey: current.hotkey.clone(),
+            capturing_hotkey: false,
+            hotkey_focus: cx.focus_handle(),
             daemon_status: statusbar::daemon_status(),
             history,
             history_search,
@@ -465,6 +473,7 @@ impl SettingsWindow {
             },
             idle_unload_secs,
             sound_cues: self.sound_cues,
+            hotkey: self.hotkey.clone(),
         };
         if let Err(e) = updated.save() {
             eprintln!("saving settings failed: {e:#}");
@@ -578,8 +587,8 @@ impl SettingsWindow {
     }
 
     /// The hotkey as keycap chips.
-    fn keycaps(keys: &'static [&'static str]) -> impl IntoElement {
-        h_flex().gap_1p5().children(keys.iter().map(|key| {
+    fn keycaps(keys: Vec<String>) -> impl IntoElement {
+        h_flex().gap_1p5().children(keys.into_iter().map(|key| {
             div()
                 .h(px(28.))
                 .min_w(px(28.))
@@ -594,7 +603,7 @@ impl SettingsWindow {
                 .border_color(rgba(theme::HAIRLINE | 0x22))
                 .text_size(px(13.))
                 .font_medium()
-                .child(*key)
+                .child(key)
         }))
     }
 
@@ -627,10 +636,116 @@ impl SettingsWindow {
             ))
             .child(Self::control_row(
                 "Hotkey",
-                "Hold to dictate, release to paste",
-                Self::keycaps(&["⌥", "Space"]),
+                "Hold to dictate, release to paste; click to change",
+                self.hotkey_control(cx),
                 cx,
             ))
+    }
+
+    /// One keycap label per chord token: modifier symbols, title-cased keys.
+    fn hotkey_caps(hotkey: &str) -> Vec<String> {
+        hotkey
+            .split('+')
+            .map(|token| match token.to_lowercase().as_str() {
+                "alt" | "option" => "⌥".to_string(),
+                "cmd" | "command" | "super" => "⌘".to_string(),
+                "ctrl" | "control" => "⌃".to_string(),
+                "shift" => "⇧".to_string(),
+                key => {
+                    let mut chars = key.chars();
+                    match chars.next() {
+                        Some(first) => first.to_uppercase().chain(chars).collect(),
+                        None => String::new(),
+                    }
+                }
+            })
+            .collect()
+    }
+
+    fn capture_hotkey(
+        &mut self,
+        keystroke: &gpui::Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mods = keystroke.modifiers;
+        if keystroke.key == "escape" && !mods.modified() {
+            self.capturing_hotkey = false;
+            self.focus_handle.focus(window, cx);
+            cx.notify();
+            return;
+        }
+        let mut parts: Vec<&str> = Vec::new();
+        if mods.control {
+            parts.push("ctrl");
+        }
+        if mods.alt {
+            parts.push("alt");
+        }
+        if mods.shift {
+            parts.push("shift");
+        }
+        if mods.platform {
+            parts.push("cmd");
+        }
+        if parts.is_empty() {
+            // A bare key would fire on normal typing; keep waiting.
+            return;
+        }
+        let candidate = format!("{}+{}", parts.join("+"), keystroke.key);
+        let Some(hotkey) = crate::config::parse_hotkey(&candidate) else {
+            return;
+        };
+        match cx.global::<crate::AppServices>().hotkey.rebind(hotkey) {
+            Ok(()) => {
+                self.hotkey = candidate;
+                self.capturing_hotkey = false;
+                self.save(cx);
+                self.focus_handle.focus(window, cx);
+                cx.notify();
+            }
+            Err(e) => eprintln!("hotkey rebind failed: {e:#}"),
+        }
+    }
+
+    fn hotkey_control(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let capturing = self.capturing_hotkey;
+        div()
+            .id("hotkey-capture")
+            .track_focus(&self.hotkey_focus)
+            .rounded_md()
+            .when(!capturing, |el| {
+                el.on_click(cx.listener(|view, _, window, cx| {
+                    view.capturing_hotkey = true;
+                    view.hotkey_focus.focus(window, cx);
+                    cx.notify();
+                }))
+            })
+            .when(capturing, |el| {
+                el.on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
+                    // The chord is being recorded, not typed: without this a
+                    // captured Cmd+W would also close the window.
+                    cx.stop_propagation();
+                    view.capture_hotkey(&event.keystroke, window, cx);
+                }))
+            })
+            .child(if capturing {
+                div()
+                    .h(px(28.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .rounded_md()
+                    .border_1()
+                    .border_dashed()
+                    .border_color(rgba(theme::HAIRLINE | 0x44))
+                    .text_size(px(13.))
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Press new keys, Esc keeps the old")
+                    .into_any_element()
+            } else {
+                Self::keycaps(Self::hotkey_caps(&self.hotkey)).into_any_element()
+            })
     }
 
     /// The one form recipe every pane shares, so the kit's field labels
