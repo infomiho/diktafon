@@ -734,8 +734,14 @@ impl SettingsWindow {
             .rounded_md()
             .when(!capturing, |el| {
                 el.on_click(cx.listener(|view, _, window, cx| {
+                    let services = cx.global::<crate::AppServices>();
+                    // Unregistering a chord that is currently held would
+                    // swallow its release and strand the session.
+                    if services.dictation.read(cx).phase != crate::dictation::Phase::Idle {
+                        return;
+                    }
+                    services.hotkey.suspend();
                     view.capturing_hotkey = true;
-                    cx.global::<crate::AppServices>().hotkey.suspend();
                     view.hotkey_focus.focus(window, cx);
                     cx.notify();
                 }))

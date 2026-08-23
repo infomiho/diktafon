@@ -121,10 +121,6 @@ impl HotkeyRebind {
 }
 
 struct AppServices {
-    #[expect(
-        dead_code,
-        reason = "keeps the entity alive; windows receive their own clones"
-    )]
     dictation: Entity<Dictation>,
     hotkey: HotkeyRebind,
 }
