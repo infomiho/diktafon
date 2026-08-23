@@ -15,7 +15,7 @@ use gpui::{
     relative, rems, rgba, size, Task,
 };
 use gpui_component::form::{Form, field, v_form};
-use gpui_component::input::{InputEvent, Textarea, TextareaState};
+use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use gpui_component::label::Label;
 use gpui_component::searchable_list::SearchableVec;
@@ -151,14 +151,13 @@ fn local_time(at: &str) -> String {
 }
 
 /// The dictation list behind the kit's `List`: days are sections, entries are
-/// rows. Clicking a row (or pressing Enter) copies its polished text.
+/// rows, and each row's copy button puts its polished text on the clipboard.
 struct HistoryDelegate {
     /// Everything shown, newest first.
     entries: Vec<HistoryEntry>,
     /// The filtered view: one `(day label, entry indices)` per section.
     days: Vec<(String, Vec<usize>)>,
     query: String,
-    selected: Option<IndexPath>,
     /// Entry whose text was just copied; drives the brief check-mark flash.
     copied: Option<usize>,
 }
@@ -169,7 +168,6 @@ impl HistoryDelegate {
             entries: load_history(),
             days: Vec::new(),
             query: String::new(),
-            selected: None,
             copied: None,
         };
         delegate.regroup();
@@ -250,11 +248,12 @@ impl ListDelegate for HistoryDelegate {
         &mut self,
         ix: IndexPath,
         _: &mut Window,
-        _: &mut Context<ListState<Self>>,
+        cx: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item> {
         let entry_ix = self.entry_index(ix)?;
         let entry = self.entries.get(entry_ix)?;
         let copied = self.copied == Some(entry_ix);
+        let copy_text = entry.polished.clone();
         Some(
             ListItem::new(("dictation", entry_ix))
                 .px(px(10.))
@@ -289,16 +288,41 @@ impl ListDelegate for HistoryDelegate {
                         )
                         .child(
                             div()
+                                .id(("copy", entry_ix))
                                 .size(px(28.))
                                 .flex_none()
                                 .flex()
                                 .items_center()
                                 .justify_center()
+                                .rounded(px(6.))
                                 .text_color(if copied {
                                     rgba(theme::SIGNAL_MAGENTA | 0xFF)
                                 } else {
                                     rgba(theme::TEXT_FAINT | 0xFF)
                                 })
+                                .hover(|el| {
+                                    el.bg(rgba(theme::HAIRLINE | 0x22))
+                                        .text_color(rgba(theme::TEXT_PRIMARY | 0xFF))
+                                })
+                                .on_click(cx.listener(move |state, _, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        copy_text.clone(),
+                                    ));
+                                    state.delegate_mut().copied = Some(entry_ix);
+                                    cx.notify();
+                                    cx.spawn(async move |state, cx| {
+                                        cx.background_executor()
+                                            .timer(std::time::Duration::from_millis(1500))
+                                            .await;
+                                        let _ = state.update(cx, |state, cx| {
+                                            if state.delegate().copied == Some(entry_ix) {
+                                                state.delegate_mut().copied = None;
+                                                cx.notify();
+                                            }
+                                        });
+                                    })
+                                    .detach();
+                                }))
                                 .child(
                                     Icon::new(if copied {
                                         IconName::Check
@@ -312,37 +336,13 @@ impl ListDelegate for HistoryDelegate {
         )
     }
 
+    // Required by the trait; the list is not selectable.
     fn set_selected_index(
         &mut self,
-        ix: Option<IndexPath>,
+        _: Option<IndexPath>,
         _: &mut Window,
         _: &mut Context<ListState<Self>>,
     ) {
-        self.selected = ix;
-    }
-
-    fn confirm(&mut self, _secondary: bool, _: &mut Window, cx: &mut Context<ListState<Self>>) {
-        let Some(entry_ix) = self.selected.and_then(|ix| self.entry_index(ix)) else {
-            return;
-        };
-        let Some(entry) = self.entries.get(entry_ix) else {
-            return;
-        };
-        cx.write_to_clipboard(ClipboardItem::new_string(entry.polished.clone()));
-        self.copied = Some(entry_ix);
-        cx.notify();
-        cx.spawn(async move |state, cx| {
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(1500))
-                .await;
-            let _ = state.update(cx, |state, cx| {
-                if state.delegate().copied == Some(entry_ix) {
-                    state.delegate_mut().copied = None;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
     }
 
     fn render_empty(
@@ -385,6 +385,9 @@ pub struct SettingsWindow {
     /// The day-grouped dictation list; reloaded when the History section is
     /// entered.
     history_list: Entity<ListState<HistoryDelegate>>,
+    /// The design's search well; drives the list's filter. The kit list's
+    /// embedded query input is not used, it looks nothing like the mock.
+    history_search: Entity<InputState>,
     /// Keeps the window on the action dispatch path, so the global Cmd+W
     /// binding reaches the CloseWindow handler even with no control focused.
     focus_handle: gpui::FocusHandle,
@@ -463,8 +466,15 @@ impl SettingsWindow {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
 
-        let history_list =
-            cx.new(|cx| ListState::new(HistoryDelegate::new(), window, cx).searchable(true));
+        let history_list = cx.new(|cx| ListState::new(HistoryDelegate::new(), window, cx).selectable(false));
+        let history_search = cx.new(|cx| {
+            let count = history_list.read(cx).delegate().entries.len();
+            let placeholder = match count {
+                1 => "Search 1 dictation".to_string(),
+                n => format!("Search {n} dictations"),
+            };
+            InputState::new(window, cx).placeholder(placeholder)
+        });
 
         let control_input = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -544,6 +554,17 @@ impl SettingsWindow {
             }
         })
         .detach();
+        cx.subscribe(&history_search, |view, input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                let query = input.read(cx).value().trim().to_lowercase();
+                view.history_list.update(cx, |list, cx| {
+                    list.delegate_mut().query = query;
+                    list.delegate_mut().regroup();
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
         cx.subscribe(
             &language_select,
             |view, _, event: &SelectEvent<SearchableVec<SharedString>>, cx| {
@@ -572,6 +593,7 @@ impl SettingsWindow {
             autostart: false,
             daemon_status: statusbar::daemon_status(),
             history_list,
+            history_search,
             focus_handle,
         }
     }
@@ -872,15 +894,12 @@ impl SettingsWindow {
             .child(Self::form().child(field().label("Daemon").child(self.daemon_card(cx))))
     }
 
-    fn history_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let count = self.history_list.read(cx).delegate().entries.len();
-        let placeholder = match count {
-            1 => "Search 1 dictation".to_string(),
-            n => format!("Search {n} dictations"),
-        };
-        div()
+    fn history_pane(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
             .size_full()
-            .child(List::new(&self.history_list).search_placeholder(placeholder))
+            .gap(px(20.))
+            .child(Input::new(&self.history_search).large().cleanable(true))
+            .child(div().flex_1().min_h_0().child(List::new(&self.history_list)))
     }
 }
 
