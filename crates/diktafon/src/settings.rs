@@ -12,12 +12,12 @@ use diktafon_protocol::HistoryEntry;
 use gpui::{
     App, AppContext, Bounds, ClipboardItem, Context, Entity, ParentElement, Render, SharedString,
     TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px,
-    relative, rems, rgba, size, Task,
+    relative, rems, rgba, size,
 };
 use gpui_component::form::{Form, field, v_form};
 use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use gpui_component::label::Label;
+use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use gpui_component::searchable_list::SearchableVec;
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::switch::Switch;
@@ -144,6 +144,13 @@ fn day_label(day: Option<NaiveDate>) -> String {
     }
 }
 
+fn search_placeholder(count: usize) -> String {
+    match count {
+        1 => "Search 1 dictation".to_string(),
+        n => format!("Search {n} dictations"),
+    }
+}
+
 fn local_time(at: &str) -> String {
     chrono::DateTime::parse_from_rfc3339(at)
         .map(|t| t.with_timezone(&Local).format("%H:%M").to_string())
@@ -176,6 +183,8 @@ impl HistoryDelegate {
 
     fn reload(&mut self) {
         self.entries = load_history();
+        // An index into the old entries would flash the wrong row.
+        self.copied = None;
         self.regroup();
     }
 
@@ -203,18 +212,6 @@ impl HistoryDelegate {
 
 impl ListDelegate for HistoryDelegate {
     type Item = ListItem;
-
-    fn perform_search(
-        &mut self,
-        query: &str,
-        _: &mut Window,
-        cx: &mut Context<ListState<Self>>,
-    ) -> Task<()> {
-        self.query = query.trim().to_lowercase();
-        self.regroup();
-        cx.notify();
-        Task::ready(())
-    }
 
     fn sections_count(&self, _: &App) -> usize {
         self.days.len().max(1)
@@ -466,14 +463,11 @@ impl SettingsWindow {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
 
-        let history_list = cx.new(|cx| ListState::new(HistoryDelegate::new(), window, cx).selectable(false));
+        let history_list =
+            cx.new(|cx| ListState::new(HistoryDelegate::new(), window, cx).selectable(false));
         let history_search = cx.new(|cx| {
             let count = history_list.read(cx).delegate().entries.len();
-            let placeholder = match count {
-                1 => "Search 1 dictation".to_string(),
-                n => format!("Search {n} dictations"),
-            };
-            InputState::new(window, cx).placeholder(placeholder)
+            InputState::new(window, cx).placeholder(search_placeholder(count))
         });
 
         let control_input = cx.new(|cx| {
@@ -700,15 +694,18 @@ impl SettingsWindow {
                 let hover_bg = theme.sidebar_accent.opacity(0.5);
                 move |el| el.hover(move |el| el.bg(hover_bg))
             })
-            .on_click(cx.listener(move |view, _, _, cx| {
+            .on_click(cx.listener(move |view, _, window, cx| {
                 // Dictations land while the window is open; entering the
                 // pane rereads them.
                 if entry == Section::History {
-                    view.history_list
-                        .update(cx, |list, cx| {
-                            list.delegate_mut().reload();
-                            cx.notify();
-                        });
+                    view.history_list.update(cx, |list, cx| {
+                        list.delegate_mut().reload();
+                        cx.notify();
+                    });
+                    let count = view.history_list.read(cx).delegate().entries.len();
+                    view.history_search.update(cx, |input, cx| {
+                        input.set_placeholder(search_placeholder(count), window, cx);
+                    });
                 }
                 view.section = entry;
                 cx.notify();
@@ -731,11 +728,14 @@ impl SettingsWindow {
             .gap_6()
             .py_1()
             .child(
-                v_flex().gap_1p5().child(Label::new(label).font_medium()).child(
-                    Label::new(description)
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground),
-                ),
+                v_flex()
+                    .gap_1p5()
+                    .child(Label::new(label).font_medium())
+                    .child(
+                        Label::new(description)
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground),
+                    ),
             )
             .child(control)
     }
@@ -899,7 +899,12 @@ impl SettingsWindow {
             .size_full()
             .gap(px(20.))
             .child(Input::new(&self.history_search).large().cleanable(true))
-            .child(div().flex_1().min_h_0().child(List::new(&self.history_list)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(List::new(&self.history_list)),
+            )
     }
 }
 
