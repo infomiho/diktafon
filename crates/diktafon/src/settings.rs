@@ -470,7 +470,6 @@ impl SettingsWindow {
             .px_3()
             .gap_3()
             .rounded_lg()
-            .cursor_pointer()
             .text_color(if active {
                 theme.sidebar_accent_foreground
             } else {
@@ -689,6 +688,9 @@ impl SettingsWindow {
         let copy_text = entry.polished.clone();
         let copied = self.copied == Some(ix);
         h_flex()
+            // Without an id gpui never repaints on hover change; the highlight
+            // would lag until the next unrelated frame.
+            .id(ix)
             .items_start()
             .gap(px(14.))
             .px(px(14.))
@@ -722,7 +724,6 @@ impl SettingsWindow {
                     .items_center()
                     .justify_center()
                     .rounded(px(6.))
-                    .cursor_pointer()
                     .text_color(if copied {
                         rgba(theme::SIGNAL_MAGENTA | 0xFF)
                     } else {
@@ -809,9 +810,8 @@ impl SettingsWindow {
                     .id("history-list")
                     .flex_1()
                     .min_h_0()
-                    // Rows pad 14px past the text column so the hover pill
-                    // has bleed, mirroring the pane edge alignment of the
-                    // search well above.
+                    // Bleed for the row hover pills; their text column stays
+                    // aligned with the search well.
                     .mx(px(-14.))
                     .overflow_y_scroll()
                     .child(body),
