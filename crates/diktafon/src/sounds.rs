@@ -17,14 +17,15 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
 use std::io::Cursor;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Opening the microphone makes macOS switch a shared Bluetooth headset to
-/// call mode, measured at ~145ms on AirPods Pro. Audio played mid-switch comes
-/// out broken, so the start cue waits for it; the wait runs on the playback
-/// thread and never delays the dictation itself.
-const ROUTE_SWITCH: Duration = Duration::from_millis(400);
-const ROUTE_POLL: Duration = Duration::from_millis(20);
+/// call mode. The reported output format flips ~145ms in, but that is not the
+/// all-clear: playback is still broken at 200ms and only comes out clean from
+/// ~500ms (bisected on AirPods Pro, with the same file through afplay as the
+/// control). The cue waits that out on its own thread, so the dictation it
+/// announces is never delayed, only the sound is.
+const ROUTE_SETTLE: Duration = Duration::from_millis(550);
 
 fn output_rate() -> Option<(String, u32)> {
     let device = cpal::default_host().default_output_device()?;
@@ -42,26 +43,17 @@ fn input_rate() -> Option<(String, u32)> {
     ))
 }
 
-/// A switch is pending only while the shared device still runs its output
-/// faster than its input; once in call mode the rates match and this returns
-/// immediately.
-fn await_route_settled() {
+/// True when the microphone and the speakers are the same device and its
+/// output is still running faster than its input, which is exactly the window
+/// where opening the input drags the headset into call mode. Separate devices
+/// (built-in mic and speakers) and a headset already in call mode both report
+/// false, so neither pays the wait.
+fn route_switch_pending() -> bool {
     let (Some((out_name, out_rate)), Some((in_name, in_rate))) = (output_rate(), input_rate())
     else {
-        return;
+        return false;
     };
-    if out_name != in_name || out_rate <= in_rate {
-        return;
-    }
-    let deadline = Instant::now() + ROUTE_SWITCH;
-    while Instant::now() < deadline {
-        std::thread::sleep(ROUTE_POLL);
-        if output_rate().is_some_and(|(_, rate)| rate != out_rate) {
-            // The format flipped; give the device a beat to stabilise.
-            std::thread::sleep(ROUTE_POLL);
-            return;
-        }
-    }
+    out_name == in_name && out_rate > in_rate
 }
 
 pub enum Cue {
@@ -121,10 +113,11 @@ impl Sounds {
             Cue::Cancel => self.cancel.clone(),
             Cue::Error => self.error.clone(),
         };
-        let wait_for_route = matches!(cue, Cue::Start);
+        // Only the start cue coincides with the microphone opening.
+        let settle = matches!(cue, Cue::Start) && route_switch_pending();
         std::thread::spawn(move || {
-            if wait_for_route {
-                await_route_settled();
+            if settle {
+                std::thread::sleep(ROUTE_SETTLE);
             }
             if let Err(e) = play_on_default_device(buffer) {
                 eprintln!("playing feedback sound failed: {e:#}");
