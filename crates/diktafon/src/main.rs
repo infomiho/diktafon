@@ -11,6 +11,7 @@ mod permissions;
 mod pill;
 mod settings;
 mod sounds;
+mod stats;
 mod statusbar;
 mod theme;
 mod transport;
@@ -145,6 +146,9 @@ fn main() -> Result<()> {
     }
     if args.first().is_some_and(|a| a == "--gen-mark") {
         return Ok(mark::write_assets()?);
+    }
+    if args.first().is_some_and(|a| a == "--stats") {
+        return stats::report();
     }
 
     let (phase_tx, phase_rx) = futures::channel::mpsc::unbounded::<PhaseEvent>();
@@ -369,11 +373,11 @@ fn control_loop(
             sounds.play(cue);
         }
     };
-    let mut session: Option<Session> = None;
+    let mut session: Option<(Session, SessionTiming)> = None;
     for event in events {
         if event.id == hotkeys.escape {
             if event.state == HotKeyState::Pressed
-                && let Some(s) = session.take()
+                && let Some((s, _)) = session.take()
             {
                 s.cancel();
                 play(sounds::Cue::Cancel);
@@ -391,6 +395,7 @@ fn control_loop(
         match event.state {
             HotKeyState::Pressed => {
                 if session.is_none() {
+                    let pressed_at = Instant::now();
                     let _ = daemon
                         .chunk_tx
                         .send(Msg::Start(settings.lock().unwrap().session()));
@@ -403,7 +408,11 @@ fn control_loop(
                             if s.wait_until_live(MIC_READY_TIMEOUT) {
                                 play(sounds::Cue::Start);
                                 println!("recording...");
-                                session = Some(s);
+                                let timing = SessionTiming {
+                                    pressed_at,
+                                    mic_ready_ms: pressed_at.elapsed().as_millis() as u64,
+                                };
+                                session = Some((s, timing));
                                 let _ = phases.unbounded_send(PhaseEvent::RecordingStarted);
                             } else {
                                 let error = "Microphone unavailable";
@@ -428,7 +437,7 @@ fn control_loop(
                 }
             }
             HotKeyState::Released => {
-                if let Some(s) = session.take() {
+                if let Some((s, timing)) = session.take() {
                     let stopped_at = Instant::now();
                     s.stop();
                     let _ = phases.unbounded_send(PhaseEvent::RecordingStopped);
@@ -456,11 +465,41 @@ fn control_loop(
                             (Some("Transcription failed".to_string()), false)
                         }
                     };
+                    let outcome = match (&error, cancelled) {
+                        (Some(_), _) => "error",
+                        (None, true) => "empty",
+                        (None, false) => "pasted",
+                    };
+                    // Consume the spawn marker either way so an old spawn can
+                    // never label a later session cold.
+                    let cold_start = daemon
+                        .spawned_at
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .is_some_and(|at| at >= timing.pressed_at);
+                    stats::append(&stats::Timing {
+                        at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                        mic_ready_ms: timing.mic_ready_ms,
+                        recording_secs: ((stopped_at - timing.pressed_at).as_secs_f32()
+                            - timing.mic_ready_ms as f32 / 1000.0)
+                            .max(0.0),
+                        stop_to_paste_ms: stopped_at.elapsed().as_millis() as u64,
+                        cold_start,
+                        outcome: outcome.into(),
+                    });
                     let _ = phases.unbounded_send(PhaseEvent::SessionEnded { error, cancelled });
                 }
             }
         }
     }
+}
+
+/// Per-session instants for the timings record; lives beside the session so a
+/// cancel discards both.
+struct SessionTiming {
+    pressed_at: Instant,
+    mic_ready_ms: u64,
 }
 
 #[cfg(test)]

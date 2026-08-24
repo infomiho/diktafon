@@ -46,6 +46,9 @@ enum SessionResult {
 /// `finish` surfaces the error.
 pub struct DaemonClient {
     pub chunk_tx: mpsc::Sender<Msg>,
+    /// When the transport last auto-spawned diktafond; a spawn inside a
+    /// session's window marks that session as a cold start in the timings.
+    pub spawned_at: Arc<Mutex<Option<Instant>>>,
     results_rx: mpsc::Receiver<SessionResult>,
     /// Results still owed by sessions whose `finish` timed out. Each `Flush`
     /// produces exactly one result in FIFO order, so this many must be
@@ -71,9 +74,14 @@ impl DaemonClient {
             pending_flushes: Mutex::new(0),
             phase_tx,
         });
-        thread::spawn(move || Transport::new(socket, daemon_bin, ledger).run(cmd_rx));
+        let spawned_at = Arc::new(Mutex::new(None));
+        let transport_spawned_at = spawned_at.clone();
+        thread::spawn(move || {
+            Transport::new(socket, daemon_bin, ledger, transport_spawned_at).run(cmd_rx)
+        });
         Self {
             chunk_tx,
+            spawned_at,
             results_rx,
             stale_results: Cell::new(0),
         }
@@ -272,10 +280,17 @@ struct Transport {
     /// mismatches, the spawn binary itself is stale and retiring again would
     /// churn forever.
     retired_mismatch: bool,
+    /// Mirrored to [`DaemonClient::spawned_at`] whenever a daemon is spawned.
+    spawned_at: Arc<Mutex<Option<Instant>>>,
 }
 
 impl Transport {
-    fn new(socket: PathBuf, daemon_bin: Option<PathBuf>, ledger: Arc<FlushLedger>) -> Self {
+    fn new(
+        socket: PathBuf,
+        daemon_bin: Option<PathBuf>,
+        ledger: Arc<FlushLedger>,
+        spawned_at: Arc<Mutex<Option<Instant>>>,
+    ) -> Self {
         Self {
             socket,
             ledger,
@@ -289,6 +304,7 @@ impl Transport {
             next_attempt: Instant::now(),
             dropped_chunks: 0,
             retired_mismatch: false,
+            spawned_at,
         }
     }
 
@@ -383,6 +399,7 @@ impl Transport {
         }
         if matches!(failure, ConnectFailure::NoDaemon(_)) && self.supervisor.try_spawn(&self.socket)
         {
+            *self.spawned_at.lock().unwrap() = Some(Instant::now());
             match self.wait_for_spawned_daemon() {
                 Some(stream) => return self.adopt(stream),
                 // The wait already printed why it gave up.
