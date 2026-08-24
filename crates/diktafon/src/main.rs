@@ -150,9 +150,6 @@ fn main() -> Result<()> {
     if args.first().is_some_and(|a| a == "--stats") {
         return stats::report();
     }
-    if args.first().is_some_and(|a| a == "--test-sound") {
-        return test_sound();
-    }
 
     let (phase_tx, phase_rx) = futures::channel::mpsc::unbounded::<PhaseEvent>();
     let daemon = DaemonClient::spawn(socket_path(), daemon_bin(), Some(phase_tx.clone()));
@@ -500,68 +497,6 @@ fn control_loop(
             }
         }
     }
-}
-
-/// `diktafon --test-sound`: play the start cue with the microphone closed,
-/// then again while it is open. Opening an input can force a Bluetooth
-/// headset into call mode, which degrades playback, so hearing the two cases
-/// apart says whether a broken cue is the file, the device, or the mic.
-fn test_sound() -> Result<()> {
-    // Queried at each stage: a Bluetooth headset switching to call mode
-    // changes the output device's own format, which is the mechanism that
-    // would wreck a cue played at that moment.
-    fn output_format() -> String {
-        use cpal::traits::{DeviceTrait, HostTrait};
-        let Some(device) = cpal::default_host().default_output_device() else {
-            return "no default output".into();
-        };
-        let name = device.name().unwrap_or_else(|_| "?".into());
-        match device.default_output_config() {
-            Ok(config) => format!(
-                "{name} ({} Hz, {} ch)",
-                config.sample_rate().0,
-                config.channels()
-            ),
-            Err(e) => format!("{name} (config unavailable: {e})"),
-        }
-    }
-
-    let sounds = sounds::Sounds::new().context("decoding cues")?;
-    println!("output: {}", sounds::Sounds::describe());
-
-    let asset = std::env::temp_dir().join("diktafon-start-cue.mp3");
-    std::fs::write(&asset, include_bytes!("../resources/sounds/start.mp3"))?;
-    let levels: capture::LevelBars = Default::default();
-    let mut recorder = Recorder::new(ensure_vad_model()?, levels)?;
-    println!("mic: {}", recorder.describe());
-
-    // Both rounds play at +200ms after the microphone opens, the point where
-    // our cue is known to break. If the system player breaks there too, the
-    // route simply cannot play then and waiting is the only fix; if it stays
-    // clean, the fault is our playback path.
-    for round in ["OURS", "SYSTEM afplay"] {
-        println!("Letting the headset return to music mode (20s)...");
-        thread::sleep(Duration::from_secs(20));
-        println!("{round} at +200ms after mic live. Listen.");
-        let (chunk_tx, chunk_rx) = mpsc::channel();
-        thread::spawn(move || while chunk_rx.recv().is_ok() {});
-        let session = recorder.start(chunk_tx)?;
-        session.wait_until_live(MIC_READY_TIMEOUT);
-        thread::sleep(Duration::from_millis(200));
-        if round == "OURS" {
-            sounds.play_now(sounds::Cue::Start);
-            thread::sleep(Duration::from_millis(1500));
-        } else {
-            let _ = std::process::Command::new("/usr/bin/afplay")
-                .arg(&asset)
-                .status();
-            thread::sleep(Duration::from_millis(500));
-        }
-        session.cancel();
-    }
-
-    println!("Did the system player sound broken too, or only ours?");
-    Ok(())
 }
 
 /// Per-session instants for the timings record; lives beside the session so a

@@ -14,7 +14,6 @@ gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "14359a0cd" }
 cpal = "0.16"
 futures = "0.3"
-rodio = "0.22"
 rustfft = "6"
 objc2 = "0.6"
 raw-window-handle = "0.6"
@@ -38,6 +37,7 @@ objc2-app-kit = { version = "0.3", features = [
     "NSAppearance",
     "NSWindow",
     "NSPanel",
+    "NSSound",
     "NSGraphics",
     "block2",
 ] }
