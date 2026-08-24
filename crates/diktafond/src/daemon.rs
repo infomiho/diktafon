@@ -155,7 +155,7 @@ fn start_up(
                 // as the user's dictations.
                 let history = std::env::var_os("DIKTAFOND_NO_HISTORY")
                     .is_none()
-                    .then(diktafon_protocol::history_path);
+                    .then(diktafon_protocol::history::path);
                 let inference = Inference::spawn(
                     &models_dir,
                     history,

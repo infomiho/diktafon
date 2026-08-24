@@ -265,12 +265,14 @@ impl Inference {
                         if let Some(history_path) = &history
                             && !raw.trim().is_empty()
                         {
-                            let mut entry = crate::history::entry_now(&raw, &text);
+                            let mut entry = diktafon_protocol::HistoryEntry::now(&raw, &text);
                             entry.chunks = chunks;
                             entry.audio_secs = audio_secs;
                             entry.asr_ms = asr_ms;
                             entry.polish_ms = polish_ms;
-                            if let Err(e) = crate::history::append(history_path, &entry) {
+                            if let Err(e) =
+                                diktafon_protocol::history::append_to(history_path, &entry)
+                            {
                                 eprintln!("recording history failed: {e:#}");
                             }
                         }

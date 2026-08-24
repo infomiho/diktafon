@@ -1861,7 +1861,9 @@ dependencies = [
  "anyhow",
  "bincode 2.0.1",
  "dirs",
+ "humantime",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

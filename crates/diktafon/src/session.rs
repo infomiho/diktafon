@@ -167,7 +167,7 @@ impl Dictations {
         };
 
         stats::append(&stats::Timing {
-            at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            at: diktafon_protocol::history::now_rfc3339(),
             mic_ready_ms: live.mic_ready_ms,
             recording_secs: recording_secs(live.pressed_at, live.mic_ready_ms, stopped_at),
             stop_to_paste_ms: stopped_at.elapsed().as_millis() as u64,

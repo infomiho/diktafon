@@ -5,7 +5,6 @@
 //! separate file preserves one writer per file.
 
 use anyhow::{Context, Result};
-use diktafon_protocol::HistoryEntry;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -58,7 +57,7 @@ fn try_append(timing: &Timing) -> Result<()> {
 /// and of the pipeline stages from the daemon's `history.jsonl`.
 pub fn report() -> Result<()> {
     let timings = read_timings();
-    let history = read_history();
+    let history = diktafon_protocol::history::read_all();
     if timings.is_empty() && history.is_empty() {
         println!("No data yet. Dictate a few times, then run --stats again.");
         return Ok(());
@@ -118,16 +117,6 @@ pub fn report() -> Result<()> {
 
 fn read_timings() -> Vec<Timing> {
     let Ok(content) = std::fs::read_to_string(timings_path()) else {
-        return Vec::new();
-    };
-    content
-        .lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect()
-}
-
-fn read_history() -> Vec<HistoryEntry> {
-    let Ok(content) = std::fs::read_to_string(diktafon_protocol::history_path()) else {
         return Vec::new();
     };
     content

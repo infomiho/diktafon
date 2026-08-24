@@ -106,19 +106,12 @@ impl Section {
 /// freshest entries are shown. The full file stays intact for recovery.
 const HISTORY_CAP: usize = 20;
 
-/// The recorded dictations, newest first. Unparseable lines and entries
-/// whose polish came out empty (nothing to show or copy) are skipped rather
-/// than failing the whole pane.
+/// The recorded dictations, newest first. Entries whose polish came out empty
+/// have nothing to show or copy, so they are skipped; asking for a few extra
+/// keeps the pane full when some of the freshest are empty.
 fn load_history() -> Vec<HistoryEntry> {
-    let Ok(content) = std::fs::read_to_string(diktafon_protocol::history_path()) else {
-        return Vec::new();
-    };
-    let mut entries: Vec<HistoryEntry> = content
-        .lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .filter(|entry: &HistoryEntry| !entry.polished.trim().is_empty())
-        .collect();
-    entries.reverse();
+    let mut entries = diktafon_protocol::history::recent(HISTORY_CAP * 2);
+    entries.retain(|entry| !entry.polished.trim().is_empty());
     entries.truncate(HISTORY_CAP);
     entries
 }
