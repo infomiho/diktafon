@@ -150,6 +150,9 @@ fn main() -> Result<()> {
     if args.first().is_some_and(|a| a == "--stats") {
         return stats::report();
     }
+    if args.first().is_some_and(|a| a == "--test-sound") {
+        return test_sound();
+    }
 
     let (phase_tx, phase_rx) = futures::channel::mpsc::unbounded::<PhaseEvent>();
     let daemon = DaemonClient::spawn(socket_path(), daemon_bin(), Some(phase_tx.clone()));
@@ -493,6 +496,65 @@ fn control_loop(
             }
         }
     }
+}
+
+/// `diktafon --test-sound`: play the start cue with the microphone closed,
+/// then again while it is open. Opening an input can force a Bluetooth
+/// headset into call mode, which degrades playback, so hearing the two cases
+/// apart says whether a broken cue is the file, the device, or the mic.
+fn test_sound() -> Result<()> {
+    // Queried at each stage: a Bluetooth headset switching to call mode
+    // changes the output device's own format, which is the mechanism that
+    // would wreck a cue played at that moment.
+    fn output_format() -> String {
+        use cpal::traits::{DeviceTrait, HostTrait};
+        let Some(device) = cpal::default_host().default_output_device() else {
+            return "no default output".into();
+        };
+        let name = device.name().unwrap_or_else(|_| "?".into());
+        match device.default_output_config() {
+            Ok(config) => format!(
+                "{name} ({} Hz, {} ch)",
+                config.sample_rate().0,
+                config.channels()
+            ),
+            Err(e) => format!("{name} (config unavailable: {e})"),
+        }
+    }
+
+    let sounds = sounds::Sounds::new().context("opening audio output")?;
+    println!("sink opened as: {}", sounds.describe());
+    println!("output now:     {}", output_format());
+
+    let pause = || thread::sleep(Duration::from_millis(1500));
+    println!("1/3 microphone closed");
+    sounds.play(sounds::Cue::Start);
+    pause();
+    pause();
+
+    let levels: capture::LevelBars = Default::default();
+    let mut recorder = Recorder::new(ensure_vad_model()?, levels)?;
+    println!("    mic: {}", recorder.describe());
+    let (chunk_tx, chunk_rx) = mpsc::channel();
+    // The capture thread would otherwise block once nothing drains it.
+    thread::spawn(move || while chunk_rx.recv().is_ok() {});
+    let session = recorder.start(chunk_tx)?;
+    session.wait_until_live(MIC_READY_TIMEOUT);
+    println!("2/3 microphone open (as during a dictation)");
+    println!("    output now: {}", output_format());
+    sounds.play(sounds::Cue::Start);
+    pause();
+    pause();
+    session.cancel();
+
+    println!("3/3 microphone closed again");
+    pause();
+    println!("    output now: {}", output_format());
+    sounds.play(sounds::Cue::Start);
+    pause();
+    pause();
+    println!("Which of the three sounded wrong?");
+    Ok(())
 }
 
 /// Per-session instants for the timings record; lives beside the session so a
