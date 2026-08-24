@@ -151,10 +151,14 @@ fn start_up(
             .and_then(|()| {
                 println!("Loading models...");
                 let load_start = Instant::now();
-                let history = diktafon_protocol::history_path();
+                // DIKTAFOND_NO_HISTORY: benches must not record their runs
+                // as the user's dictations.
+                let history = std::env::var_os("DIKTAFOND_NO_HISTORY")
+                    .is_none()
+                    .then(diktafon_protocol::history_path);
                 let inference = Inference::spawn(
                     &models_dir,
-                    Some(history),
+                    history,
                     Some(Box::new(move |loaded| {
                         crate::status::write(&status_file, loaded)
                     })),
