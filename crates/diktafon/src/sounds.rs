@@ -15,6 +15,18 @@ use std::io::Cursor;
 /// format changing under an open stream.
 type OutputId = (String, u32, u16);
 
+/// How long to wait for a shared headset to finish switching to call mode;
+/// measured at ~150ms on AirPods Pro, with headroom.
+const CALL_MODE_SWITCH: std::time::Duration = std::time::Duration::from_millis(400);
+const SWITCH_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+fn current_input() -> Option<(String, u32)> {
+    let device = cpal::default_host().default_input_device()?;
+    let name = device.name().ok()?;
+    let config = device.default_input_config().ok()?;
+    Some((name, config.sample_rate().0))
+}
+
 fn current_output() -> Option<OutputId> {
     let device = cpal::default_host().default_output_device()?;
     let name = device.name().ok()?;
@@ -93,7 +105,36 @@ impl Sounds {
         }
     }
 
+    /// The microphone and the speakers are often the same headset. Opening
+    /// the input makes macOS switch it to call mode, which changes the output
+    /// format about 150ms later; the start cue fires right into that window
+    /// and comes out broken. A pending switch is visible as the shared device
+    /// still running its output faster than its input, so wait for the format
+    /// to actually change before the cue is played and the stream rebuilt.
+    /// Nothing to wait for once the device is already in call mode.
+    fn await_call_mode(&self) {
+        let (Some((out_name, out_rate, _)), Some((in_name, in_rate))) =
+            (current_output(), current_input())
+        else {
+            return;
+        };
+        if out_name != in_name || out_rate <= in_rate {
+            return;
+        }
+        let deadline = std::time::Instant::now() + CALL_MODE_SWITCH;
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(SWITCH_POLL);
+            if current_output().is_some_and(|(_, rate, _)| rate != out_rate) {
+                return;
+            }
+        }
+    }
+
     pub fn play(&self, cue: Cue) {
+        // Only the start cue coincides with the microphone opening.
+        if matches!(cue, Cue::Start) {
+            self.await_call_mode();
+        }
         self.refresh_stream();
         let buffer = match cue {
             Cue::Start => &self.start,

@@ -539,10 +539,19 @@ fn test_sound() -> Result<()> {
     // The capture thread would otherwise block once nothing drains it.
     thread::spawn(move || while chunk_rx.recv().is_ok() {});
     let session = recorder.start(chunk_tx)?;
+    let mic_open = Instant::now();
     session.wait_until_live(MIC_READY_TIMEOUT);
-    println!("2/3 microphone open (as during a dictation)");
-    println!("    output now: {}", output_format());
+    println!("    mic live after {:?}", mic_open.elapsed());
+    // Exactly the dictation path: the cue follows the microphone going live,
+    // which is when a shared headset is still switching to call mode.
+    println!("2/3 microphone just opened (the real dictation path)");
+    let cue_at = Instant::now();
     sounds.play(sounds::Cue::Start);
+    println!(
+        "    cue played {:?} after mic live, output {}",
+        cue_at.elapsed(),
+        output_format()
+    );
     pause();
     pause();
     session.cancel();
