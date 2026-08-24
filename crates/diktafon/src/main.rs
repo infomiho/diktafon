@@ -286,9 +286,14 @@ fn main() -> Result<()> {
             // The Carbon hotkey manager lives on this thread; register Escape
             // only while a session could still be cancelled.
             let mut escape_registered = false;
+            let mut logged_phase = dictation::Phase::Idle;
             cx.observe(&dictation, move |dictation, cx| {
                 let phase = dictation.read(cx).phase;
-                println!("[phase] {phase:?}");
+                // Daemon and download events notify without changing phase.
+                if phase != logged_phase {
+                    println!("[phase] {phase:?}");
+                    logged_phase = phase;
+                }
                 if phase == dictation::Phase::Arming {
                     // Refresh per session so layout switches are picked up;
                     // must happen on this (main) thread.
@@ -525,7 +530,7 @@ fn test_sound() -> Result<()> {
     println!("output: {}", sounds::Sounds::describe());
 
     let pause = || thread::sleep(Duration::from_millis(1500));
-    println!("1/3 microphone closed");
+    println!("1/4 OURS, microphone closed");
     sounds.play(sounds::Cue::Start);
     pause();
     pause();
@@ -542,25 +547,28 @@ fn test_sound() -> Result<()> {
     println!("    mic live after {:?}", mic_open.elapsed());
     // Exactly the dictation path: the cue follows the microphone going live,
     // which is when a shared headset is still switching to call mode.
-    println!("2/3 microphone just opened (the real dictation path)");
-    let cue_at = Instant::now();
+    println!("2/3 OURS, microphone just opened (the real dictation path)");
     sounds.play(sounds::Cue::Start);
-    println!(
-        "    cue played {:?} after mic live, output {}",
-        cue_at.elapsed(),
-        output_format()
-    );
     pause();
+    pause();
+    // The same file through macOS's own player, at the same point in the
+    // switch: if this is broken too, the fault is the route, not our code.
+    println!("3/4 SYSTEM PLAYER (afplay), same moment, same file");
+    let asset = std::env::temp_dir().join("diktafon-start-cue.mp3");
+    std::fs::write(&asset, include_bytes!("../resources/sounds/start.mp3"))?;
+    let _ = std::process::Command::new("/usr/bin/afplay")
+        .arg(&asset)
+        .status();
     pause();
     session.cancel();
 
-    println!("3/3 microphone closed again");
+    println!("4/4 OURS, microphone closed again");
     pause();
     println!("    output now: {}", output_format());
     sounds.play(sounds::Cue::Start);
     pause();
     pause();
-    println!("Which of the three sounded wrong?");
+    println!("Which numbers sounded wrong? 3 is macOS playing the same file.");
     Ok(())
 }
 

@@ -13,9 +13,56 @@
 //! also follows the user switching outputs entirely.
 
 use anyhow::{Context, Result};
+use cpal::traits::{DeviceTrait, HostTrait};
 use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
 use std::io::Cursor;
+use std::time::{Duration, Instant};
+
+/// Opening the microphone makes macOS switch a shared Bluetooth headset to
+/// call mode, measured at ~145ms on AirPods Pro. Audio played mid-switch comes
+/// out broken, so the start cue waits for it; the wait runs on the playback
+/// thread and never delays the dictation itself.
+const ROUTE_SWITCH: Duration = Duration::from_millis(400);
+const ROUTE_POLL: Duration = Duration::from_millis(20);
+
+fn output_rate() -> Option<(String, u32)> {
+    let device = cpal::default_host().default_output_device()?;
+    Some((
+        device.name().ok()?,
+        device.default_output_config().ok()?.sample_rate().0,
+    ))
+}
+
+fn input_rate() -> Option<(String, u32)> {
+    let device = cpal::default_host().default_input_device()?;
+    Some((
+        device.name().ok()?,
+        device.default_input_config().ok()?.sample_rate().0,
+    ))
+}
+
+/// A switch is pending only while the shared device still runs its output
+/// faster than its input; once in call mode the rates match and this returns
+/// immediately.
+fn await_route_settled() {
+    let (Some((out_name, out_rate)), Some((in_name, in_rate))) = (output_rate(), input_rate())
+    else {
+        return;
+    };
+    if out_name != in_name || out_rate <= in_rate {
+        return;
+    }
+    let deadline = Instant::now() + ROUTE_SWITCH;
+    while Instant::now() < deadline {
+        std::thread::sleep(ROUTE_POLL);
+        if output_rate().is_some_and(|(_, rate)| rate != out_rate) {
+            // The format flipped; give the device a beat to stabilise.
+            std::thread::sleep(ROUTE_POLL);
+            return;
+        }
+    }
+}
 
 pub enum Cue {
     /// The mic is live; speech is being captured from this moment.
@@ -69,12 +116,16 @@ impl Sounds {
     /// Fire and forget: playing holds a thread for the length of the cue
     /// (~0.4s), which must not delay the dictation that triggered it.
     pub fn play(&self, cue: Cue) {
-        let buffer = match cue {
+        let buffer = match &cue {
             Cue::Start => self.start.clone(),
             Cue::Cancel => self.cancel.clone(),
             Cue::Error => self.error.clone(),
         };
+        let wait_for_route = matches!(cue, Cue::Start);
         std::thread::spawn(move || {
+            if wait_for_route {
+                await_route_settled();
+            }
             if let Err(e) = play_on_default_device(buffer) {
                 eprintln!("playing feedback sound failed: {e:#}");
             }
