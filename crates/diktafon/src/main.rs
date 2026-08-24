@@ -9,6 +9,7 @@ mod mark;
 mod paste;
 mod permissions;
 mod pill;
+mod session;
 mod settings;
 mod sounds;
 mod stats;
@@ -17,7 +18,7 @@ mod theme;
 mod transport;
 
 use anyhow::{Context, Result};
-use capture::{Recorder, Session};
+use capture::Recorder;
 use dictation::{Dictation, PhaseEvent};
 use diktafon_protocol::{Msg, socket_path};
 use global_hotkey::hotkey::{Code, HotKey};
@@ -27,7 +28,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
 use transport::DaemonClient;
 
 // App-level actions, dispatched from any focused diktafon window (cadence's
@@ -243,15 +243,9 @@ fn main() -> Result<()> {
     let paste_keycode = v_keycode.clone();
     let loop_settings = session_settings.clone();
     thread::spawn(move || {
-        control_loop(
-            recorder,
-            daemon,
-            event_rx,
-            phase_tx,
-            hotkeys,
-            paste_keycode,
-            loop_settings,
-        )
+        let dictations =
+            session::Dictations::new(recorder, daemon, loop_settings, phase_tx, paste_keycode);
+        control_loop(event_rx, hotkeys, dictations)
     });
 
     let receiver = GlobalHotKeyEvent::receiver();
@@ -343,10 +337,6 @@ fn hide_from_dock() {
         .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 }
 
-/// How long a mic may take to deliver its first samples; Bluetooth devices
-/// can need hundreds of milliseconds.
-const MIC_READY_TIMEOUT: Duration = Duration::from_millis(1500);
-
 /// Hotkey ids as seen in `GlobalHotKeyEvent`s.
 struct Hotkeys {
     /// Repointed by [`HotkeyRebind`] when the user records a new chord.
@@ -354,42 +344,17 @@ struct Hotkeys {
     escape: u32,
 }
 
+/// Turn hotkey events into dictations. Escape is only registered while one is
+/// in flight (see the phase observer), so it can be treated as a cancel.
 fn control_loop(
-    mut recorder: Recorder,
-    daemon: DaemonClient,
     events: mpsc::Receiver<GlobalHotKeyEvent>,
-    phases: futures::channel::mpsc::UnboundedSender<PhaseEvent>,
     hotkeys: Hotkeys,
-    v_keycode: Arc<AtomicU32>,
-    settings: Arc<std::sync::Mutex<config::SessionSettings>>,
+    mut dictations: session::Dictations,
 ) {
-    let sounds = match sounds::Sounds::new() {
-        Ok(sounds) => Some(sounds),
-        Err(e) => {
-            eprintln!("feedback sounds disabled: {e:#}");
-            None
-        }
-    };
-    let play = |cue| {
-        if settings.lock().unwrap().sound_cues
-            && let Some(sounds) = &sounds
-        {
-            sounds.play(cue);
-        }
-    };
-    let mut session: Option<(Session, SessionTiming)> = None;
     for event in events {
         if event.id == hotkeys.escape {
-            if event.state == HotKeyState::Pressed
-                && let Some((s, _)) = session.take()
-            {
-                s.cancel();
-                play(sounds::Cue::Cancel);
-                println!("cancelled");
-                let _ = phases.unbounded_send(PhaseEvent::SessionEnded {
-                    error: None,
-                    cancelled: true,
-                });
+            if event.state == HotKeyState::Pressed {
+                dictations.cancel();
             }
             continue;
         }
@@ -397,124 +362,10 @@ fn control_loop(
             continue;
         }
         match event.state {
-            HotKeyState::Pressed => {
-                if session.is_none() {
-                    let pressed_at = Instant::now();
-                    let _ = daemon
-                        .chunk_tx
-                        .send(Msg::Start(settings.lock().unwrap().session()));
-                    match recorder.start(daemon.chunk_tx.clone()) {
-                        Ok(s) => {
-                            let _ = phases.unbounded_send(PhaseEvent::RecordingArmed);
-                            // Stream::play() returning does not mean samples
-                            // flow yet; wait so slow mics don't eat first
-                            // words. A queued Released is handled right after.
-                            if s.wait_until_live(MIC_READY_TIMEOUT) {
-                                play(sounds::Cue::Start);
-                                println!("recording...");
-                                let timing = SessionTiming {
-                                    pressed_at,
-                                    mic_ready_ms: pressed_at.elapsed().as_millis() as u64,
-                                };
-                                session = Some((s, timing));
-                                let _ = phases.unbounded_send(PhaseEvent::RecordingStarted);
-                            } else {
-                                let error = "Microphone unavailable";
-                                eprintln!(
-                                    "microphone produced no samples; is another app holding it?"
-                                );
-                                // stop() flushes the (empty) session to the
-                                // daemon; consume its result so it cannot be
-                                // misdelivered to the next session.
-                                s.stop();
-                                play(sounds::Cue::Error);
-                                recorder.mark_stream_failed();
-                                let _ = daemon.finish();
-                                let _ = phases.unbounded_send(PhaseEvent::SessionEnded {
-                                    error: Some(error.into()),
-                                    cancelled: false,
-                                });
-                            }
-                        }
-                        Err(e) => {
-                            // The daemon is already holding a session for the
-                            // Start above; without a Cancel it would wait for
-                            // audio that is never coming.
-                            let _ = daemon.chunk_tx.send(Msg::Cancel);
-                            eprintln!("failed to start recording: {e:#}");
-                            play(sounds::Cue::Error);
-                            let _ = phases.unbounded_send(PhaseEvent::SessionEnded {
-                                error: Some("Microphone unavailable".into()),
-                                cancelled: false,
-                            });
-                        }
-                    }
-                }
-            }
-            HotKeyState::Released => {
-                if let Some((s, timing)) = session.take() {
-                    let stopped_at = Instant::now();
-                    s.stop();
-                    let _ = phases.unbounded_send(PhaseEvent::RecordingStopped);
-                    // `cancelled` also covers "nothing to paste": the pill
-                    // plays its quiet ending, keeping the success bloom to
-                    // mean words actually landed.
-                    let (error, cancelled) = match daemon.finish() {
-                        Ok(text) if text.is_empty() => {
-                            println!("(no speech)");
-                            (None, true)
-                        }
-                        Ok(text) => {
-                            println!(">>> {text}");
-                            let keycode = v_keycode.load(Ordering::Relaxed) as u16;
-                            let error = paste::insert(&text, keycode).err().map(|e| {
-                                eprintln!("paste failed (Accessibility permission?): {e:#}");
-                                "Paste needs Accessibility".to_string()
-                            });
-                            println!("stop-to-paste: {:.2?}", stopped_at.elapsed());
-                            (error, false)
-                        }
-                        Err(e) => {
-                            play(sounds::Cue::Error);
-                            eprintln!("inference error: {e:#}");
-                            (Some("Transcription failed".to_string()), false)
-                        }
-                    };
-                    let outcome = match (&error, cancelled) {
-                        (Some(_), _) => "error",
-                        (None, true) => "empty",
-                        (None, false) => "pasted",
-                    };
-                    // Consume the spawn marker either way so an old spawn can
-                    // never label a later session cold.
-                    let cold_start = daemon
-                        .spawned_at
-                        .lock()
-                        .unwrap()
-                        .take()
-                        .is_some_and(|at| at >= timing.pressed_at);
-                    stats::append(&stats::Timing {
-                        at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                        mic_ready_ms: timing.mic_ready_ms,
-                        recording_secs: ((stopped_at - timing.pressed_at).as_secs_f32()
-                            - timing.mic_ready_ms as f32 / 1000.0)
-                            .max(0.0),
-                        stop_to_paste_ms: stopped_at.elapsed().as_millis() as u64,
-                        cold_start,
-                        outcome: outcome.into(),
-                    });
-                    let _ = phases.unbounded_send(PhaseEvent::SessionEnded { error, cancelled });
-                }
-            }
+            HotKeyState::Pressed => dictations.press(),
+            HotKeyState::Released => dictations.release(),
         }
     }
-}
-
-/// Per-session instants for the timings record; lives beside the session so a
-/// cancel discards both.
-struct SessionTiming {
-    pressed_at: Instant,
-    mic_ready_ms: u64,
 }
 
 #[cfg(test)]
