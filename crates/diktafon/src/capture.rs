@@ -145,8 +145,7 @@ impl Recorder {
             signaled: AtomicBool::new(false),
             tx: Mutex::new(Some(live_tx)),
         });
-        let stream = self.build_stream(buffer.clone(), live)?;
-        stream.play()?;
+        let stream = self.open_stream(buffer.clone(), live)?;
 
         let stop = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -199,6 +198,38 @@ impl Recorder {
             monitor,
             live_rx,
         })
+    }
+
+    /// Start the input stream, rebuilding the device once if it has gone
+    /// stale. A device that disconnects and reconnects (AirPods) comes back
+    /// under the same name, so the default-name check in
+    /// [`Self::refresh_input_if_needed`] cannot see it; only the failure can,
+    /// and without this the stale handle would fail every session until the
+    /// app restarts.
+    fn open_stream(
+        &mut self,
+        buffer: Arc<Mutex<Vec<f32>>>,
+        live: Arc<FirstSampleSignal>,
+    ) -> Result<cpal::Stream> {
+        match self.play_stream(buffer.clone(), live.clone()) {
+            Ok(stream) => Ok(stream),
+            Err(stale) => {
+                eprintln!("microphone unavailable ({stale:#}); reopening it");
+                self.stream_failed.store(true, Ordering::Relaxed);
+                self.refresh_input_if_needed();
+                self.play_stream(buffer, live)
+            }
+        }
+    }
+
+    fn play_stream(
+        &self,
+        buffer: Arc<Mutex<Vec<f32>>>,
+        live: Arc<FirstSampleSignal>,
+    ) -> Result<cpal::Stream> {
+        let stream = self.build_stream(buffer, live)?;
+        stream.play()?;
+        Ok(stream)
     }
 
     fn build_stream(

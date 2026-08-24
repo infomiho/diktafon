@@ -436,7 +436,18 @@ fn control_loop(
                                 });
                             }
                         }
-                        Err(e) => eprintln!("failed to start recording: {e}"),
+                        Err(e) => {
+                            // The daemon is already holding a session for the
+                            // Start above; without a Cancel it would wait for
+                            // audio that is never coming.
+                            let _ = daemon.chunk_tx.send(Msg::Cancel);
+                            eprintln!("failed to start recording: {e:#}");
+                            play(sounds::Cue::Error);
+                            let _ = phases.unbounded_send(PhaseEvent::SessionEnded {
+                                error: Some("Microphone unavailable".into()),
+                                cancelled: false,
+                            });
+                        }
                     }
                 }
             }
