@@ -38,30 +38,45 @@ pub fn is_diktafond(pid: u32) -> bool {
     std::process::Command::new("ps")
         .args(["-o", "comm=", "-p", &pid.to_string()])
         .output()
-        .map(|out| {
-            String::from_utf8_lossy(&out.stdout)
-                .trim()
-                .ends_with("diktafond")
-        })
+        .map(|out| names_a_daemon(&String::from_utf8_lossy(&out.stdout)))
         .unwrap_or(false)
 }
 
-/// SIGTERM the pid if it still names a diktafond. Returns whether the signal
-/// was sent, so callers can report a daemon they could not stop.
-pub fn stop(pid: u32) -> bool {
+/// `ps -o comm=` prints the executable path, so the daemon is matched by its
+/// file name. The client's own path ends in "diktafon" and must not match.
+fn names_a_daemon(comm: &str) -> bool {
+    comm.trim().ends_with("diktafond")
+}
+
+/// Why a daemon could not be stopped, so callers can tell the user which
+/// happened: they mean different things for what to do next.
+#[derive(Debug, PartialEq)]
+pub enum StopError {
+    /// The pid names something else now; pids get recycled.
+    NotOurs,
+    /// It is ours, but the signal did not land (it exited first, or we lack
+    /// permission).
+    SignalFailed,
+}
+
+/// SIGTERM the pid, but only once it still names a diktafond.
+pub fn stop(pid: u32) -> Result<(), StopError> {
     if !is_diktafond(pid) {
-        return false;
+        return Err(StopError::NotOurs);
     }
-    std::process::Command::new("kill")
-        .args(["-TERM", &pid.to_string()])
-        .status()
-        .is_ok()
+    // Signalling directly rather than shelling out: `kill` exits non-zero for
+    // a process that just died, which is indistinguishable from a spawn
+    // failure in an exit status.
+    match unsafe { libc::kill(pid as i32, libc::SIGTERM) } {
+        0 => Ok(()),
+        _ => Err(StopError::SignalFailed),
+    }
 }
 
 /// Stop the daemon on the default socket; quiet no-op when none is running.
 pub fn stop_running() {
     if let Some(pid) = pid() {
-        stop(pid);
+        let _ = stop(pid);
     }
 }
 
@@ -76,11 +91,23 @@ mod tests {
     }
 
     #[test]
-    fn the_test_binary_is_not_a_daemon() {
+    fn only_the_daemon_binary_matches_its_name() {
+        assert!(names_a_daemon(
+            "/Applications/diktafon.app/Contents/MacOS/diktafond"
+        ));
+        assert!(names_a_daemon("  /usr/local/bin/diktafond\n"));
+        // The client's own binary is one letter short of matching.
+        assert!(!names_a_daemon(
+            "/Applications/diktafon.app/Contents/MacOS/diktafon"
+        ));
+        assert!(!names_a_daemon("/bin/zsh"));
+        assert!(!names_a_daemon(""));
+    }
+
+    #[test]
+    fn this_process_is_never_signalled() {
         assert!(!is_diktafond(0));
-        // Guards the suffix check: "diktafon" must not match "diktafond".
-        assert!(!is_diktafond(std::process::id()));
-        assert!(!stop(std::process::id()));
+        assert_eq!(stop(std::process::id()), Err(StopError::NotOurs));
     }
 
     #[test]
@@ -88,6 +115,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dkt-pid-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         assert_eq!(read_pid(&dir.join("absent.pid")), None);
+        let empty = dir.join("empty.pid");
+        std::fs::write(&empty, "").unwrap();
+        assert_eq!(read_pid(&empty), None);
         let zero = dir.join("zero.pid");
         std::fs::write(&zero, "0\n").unwrap();
         assert_eq!(read_pid(&zero), None);

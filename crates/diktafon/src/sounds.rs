@@ -16,6 +16,7 @@ use objc2::rc::Retained;
 use objc2_app_kit::NSSound;
 use objc2_foundation::NSData;
 
+#[derive(Clone, Copy, Debug)]
 pub enum Cue {
     /// The mic is live; speech is being captured from this moment.
     Start,

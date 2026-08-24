@@ -146,6 +146,9 @@ fn format_value(value: f64, unit: &str) -> String {
 }
 
 fn percentile(values: &[f64], q: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
     let mut sorted = values.to_vec();
     sorted.sort_by(|a, b| a.total_cmp(b));
     let index = ((sorted.len() - 1) as f64 * q).round() as usize;
@@ -162,6 +165,8 @@ mod tests {
         assert_eq!(percentile(&values, 0.5), 50.0);
         assert_eq!(percentile(&values, 0.95), 95.0);
         assert_eq!(percentile(&[42.0], 0.95), 42.0);
+        // The caller guards, but the invariant belongs with the arithmetic.
+        assert_eq!(percentile(&[], 0.5), 0.0);
     }
 
     #[test]

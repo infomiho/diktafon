@@ -108,13 +108,11 @@ impl Section {
 const HISTORY_CAP: usize = 20;
 
 /// The recorded dictations, newest first. Entries whose polish came out empty
-/// have nothing to show or copy, so they are skipped; asking for a few extra
-/// keeps the pane full when some of the freshest are empty.
+/// have nothing to show or copy, so they never count toward the cap.
 fn load_history() -> Vec<HistoryEntry> {
-    let mut entries = diktafon_protocol::history::recent(HISTORY_CAP * 2);
-    entries.retain(|entry| !entry.polished.trim().is_empty());
-    entries.truncate(HISTORY_CAP);
-    entries
+    diktafon_protocol::history::recent_matching(HISTORY_CAP, |entry| {
+        !entry.polished.trim().is_empty()
+    })
 }
 
 /// The local calendar day an entry belongs to, for grouping under one label.

@@ -39,6 +39,22 @@ impl Polisher {
         );
         let tokens = self.model.str_to_token(&prompt, AddBos::Never)?;
 
+        let transcript_tokens = self.model.str_to_token(transcript, AddBos::Never)?.len();
+        // Polishing keeps roughly the input length; the margin covers added
+        // punctuation and the occasional expansion ("p95" -> "P95").
+        let max_new = (transcript_tokens as f32 * 1.3) as i32 + 32;
+        // Decided before the context is built and the prompt decoded: that
+        // prefill is seconds of work on exactly the long dictation this
+        // refuses, and the user is already waiting on it. A polish that cannot
+        // fit alongside its prompt would be cut off mid-sentence, silently
+        // losing the tail; the caller pastes the raw transcript instead,
+        // because losing punctuation beats losing words.
+        if tokens.len() as i32 + max_new > N_CTX as i32 {
+            bail!(
+                "transcript of {transcript_tokens} tokens does not fit the {N_CTX}-token polish context"
+            );
+        }
+
         let mut ctx = self.model.new_context(
             &self.backend,
             LlamaContextParams::default()
@@ -53,19 +69,6 @@ impl Polisher {
         }
         ctx.decode(&mut batch)?;
 
-        let transcript_tokens = self.model.str_to_token(transcript, AddBos::Never)?.len();
-        // Polishing keeps roughly the input length; the margin covers added
-        // punctuation and the occasional expansion ("p95" -> "P95").
-        let max_new = (transcript_tokens as f32 * 1.3) as i32 + 32;
-        // A polish that cannot fit alongside its prompt would be cut off
-        // mid-sentence, silently losing the tail of a long dictation. The
-        // caller pastes the raw transcript instead: losing punctuation beats
-        // losing words.
-        if batch.n_tokens() + max_new > N_CTX as i32 {
-            bail!(
-                "transcript of {transcript_tokens} tokens does not fit the {N_CTX}-token polish context"
-            );
-        }
         let mut out = String::new();
         let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut sampler = LlamaSampler::greedy();

@@ -11,7 +11,6 @@ encoding_rs = "0.8"
 signal-hook = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-humantime = "2"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset"] }
 tokio = { version = "1", features = ["rt", "time"] }
 sha2 = "0.11"

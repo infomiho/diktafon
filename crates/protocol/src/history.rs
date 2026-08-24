@@ -49,10 +49,6 @@ pub fn path() -> PathBuf {
     crate::data_dir().join("history.jsonl")
 }
 
-pub fn append(entry: &HistoryEntry) -> Result<()> {
-    append_to(&path(), entry)
-}
-
 pub fn append_to(path: &Path, entry: &HistoryEntry) -> Result<()> {
     // One write_all per entry: a crash can then only lose a whole line, never
     // merge two entries into one unparseable one.
@@ -73,28 +69,45 @@ pub fn append_to(path: &Path, entry: &HistoryEntry) -> Result<()> {
 /// Every entry, oldest first. Unparseable lines are skipped rather than
 /// failing the whole read.
 pub fn read_all() -> Vec<HistoryEntry> {
-    parse(&contents(), usize::MAX)
+    read_all_from(&contents())
 }
 
-/// The freshest `limit` entries, newest first. Only the tail is parsed: the
-/// file grows without bound, and a pane showing twenty entries should not pay
-/// for every dictation ever recorded.
-pub fn recent(limit: usize) -> Vec<HistoryEntry> {
-    let mut entries = parse(&contents(), limit);
-    entries.reverse();
-    entries
+/// The freshest `limit` entries that `keep` accepts, newest first. Counting
+/// kept entries rather than lines is what makes the count a promise: a run of
+/// empty or unreadable entries at the end of the file shortens the answer
+/// otherwise. Only as much as needed is deserialized.
+pub fn recent_matching(limit: usize, keep: impl Fn(&HistoryEntry) -> bool) -> Vec<HistoryEntry> {
+    recent_from(&contents(), limit, keep)
 }
 
 fn contents() -> String {
     std::fs::read_to_string(path()).unwrap_or_default()
 }
 
-fn parse(contents: &str, tail: usize) -> Vec<HistoryEntry> {
-    let lines: Vec<&str> = contents.lines().collect();
-    lines[lines.len().saturating_sub(tail)..]
-        .iter()
+fn read_all_from(contents: &str) -> Vec<HistoryEntry> {
+    contents
+        .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect()
+}
+
+fn recent_from(
+    contents: &str,
+    limit: usize,
+    keep: impl Fn(&HistoryEntry) -> bool,
+) -> Vec<HistoryEntry> {
+    let mut newest_first = Vec::new();
+    for line in contents.lines().rev() {
+        if newest_first.len() == limit {
+            break;
+        }
+        if let Ok(entry) = serde_json::from_str::<HistoryEntry>(line)
+            && keep(&entry)
+        {
+            newest_first.push(entry);
+        }
+    }
+    newest_first
 }
 
 #[cfg(test)]
@@ -123,33 +136,55 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
     }
 
-    #[test]
-    fn only_the_tail_is_parsed_and_it_comes_back_newest_first() {
-        let lines: String = (0..5)
-            .map(|i| {
-                let entry = HistoryEntry::now(&format!("raw {i}"), &format!("polished {i}"));
+    /// `polished` per line, oldest first.
+    fn file_of(polished: &[&str]) -> String {
+        polished
+            .iter()
+            .map(|text| {
+                let entry = HistoryEntry::now("raw", text);
                 format!("{}\n", serde_json::to_string(&entry).unwrap())
             })
-            .collect();
+            .collect()
+    }
 
-        let all = parse(&lines, usize::MAX);
-        assert_eq!(all.len(), 5);
-        assert_eq!(all[0].polished, "polished 0");
+    #[test]
+    fn everything_reads_back_oldest_first() {
+        let file = file_of(&["one", "two", "three"]);
+        let all = read_all_from(&file);
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].polished, "one");
+        assert_eq!(all[2].polished, "three");
+        assert!(read_all_from("").is_empty());
+    }
 
-        let tail = parse(&lines, 2);
-        assert_eq!(tail.len(), 2, "asked for the last two");
-        assert_eq!(tail[0].polished, "polished 3");
-        assert_eq!(tail[1].polished, "polished 4");
+    #[test]
+    fn the_recent_ones_come_back_newest_first() {
+        let file = file_of(&["one", "two", "three"]);
+        let recent = recent_from(&file, 2, |_| true);
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].polished, "three", "newest leads");
+        assert_eq!(recent[1].polished, "two");
 
         // Asking for more than exists is not an error.
-        assert_eq!(parse(&lines, 50).len(), 5);
-        assert!(parse("", 10).is_empty());
+        assert_eq!(recent_from(&file, 50, |_| true).len(), 3);
+        assert!(recent_from("", 10, |_| true).is_empty());
+    }
+
+    #[test]
+    fn the_limit_counts_kept_entries_not_lines() {
+        // A run of rejected entries at the end must not shorten the answer.
+        let file = file_of(&["keep me", "keep me too", "", "", "", ""]);
+        let kept = recent_from(&file, 2, |entry| !entry.polished.is_empty());
+        assert_eq!(kept.len(), 2, "kept reading past the rejected tail");
+        assert_eq!(kept[0].polished, "keep me too");
+        assert_eq!(kept[1].polished, "keep me");
     }
 
     #[test]
     fn a_torn_line_does_not_lose_the_rest() {
         let good = serde_json::to_string(&HistoryEntry::now("a", "A")).unwrap();
         let contents = format!("{good}\n{{ truncated\n{good}\n");
-        assert_eq!(parse(&contents, usize::MAX).len(), 2);
+        assert_eq!(read_all_from(&contents).len(), 2);
+        assert_eq!(recent_from(&contents, 5, |_| true).len(), 2);
     }
 }

@@ -29,6 +29,8 @@ struct Run {
 }
 
 pub fn transcribe_file(args: &[String]) -> Result<()> {
+    // First: the env writes below are only sound before any thread exists.
+    isolate_daemon();
     let path = args
         .first()
         .context("usage: --transcribe-file <wav> [--repeat N] [--json]")?;
@@ -54,7 +56,6 @@ pub fn transcribe_file(args: &[String]) -> Result<()> {
     let samples = wav_samples(path)?;
     let audio_secs = samples.len() as f32 / TARGET_RATE as f32;
 
-    isolate_daemon();
     ensure_daemon()?;
     let stream = UnixStream::connect(socket_path()).context("connecting to diktafond")?;
     let mut reader = BufReader::new(stream.try_clone()?);

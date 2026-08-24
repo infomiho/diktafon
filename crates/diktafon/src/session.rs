@@ -125,10 +125,8 @@ impl Dictations {
         let pressed_at = Instant::now();
         // Before the recorder: the daemon may have to be spawned and load its
         // models, and that runs while the user is still speaking.
-        let _ = self
-            .daemon
-            .chunk_tx
-            .send(Msg::Start(self.settings.lock().unwrap().session()));
+        let config = self.settings.lock().unwrap().session();
+        let _ = self.daemon.chunk_tx.send(Msg::Start(config));
         let session = match self.recorder.start(self.daemon.chunk_tx.clone()) {
             Ok(session) => session,
             Err(e) => {
@@ -231,9 +229,10 @@ impl Dictations {
     }
 
     fn play(&self, cue: sounds::Cue) {
-        if self.settings.lock().unwrap().sound_cues
-            && let Some(sounds) = &self.sounds
-        {
+        // The guard is dropped before playing: the settings window writes this
+        // same mutex from the UI thread.
+        let cues_on = self.settings.lock().unwrap().sound_cues;
+        if cues_on && let Some(sounds) = &self.sounds {
             sounds.play(cue);
         }
     }

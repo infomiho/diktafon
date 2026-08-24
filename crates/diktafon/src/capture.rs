@@ -99,7 +99,8 @@ impl Recorder {
     /// Reopen the input when the stream died or the system default moved
     /// (e.g. AirPods connected); on failure keep the old device and let the
     /// session surface the error.
-    fn refresh_input_if_needed(&mut self) {
+    /// Returns whether the device was rebuilt.
+    fn refresh_input_if_needed(&mut self) -> bool {
         let failed = self.stream_failed.swap(false, Ordering::Relaxed);
         let default_name = cpal::default_host()
             .default_input_device()
@@ -108,18 +109,20 @@ impl Recorder {
             .as_ref()
             .is_some_and(|name| *name != self.input.name);
         if !(failed || default_changed) {
-            return;
+            return false;
         }
         match default_input() {
             Ok(input) => {
                 self.input = input;
                 println!("Mic: {}", self.describe());
+                true
             }
             Err(e) => {
                 // Keep the retry armed: with the flag consumed and the name
                 // unchanged, nothing else would ever trigger another rebuild.
                 self.stream_failed.store(true, Ordering::Relaxed);
                 eprintln!("reopening the microphone failed: {e:#}");
+                false
             }
         }
     }
@@ -131,7 +134,7 @@ impl Recorder {
     }
 
     pub fn start(&mut self, chunk_tx: mpsc::Sender<Msg>) -> Result<Session> {
-        self.refresh_input_if_needed();
+        let _ = self.refresh_input_if_needed();
         // Fresh VAD per session: Silero keeps LSTM state across frames, and
         // loading the 1.8MB model is fast enough to not delay recording.
         let silero = SileroVad::new(&self.vad_model, CONFIG.speech_threshold)
@@ -216,7 +219,11 @@ impl Recorder {
             Err(stale) => {
                 eprintln!("microphone unavailable ({stale:#}); reopening it");
                 self.stream_failed.store(true, Ordering::Relaxed);
-                self.refresh_input_if_needed();
+                if !self.refresh_input_if_needed() {
+                    // Nothing was rebuilt, so a second attempt would use the
+                    // same handle that just failed.
+                    return Err(stale);
+                }
                 self.play_stream(buffer, live)
             }
         }
@@ -277,11 +284,14 @@ impl Session {
     }
 
     pub fn stop(self) {
+        // Drop first: while the device is running it keeps pushing samples the
+        // monitor's last drain would never see, losing up to a tick of the
+        // final word.
+        drop(self.stream);
         // Release pairs with the monitor's Acquire load, publishing the
         // `cancelled` store made by `cancel()` before this.
         self.stop.store(true, Ordering::Release);
         self.monitor.join().ok();
-        drop(self.stream);
     }
 
     /// End the session discarding everything captured; no result will follow.

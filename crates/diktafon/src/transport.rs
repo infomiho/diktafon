@@ -555,15 +555,23 @@ impl Transport {
 /// SIGTERM a resident daemon that refuses our protocol version, then wait
 /// briefly for its socket to vanish.
 fn retire_mismatched_daemon(socket: &Path) -> bool {
+    use crate::daemon_process::StopError;
     let Some(pid) = crate::daemon_process::pid_for(socket) else {
-        eprintln!("version-mismatched daemon has no pid file; stop it manually");
+        eprintln!("version-mismatched daemon has no usable pid file; stop it manually");
         return false;
     };
-    if !crate::daemon_process::stop(pid) {
-        eprintln!("pid {pid} is not a diktafond; stop the old daemon manually");
-        return false;
-    }
     eprintln!("retiring version-mismatched diktafond (pid {pid})");
+    match crate::daemon_process::stop(pid) {
+        Ok(()) => {}
+        Err(StopError::NotOurs) => {
+            eprintln!("pid {pid} no longer names a diktafond; stop the old daemon manually");
+            return false;
+        }
+        Err(StopError::SignalFailed) => {
+            eprintln!("could not signal diktafond (pid {pid}); stop it manually");
+            return false;
+        }
+    }
     for _ in 0..20 {
         if !socket.exists() {
             return true;
