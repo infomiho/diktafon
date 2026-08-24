@@ -3,6 +3,7 @@ mod autostart;
 mod bench;
 mod capture;
 mod config;
+mod daemon_process;
 mod dictation;
 mod keymap;
 mod mark;

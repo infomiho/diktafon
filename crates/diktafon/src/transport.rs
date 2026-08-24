@@ -552,29 +552,18 @@ impl Transport {
     }
 }
 
-/// SIGTERM the daemon recorded in the pidfile next to the socket, after
-/// checking the pid still names a diktafond (pids get recycled), and wait
+/// SIGTERM a resident daemon that refuses our protocol version, then wait
 /// briefly for its socket to vanish.
 fn retire_mismatched_daemon(socket: &Path) -> bool {
-    let pid_file = socket.with_extension("pid");
-    let Ok(pid) = std::fs::read_to_string(&pid_file) else {
+    let Some(pid) = crate::daemon_process::pid_for(socket) else {
         eprintln!("version-mismatched daemon has no pid file; stop it manually");
         return false;
     };
-    let pid = pid.trim();
-    let comm = std::process::Command::new("ps")
-        .args(["-o", "comm=", "-p", pid])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    if !comm.ends_with("diktafond") {
-        eprintln!("pid file {pid} is not a diktafond ({comm:?}); stop the old daemon manually");
+    if !crate::daemon_process::stop(pid) {
+        eprintln!("pid {pid} is not a diktafond; stop the old daemon manually");
         return false;
     }
     eprintln!("retiring version-mismatched diktafond (pid {pid})");
-    let _ = std::process::Command::new("kill")
-        .args(["-TERM", pid])
-        .status();
     for _ in 0..20 {
         if !socket.exists() {
             return true;

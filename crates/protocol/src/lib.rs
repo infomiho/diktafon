@@ -27,7 +27,12 @@ pub const VERSION_MISMATCH_PREFIX: &str = "protocol version mismatch";
 /// Where the daemon records its pid, next to the socket, so a newer client can
 /// retire an older resident daemon.
 pub fn pid_path() -> PathBuf {
-    socket_path().with_extension("pid")
+    pid_path_for(&socket_path())
+}
+
+/// The pid file that belongs to a daemon serving `socket`.
+pub fn pid_path_for(socket: &std::path::Path) -> PathBuf {
+    socket.with_extension("pid")
 }
 
 /// Where the daemon mirrors its state (pid, model residency) as JSON for UI

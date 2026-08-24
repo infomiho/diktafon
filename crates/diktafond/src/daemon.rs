@@ -59,7 +59,7 @@ pub fn run(models_dir: &Path, socket: &Path) -> Result<()> {
     ensure_sole_daemon(socket)?;
     let listener =
         UnixListener::bind(socket).with_context(|| format!("binding {}", socket.display()))?;
-    let pid_file = socket.with_extension("pid");
+    let pid_file = diktafon_protocol::pid_path_for(socket);
     std::fs::write(&pid_file, std::process::id().to_string())
         .with_context(|| format!("writing {}", pid_file.display()))?;
     let status_file = diktafon_protocol::status_path_for(socket);

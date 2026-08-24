@@ -235,19 +235,15 @@ pub fn daemon_status() -> DaemonStatus {
     };
     let Ok(raw) = std::fs::read_to_string(diktafon_protocol::status_path()) else {
         // A daemon from before the status file exists only in the pidfile.
-        let pid = std::fs::read_to_string(diktafon_protocol::pid_path())
-            .ok()
-            .and_then(|pid| pid.trim().parse().ok())
-            .unwrap_or(0);
         return DaemonStatus {
-            running: pid_alive(pid),
+            running: crate::daemon_process::pid().is_some_and(crate::daemon_process::is_alive),
             ..not_running
         };
     };
     let Ok(status) = serde_json::from_str::<serde_json::Value>(&raw) else {
         return not_running;
     };
-    if !pid_alive(status["pid"].as_u64().unwrap_or(0)) {
+    if !crate::daemon_process::is_alive(status["pid"].as_u64().unwrap_or(0) as u32) {
         return not_running;
     }
     DaemonStatus {
@@ -257,44 +253,6 @@ pub fn daemon_status() -> DaemonStatus {
         asr: status["asr_model"].as_str().map(str::to_string),
         llm: status["llm_model"].as_str().map(str::to_string),
     }
-}
-
-/// Cheap liveness check (no subprocess: this runs while the menu opens). A
-/// recycled pid can fool it, unlike the comm check `stop_daemon` uses, but
-/// here it only mislabels a dead daemon as running until the next dictation.
-fn pid_alive(pid: u64) -> bool {
-    pid != 0 && unsafe { libc::kill(pid as i32, 0) } == 0
-}
-
-/// Strict check for the destructive path: the pid must still name a
-/// diktafond, since pids get recycled.
-fn pid_is_diktafond(pid: u64) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    std::process::Command::new("ps")
-        .args(["-o", "comm=", "-p", &pid.to_string()])
-        .output()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .trim()
-                .ends_with("diktafond")
-        })
-        .unwrap_or(false)
-}
-
-/// SIGTERM the daemon named by its pidfile; quiet no-op if none is running.
-fn stop_daemon() {
-    let Ok(pid) = std::fs::read_to_string(diktafon_protocol::pid_path()) else {
-        return;
-    };
-    let pid = pid.trim();
-    if !pid_is_diktafond(pid.parse().unwrap_or(0)) {
-        return;
-    }
-    let _ = std::process::Command::new("kill")
-        .args(["-TERM", pid])
-        .status();
 }
 
 /// Create the status item and keep it (and its controller) alive for the
@@ -338,7 +296,7 @@ pub fn install(
                 // is nothing worth keeping warm after the client leaves.
                 MenuAction::Quit => {
                     crate::transport::disable_daemon_spawn();
-                    stop_daemon();
+                    crate::daemon_process::stop_running();
                     cx.update(|cx| cx.quit());
                 }
             }
