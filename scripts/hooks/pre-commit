@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Skip with `git commit --no-verify` when committing work in progress.
+exec "$(git rev-parse --show-toplevel)/scripts/ci-checks.sh"

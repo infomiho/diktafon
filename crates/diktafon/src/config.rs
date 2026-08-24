@@ -145,8 +145,10 @@ mod tests {
 
     #[test]
     fn settings_hotkey_falls_back_to_default() {
-        let mut settings = SessionSettings::default();
-        settings.hotkey = "garbage".into();
+        let settings = SessionSettings {
+            hotkey: "garbage".into(),
+            ..Default::default()
+        };
         assert_eq!(settings.hotkey().id(), CONFIG.hotkey().id());
     }
 }

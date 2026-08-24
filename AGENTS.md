@@ -2,6 +2,7 @@
 
 Local-only macOS dictation: hold Option+Space, speak, release; transcribed (Cohere Transcribe) and polished (S1-mini) text is pasted into the frontmost app.
 
+- Before committing, run `scripts/ci-checks.sh`: it is the exact set CI runs (`cargo fmt --all --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`). Weaker local checks miss lints in test and example targets. `git config core.hooksPath scripts/hooks` installs it as a pre-commit hook.
 - Tasks are managed in Beads: `bd ready` to pick work, `bd show <id>` for details, update status as you go.
 - Rust 1.97+ (gpui's floor, enforced via `rust-version`); `rustup update stable` if the build fails deep inside gpui.
 - Target architecture: always client/server. `diktafon` client (hotkey, mic capture, silence chunking, paste, UI) and `diktafond` daemon (resident models) speak one streaming protocol, over a Unix socket locally or WebSocket remotely. See the M2 epic in Beads.
