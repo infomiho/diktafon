@@ -5,6 +5,7 @@
 //! when the daemon restarts.
 
 use crate::config::SessionSettings;
+use crate::control_line;
 use crate::statusbar::DaemonStatus;
 use crate::{autostart, statusbar, theme};
 use chrono::{Datelike, Local, NaiveDate};
@@ -15,7 +16,7 @@ use gpui::{
     relative, rems, rgba, size,
 };
 use gpui_component::form::{Form, field, v_form};
-use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::label::Label;
 use gpui_component::list::ListItem;
 use gpui_component::searchable_list::SearchableVec;
@@ -205,7 +206,9 @@ impl History {
 pub struct SettingsWindow {
     settings: Arc<Mutex<SessionSettings>>,
     section: Section,
-    control_input: Entity<TextareaState>,
+    /// One select per axis of S1-mini's control line, in the order they appear
+    /// in it.
+    control_selects: [Entity<SelectState<SearchableVec<SharedString>>>; 3],
     language_select: Entity<SelectState<SearchableVec<SharedString>>>,
     /// Codes parallel to the dropdown items. Parallel indexing is only valid
     /// while the selects stay non-searchable: with `.searchable(true)` the
@@ -328,11 +331,24 @@ impl SettingsWindow {
             InputState::new(window, cx).placeholder(search_placeholder(history.entries.len()))
         });
 
-        let control_input = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .auto_grow(2, 6)
-                .placeholder("[Styling: ...] [Structure: ...] [Context: ...]")
-                .default_value(current.control_line.clone())
+        let control_selects = [
+            &control_line::STYLING,
+            &control_line::STRUCTURE,
+            &control_line::CONTEXT,
+        ]
+        .map(|axis| {
+            let items: Vec<SharedString> = (0..axis.values.len())
+                .map(|index| SharedString::from(axis.label(index)))
+                .collect();
+            let selected = axis.index_in(&current.control_line);
+            cx.new(|cx| {
+                SelectState::new(
+                    SearchableVec::new(items),
+                    Some(IndexPath::new(selected)),
+                    window,
+                    cx,
+                )
+            })
         });
 
         let mut language_codes: Vec<String> =
@@ -424,12 +440,16 @@ impl SettingsWindow {
         // Settings apply as they change, macOS-style; there is no Save
         // button. Enter inserts a newline in the textarea, so only Blur
         // (and closing the window) commits the prompt.
-        cx.subscribe(&control_input, |view, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Blur) {
-                view.save(cx);
-            }
-        })
-        .detach();
+        for select in &control_selects {
+            cx.subscribe(
+                select,
+                |view, _, event: &SelectEvent<SearchableVec<SharedString>>, cx| {
+                    let SelectEvent::Confirm(_) = event;
+                    view.save(cx);
+                },
+            )
+            .detach();
+        }
         cx.subscribe(&history_search, |view, input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 view.history.query = input.read(cx).value().trim().to_lowercase();
@@ -458,7 +478,7 @@ impl SettingsWindow {
         Self {
             settings,
             section: Section::General,
-            control_input,
+            control_selects,
             language_select,
             language_codes,
             idle_select,
@@ -475,19 +495,15 @@ impl SettingsWindow {
         }
     }
 
-    /// An emptied prompt falls back to its default: an empty control line
-    /// would silently degrade S1-mini, which needs its exact format.
     fn save(&mut self, cx: &mut Context<Self>) {
         let defaults = SessionSettings::default();
-        // S1-mini's control line is strictly one line; the textarea only
-        // wraps for editing comfort.
-        let control_line = self
-            .control_input
-            .read(cx)
-            .value()
-            .replace('\n', " ")
-            .trim()
-            .to_string();
+        let axis_index = |slot: usize| {
+            self.control_selects[slot]
+                .read(cx)
+                .selected_index(cx)
+                .map_or(0, |index| index.row)
+        };
+        let control_line = control_line::compose(axis_index(0), axis_index(1), axis_index(2));
         let language = self
             .language_select
             .read(cx)
@@ -502,11 +518,7 @@ impl SettingsWindow {
             .unwrap_or(defaults.idle_unload_secs);
         let updated = SessionSettings {
             language,
-            control_line: if control_line.is_empty() {
-                defaults.control_line
-            } else {
-                control_line
-            },
+            control_line,
             idle_unload_secs,
             sound_cues: self.sound_cues,
             hotkey: self.hotkey.clone(),
@@ -821,11 +833,21 @@ impl SettingsWindow {
         Self::form()
             .child(
                 field()
-                    .label("Post-processing prompt")
-                    .description(
-                        "Shapes how your words are polished. Applies to the next dictation.",
-                    )
-                    .child(Textarea::new(&self.control_input)),
+                    .label("Tone")
+                    .description("How formal the polished text reads")
+                    .child(Select::new(&self.control_selects[0]).large()),
+            )
+            .child(
+                field()
+                    .label("Shape")
+                    .description("Flowing prose, or broken into a list")
+                    .child(Select::new(&self.control_selects[1]).large()),
+            )
+            .child(
+                field()
+                    .label("Written for")
+                    .description("General text, or an email")
+                    .child(Select::new(&self.control_selects[2]).large()),
             )
             .child(
                 field()
