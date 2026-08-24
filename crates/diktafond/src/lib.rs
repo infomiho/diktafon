@@ -2,7 +2,7 @@ pub mod daemon;
 pub mod fetch;
 pub mod history;
 mod inference;
-mod llm;
+pub mod llm;
 pub mod manifest;
 mod status;
 

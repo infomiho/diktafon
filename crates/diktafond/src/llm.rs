@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
@@ -54,14 +54,27 @@ impl Polisher {
         ctx.decode(&mut batch)?;
 
         let transcript_tokens = self.model.str_to_token(transcript, AddBos::Never)?.len();
+        // Polishing keeps roughly the input length; the margin covers added
+        // punctuation and the occasional expansion ("p95" -> "P95").
         let max_new = (transcript_tokens as f32 * 1.3) as i32 + 32;
+        // A polish that cannot fit alongside its prompt would be cut off
+        // mid-sentence, silently losing the tail of a long dictation. The
+        // caller pastes the raw transcript instead: losing punctuation beats
+        // losing words.
+        if batch.n_tokens() + max_new > N_CTX as i32 {
+            bail!(
+                "transcript of {transcript_tokens} tokens does not fit the {N_CTX}-token polish context"
+            );
+        }
         let mut out = String::new();
         let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut sampler = LlamaSampler::greedy();
+        let mut finished = false;
         for n_cur in (batch.n_tokens()..).take(max_new as usize) {
             let token = sampler.sample(&ctx, batch.n_tokens() - 1);
             sampler.accept(token);
             if self.model.is_eog_token(token) {
+                finished = true;
                 break;
             }
             out.push_str(
@@ -72,6 +85,11 @@ impl Polisher {
             batch.clear();
             batch.add(token, n_cur, &[0], true)?;
             ctx.decode(&mut batch)?;
+        }
+        // Running out of budget means the model never closed the text; the
+        // words after the cut would be lost without a trace.
+        if !finished {
+            bail!("polish did not finish within {max_new} tokens");
         }
         Ok(cleanup(&out))
     }
