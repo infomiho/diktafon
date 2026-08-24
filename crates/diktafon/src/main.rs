@@ -545,30 +545,23 @@ fn test_sound() -> Result<()> {
     let mic_open = Instant::now();
     session.wait_until_live(MIC_READY_TIMEOUT);
     println!("    mic live after {:?}", mic_open.elapsed());
-    // Exactly the dictation path: the cue follows the microphone going live,
-    // which is when a shared headset is still switching to call mode.
-    println!("2/3 OURS, microphone just opened (the real dictation path)");
-    sounds.play(sounds::Cue::Start);
-    pause();
-    pause();
-    // The same file through macOS's own player, at the same point in the
-    // switch: if this is broken too, the fault is the route, not our code.
-    println!("3/4 SYSTEM PLAYER (afplay), same moment, same file");
-    let asset = std::env::temp_dir().join("diktafon-start-cue.mp3");
-    std::fs::write(&asset, include_bytes!("../resources/sounds/start.mp3"))?;
-    let _ = std::process::Command::new("/usr/bin/afplay")
-        .arg(&asset)
-        .status();
-    pause();
+    // Bisect the settle time: the cue is played at growing delays after the
+    // microphone opens, so the first clean one gives the delay the route
+    // actually needs. The internal route wait is a no-op once the format has
+    // already flipped, so these delays are what they say.
+    println!("2/2 microphone open, cue at growing delays after mic live:");
+    let mic_live = Instant::now();
+    for delay_ms in [200u64, 500, 1000, 2000, 3000] {
+        while mic_live.elapsed() < Duration::from_millis(delay_ms) {
+            thread::sleep(Duration::from_millis(10));
+        }
+        println!("    +{delay_ms}ms  (output {})", output_format());
+        sounds.play(sounds::Cue::Start);
+        thread::sleep(Duration::from_millis(900));
+    }
     session.cancel();
 
-    println!("4/4 OURS, microphone closed again");
-    pause();
-    println!("    output now: {}", output_format());
-    sounds.play(sounds::Cue::Start);
-    pause();
-    pause();
-    println!("Which numbers sounded wrong? 3 is macOS playing the same file.");
+    println!("Which delay was the first to sound clean?");
     Ok(())
 }
 
