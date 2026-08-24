@@ -27,6 +27,8 @@ use gpui_component::{
 use std::sync::{Arc, Mutex};
 
 const WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(720.), px(500.));
+/// How often the open settings window re-reads the daemon's status file.
+const DAEMON_POLL: std::time::Duration = std::time::Duration::from_millis(750);
 /// One control height for the whole window: the kit's Large inputs and
 /// selects are 40px, but its Large button keeps the 32px Medium height, so
 /// the button gets the height explicitly to stay coherent.
@@ -399,6 +401,30 @@ impl SettingsWindow {
                 view.autostart = enabled;
                 cx.notify();
             });
+        })
+        .detach();
+
+        // The daemon starts, loads its models and exits on idle while this
+        // window is open, and it reports that through a file rather than to
+        // us, so the card is polled. Reading it is a small file plus a pid
+        // check; the loop ends with the window, when the update fails.
+        cx.spawn(async move |view, cx| {
+            loop {
+                cx.background_executor().timer(DAEMON_POLL).await;
+                let status = cx
+                    .background_executor()
+                    .spawn(async { statusbar::daemon_status() })
+                    .await;
+                let updated = view.update(cx, |view: &mut Self, cx| {
+                    if view.daemon_status != status {
+                        view.daemon_status = status;
+                        cx.notify();
+                    }
+                });
+                if updated.is_err() {
+                    return;
+                }
+            }
         })
         .detach();
 

@@ -215,6 +215,7 @@ fn phase_label(phase: Phase) -> &'static str {
 
 /// The daemon's state as read from its status.json, for structured display
 /// in the settings window.
+#[derive(PartialEq)]
 pub struct DaemonStatus {
     pub running: bool,
     pub models_loaded: bool,
