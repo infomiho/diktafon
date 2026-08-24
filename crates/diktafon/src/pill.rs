@@ -638,6 +638,7 @@ impl Render for Pill {
         let recording = matches!(view, GrilleView::Phase(Phase::Recording));
         let aurora_bands = (recording && !self.closing).then(|| self.aurora_bands());
         let download = self.dictation.read(cx).download.clone();
+        let starting = self.dictation.read(cx).starting;
         let text = if let Some(message) = &error {
             message.clone()
         } else if let Some(download) = &download {
@@ -648,6 +649,9 @@ impl Render for Pill {
             // The last status word stays through the ending beat; only the
             // exit fade takes it away.
             match display {
+                // The daemon is still loading; naming the real wait keeps a
+                // cold start from reading as a stalled transcription.
+                Phase::Transcribing if starting => "Loading models".into(),
                 Phase::Transcribing => "Transcribing".into(),
                 Phase::Polishing => "Polishing".into(),
                 _ => String::new(),
@@ -710,7 +714,8 @@ impl Render for Pill {
                         "content-fade",
                         phase_key(display) * 4
                             + u64::from(error.is_some()) * 2
-                            + u64::from(download.is_some()),
+                            + u64::from(download.is_some())
+                            + u64::from(starting) * 8,
                     ),
                     Animation::new(CONTENT_FADE).with_easing(ease_out_quint()),
                     |el, delta| el.opacity(delta),

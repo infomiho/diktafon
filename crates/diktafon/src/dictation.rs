@@ -37,6 +37,12 @@ pub enum PhaseEvent {
     },
     /// The daemon finished provisioning and can serve sessions.
     DownloadFinished,
+    /// A daemon was spawned for this session; it loads models before it can
+    /// transcribe, which is seconds of waiting the user must not read as a
+    /// hang.
+    DaemonStarting,
+    /// The spawned daemon answered (or gave up); it is no longer starting.
+    DaemonReady,
 }
 
 /// How the last session ended; drives the pill's closing beat.
@@ -55,6 +61,9 @@ pub struct Dictation {
     /// Model download underway on the daemon, shown instead of the session
     /// content so a first run does not look like a hang.
     pub download: Option<Download>,
+    /// A spawned daemon is still loading its models (~6s); the wait after
+    /// release belongs to the load, not to transcription.
+    pub starting: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -73,6 +82,7 @@ impl Dictation {
             phase: Phase::Idle,
             partial: String::new(),
             outcome: None,
+            starting: false,
             download: None,
         });
         cx.spawn({
@@ -126,6 +136,14 @@ impl Dictation {
             }
             PhaseEvent::DownloadFinished => {
                 self.download = None;
+                self.phase
+            }
+            PhaseEvent::DaemonStarting => {
+                self.starting = true;
+                self.phase
+            }
+            PhaseEvent::DaemonReady => {
+                self.starting = false;
                 self.phase
             }
         };

@@ -46,9 +46,17 @@ fn load_models(models_dir: &Path) -> Result<Models> {
     let start = Instant::now();
     let asr = CohereModel::load(&models_dir.join("cohere-int8"), &Quantization::Int8)
         .context("loading ASR model")?;
+    let asr_loaded = start.elapsed();
     let polisher =
         Polisher::load(&models_dir.join("s1-mini-q4_k_m.gguf")).context("loading LLM")?;
-    println!("models loaded in {:.2?}", start.elapsed());
+    // Split reported because only the ASR gates the start of transcription;
+    // the polish model is not needed until the session is flushed.
+    println!(
+        "models loaded in {:.2?} (asr {:.2?}, llm {:.2?})",
+        start.elapsed(),
+        asr_loaded,
+        start.elapsed() - asr_loaded
+    );
     Ok(Models { asr, polisher })
 }
 

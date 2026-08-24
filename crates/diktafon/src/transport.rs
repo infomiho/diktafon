@@ -400,6 +400,9 @@ impl Transport {
         if matches!(failure, ConnectFailure::NoDaemon(_)) && self.supervisor.try_spawn(&self.socket)
         {
             *self.spawned_at.lock().unwrap() = Some(Instant::now());
+            if let Some(tx) = &self.ledger.phase_tx {
+                let _ = tx.unbounded_send(PhaseEvent::DaemonStarting);
+            }
             match self.wait_for_spawned_daemon() {
                 Some(stream) => return self.adopt(stream),
                 // The wait already printed why it gave up.
@@ -487,6 +490,10 @@ impl Transport {
     /// moving.
     fn await_ready(&self, stream: &UnixStream) -> Result<()> {
         let result = self.await_ready_frames(stream);
+        // Whether it came up or gave up, the daemon is no longer starting.
+        if let Some(tx) = &self.ledger.phase_tx {
+            let _ = tx.unbounded_send(PhaseEvent::DaemonReady);
+        }
         // Also clear the UI's download state on failure; otherwise a daemon
         // dying mid-download leaves the pill claiming that download forever.
         if result.is_err()
