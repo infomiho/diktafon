@@ -668,13 +668,18 @@ impl SettingsWindow {
                 "cmd" | "command" | "super" => "⌘".to_string(),
                 "ctrl" | "control" => "⌃".to_string(),
                 "shift" => "⇧".to_string(),
-                key => {
-                    let mut chars = key.chars();
-                    match chars.next() {
-                        Some(first) => first.to_uppercase().chain(chars).collect(),
-                        None => String::new(),
+                key => match crate::keymap::char_for_positional_token(key) {
+                    // Positional names render as the character the user's
+                    // layout prints on that key.
+                    Some(c) => c.to_uppercase().to_string(),
+                    None => {
+                        let mut chars = key.chars();
+                        match chars.next() {
+                            Some(first) => first.to_uppercase().chain(chars).collect(),
+                            None => String::new(),
+                        }
                     }
-                }
+                },
             })
             .collect()
     }
@@ -710,7 +715,20 @@ impl SettingsWindow {
             // A bare key would fire on normal typing; keep waiting.
             return;
         }
-        let candidate = format!("{}+{}", parts.join("+"), keystroke.key);
+        // Global hotkeys register by physical position while gpui reports the
+        // layout's character; a character key must resolve through the layout
+        // (e.g. "z" on QWERTZ is the KeyY position) or Z would fire on the
+        // wrong key. Named keys (space, f5) type the same everywhere.
+        let key = keystroke.key.as_str();
+        let token = if key.chars().count() == 1 {
+            match crate::keymap::positional_token_for_char(key.chars().next().unwrap()) {
+                Some(token) => token.to_string(),
+                None => return,
+            }
+        } else {
+            key.to_string()
+        };
+        let candidate = format!("{}+{}", parts.join("+"), token);
         let Some(hotkey) = crate::config::parse_hotkey(&candidate) else {
             return;
         };
