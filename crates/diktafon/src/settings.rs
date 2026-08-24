@@ -590,11 +590,13 @@ impl SettingsWindow {
                 v_flex()
                     .gap_1p5()
                     .child(Label::new(label).font_medium())
-                    .child(
-                        Label::new(description)
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground),
-                    ),
+                    .when(!description.is_empty(), |el| {
+                        el.child(
+                            Label::new(description)
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                    }),
             )
             .child(control)
     }
@@ -625,7 +627,7 @@ impl SettingsWindow {
             .gap_8()
             .child(Self::control_row(
                 "Start at login",
-                "Launch diktafon when you log in",
+                "",
                 Switch::new("autostart")
                     .large()
                     .checked(self.autostart)
@@ -796,12 +798,7 @@ impl SettingsWindow {
 
     fn dictation_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         Self::form()
-            .child(
-                field()
-                    .label("Tone")
-                    .description("How formal the polished text reads")
-                    .child(self.segmented(0, cx)),
-            )
+            .child(field().label("Tone").child(self.segmented(0, cx)))
             .child(
                 field().child(
                     h_flex()
@@ -812,23 +809,20 @@ impl SettingsWindow {
                                 .flex_1()
                                 .gap_2()
                                 .child(Self::field_label("Shape"))
-                                .child(self.segmented(1, cx))
-                                .child(Self::field_help("Prose, or a list", cx)),
+                                .child(self.segmented(1, cx)),
                         )
                         .child(
                             v_flex()
                                 .flex_1()
                                 .gap_2()
                                 .child(Self::field_label("Written for"))
-                                .child(self.segmented(2, cx))
-                                .child(Self::field_help("General text, or an email", cx)),
+                                .child(self.segmented(2, cx)),
                         ),
                 ),
             )
             .child(
                 field()
                     .label("Language")
-                    .description("The language you dictate in")
                     .child(Select::new(&self.language_select).large()),
             )
     }
@@ -884,13 +878,6 @@ impl SettingsWindow {
     /// The kit's field label and help text, for rows built by hand.
     fn field_label(text: &'static str) -> impl IntoElement {
         div().text_size(px(15.)).font_medium().child(text)
-    }
-
-    fn field_help(text: &'static str, cx: &App) -> impl IntoElement {
-        div()
-            .text_size(px(13.))
-            .text_color(cx.theme().muted_foreground)
-            .child(text)
     }
 
     /// A muted label on the left, a truncating mono value on the right; the
