@@ -361,7 +361,6 @@ fn control_loop(
     v_keycode: Arc<AtomicU32>,
     settings: Arc<std::sync::Mutex<config::SessionSettings>>,
 ) {
-    // Created on this thread: the output stream is not Send.
     let sounds = match sounds::Sounds::new() {
         Ok(sounds) => Some(sounds),
         Err(e) => {
@@ -522,9 +521,8 @@ fn test_sound() -> Result<()> {
         }
     }
 
-    let sounds = sounds::Sounds::new().context("opening audio output")?;
-    println!("sink opened as: {}", sounds.describe());
-    println!("output now:     {}", output_format());
+    let sounds = sounds::Sounds::new().context("decoding cues")?;
+    println!("output: {}", sounds::Sounds::describe());
 
     let pause = || thread::sleep(Duration::from_millis(1500));
     println!("1/3 microphone closed");
