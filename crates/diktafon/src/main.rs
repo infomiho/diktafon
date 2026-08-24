@@ -81,20 +81,24 @@ pub(crate) fn daemon_bin() -> Option<PathBuf> {
     Some(sibling)
 }
 
-/// App-scoped GPUI state (cadence's AppServices pattern); keeps the entities
-/// alive for windows to consume later.
 /// Swaps the push-to-talk registration live: main thread only, where the
 /// Carbon manager lives. The control loop follows via the shared id.
 struct HotkeyRebind {
     manager: std::rc::Rc<GlobalHotKeyManager>,
     current: std::cell::Cell<HotKey>,
     record_id: Arc<AtomicU32>,
+    /// Makes suspend/resume idempotent: a double register would leak a
+    /// Carbon registration that unregister can never remove.
+    suspended: std::cell::Cell<bool>,
 }
 
 impl HotkeyRebind {
     /// Unregister the chord while a new one is recorded, so pressing the
     /// current hotkey during capture cannot start a dictation.
     fn suspend(&self) {
+        if self.suspended.replace(true) {
+            return;
+        }
         if let Err(e) = self.manager.unregister(self.current.get()) {
             eprintln!("suspending hotkey failed: {e}");
         }
@@ -102,24 +106,27 @@ impl HotkeyRebind {
 
     /// Re-register the unchanged chord after a cancelled capture.
     fn resume(&self) {
+        if !self.suspended.replace(false) {
+            return;
+        }
         if let Err(e) = self.manager.register(self.current.get()) {
             eprintln!("resuming hotkey failed: {e}");
         }
     }
 
-    /// Register the captured chord (the old one is suspended); falls back to
-    /// the old chord so a failed registration never leaves the app keyless.
+    /// Register the captured chord (the old one is suspended). On failure the
+    /// old chord stays suspended and capture continues; the eventual capture
+    /// exit resumes it, so the app is never left keyless.
     fn commit(&self, new: HotKey) -> anyhow::Result<()> {
-        if let Err(e) = self.manager.register(new) {
-            self.resume();
-            return Err(e.into());
-        }
+        self.manager.register(new)?;
         self.current.set(new);
         self.record_id.store(new.id(), Ordering::Relaxed);
+        self.suspended.set(false);
         Ok(())
     }
 }
 
+/// App-scoped gpui state; windows reach shared services through it.
 struct AppServices {
     dictation: Entity<Dictation>,
     hotkey: HotkeyRebind,
@@ -305,6 +312,7 @@ fn main() -> Result<()> {
                     manager,
                     current: std::cell::Cell::new(record_key),
                     record_id,
+                    suspended: std::cell::Cell::new(false),
                 },
             });
             println!(

@@ -89,12 +89,18 @@ fn settings_path() -> std::path::PathBuf {
 }
 
 impl SessionSettings {
-    /// Missing or unparseable file falls back to the defaults.
+    /// Missing or unparseable file falls back to the defaults. A hotkey
+    /// string that does not parse is reset in place so every surface (keycaps,
+    /// startup line) shows the chord that is actually registered.
     pub fn load() -> Self {
-        std::fs::read_to_string(settings_path())
+        let mut settings: Self = std::fs::read_to_string(settings_path())
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if parse_hotkey(&settings.hotkey).is_none() {
+            settings.hotkey = Self::default().hotkey;
+        }
+        settings
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
