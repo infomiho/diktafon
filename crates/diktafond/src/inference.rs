@@ -70,6 +70,15 @@ const FINISH_TIMEOUT: Duration = Duration::from_secs(60);
 const MIN_CLIP: usize = TARGET_RATE as usize;
 const PADDED_CLIP: usize = TARGET_RATE as usize * 5 / 4;
 
+/// Padding stops the model erroring on a stub clip but not inventing words
+/// for it: sessions holding under a second of real speech transcribed to
+/// "Thank you." seven times in this user's history, plus "Bum bum bum." and
+/// "Come with them.", each pasted into whatever had focus. A tap of the
+/// hotkey, or a cough, is not a dictation, so the whole session is dropped
+/// rather than answered with invented text. Genuine one-word dictations
+/// ("Okay.", "Commit and push.") measured 1.45s and up.
+const MIN_SESSION_SAMPLES: usize = TARGET_RATE as usize;
+
 fn pad_short_clip(samples: &mut Vec<f32>) {
     if !samples.is_empty() && samples.len() < MIN_CLIP {
         samples.resize(PADDED_CLIP, 0.0);
@@ -147,6 +156,8 @@ impl Inference {
             let mut parts: Vec<String> = Vec::new();
             let mut audio_secs = 0.0f32;
             let mut asr_ms = 0u64;
+            // Real speech in the session, before any padding.
+            let mut speech_samples = 0usize;
             loop {
                 let msg = match chunk_rx.recv_timeout(idle_poll) {
                     Ok(msg) => msg,
@@ -175,10 +186,12 @@ impl Inference {
                         parts.clear();
                         audio_secs = 0.0;
                         asr_ms = 0;
+                        speech_samples = 0;
                         config = new_config;
                     }
                     Msg::Chunk(mut samples) => {
                         let asr = &mut models.asr;
+                        speech_samples += samples.len();
                         pad_short_clip(&mut samples);
                         let secs = samples.len() as f32 / TARGET_RATE as f32;
                         let start = Instant::now();
@@ -210,7 +223,25 @@ impl Inference {
                     }
                     Msg::Flush => {
                         let chunks = parts.len();
+                        let too_short = speech_samples < MIN_SESSION_SAMPLES;
                         let raw = std::mem::take(&mut parts).join(" ");
+                        if too_short {
+                            println!(
+                                "  {:.2}s of speech is below the {:.2}s minimum; dropping{}",
+                                speech_samples as f32 / TARGET_RATE as f32,
+                                MIN_SESSION_SAMPLES as f32 / TARGET_RATE as f32,
+                                if raw.trim().is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" invented {raw:?}")
+                                }
+                            );
+                            audio_secs = 0.0;
+                            asr_ms = 0;
+                            in_session = false;
+                            let _ = events_tx.send(DaemonMsg::Final(String::new()));
+                            continue;
+                        }
                         let mut polish_ms = 0u64;
                         let text = if raw.trim().is_empty() {
                             String::new()
@@ -253,6 +284,7 @@ impl Inference {
                         parts.clear();
                         audio_secs = 0.0;
                         asr_ms = 0;
+                        speech_samples = 0;
                         config = SessionConfig::default();
                         let _ = events_tx.send(DaemonMsg::Aborted);
                     }
