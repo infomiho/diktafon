@@ -29,6 +29,9 @@ pub const CONTEXT: Axis = Axis {
     default: 0,
 };
 
+/// In the order they appear in the line.
+pub const AXES: [Axis; 3] = [STYLING, STRUCTURE, CONTEXT];
+
 impl Axis {
     /// Which of this axis's values `line` selects. A line that omits the axis,
     /// or names something the model was never trained on, falls back to the

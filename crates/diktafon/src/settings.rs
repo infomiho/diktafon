@@ -206,9 +206,9 @@ impl History {
 pub struct SettingsWindow {
     settings: Arc<Mutex<SessionSettings>>,
     section: Section,
-    /// One select per axis of S1-mini's control line, in the order they appear
-    /// in it.
-    control_selects: [Entity<SelectState<SearchableVec<SharedString>>>; 3],
+    /// Chosen value per axis of S1-mini's control line, in the order they
+    /// appear in it.
+    control: [usize; 3],
     language_select: Entity<SelectState<SearchableVec<SharedString>>>,
     /// Codes parallel to the dropdown items. Parallel indexing is only valid
     /// while the selects stay non-searchable: with `.searchable(true)` the
@@ -331,25 +331,7 @@ impl SettingsWindow {
             InputState::new(window, cx).placeholder(search_placeholder(history.entries.len()))
         });
 
-        let control_selects = [
-            &control_line::STYLING,
-            &control_line::STRUCTURE,
-            &control_line::CONTEXT,
-        ]
-        .map(|axis| {
-            let items: Vec<SharedString> = (0..axis.values.len())
-                .map(|index| SharedString::from(axis.label(index)))
-                .collect();
-            let selected = axis.index_in(&current.control_line);
-            cx.new(|cx| {
-                SelectState::new(
-                    SearchableVec::new(items),
-                    Some(IndexPath::new(selected)),
-                    window,
-                    cx,
-                )
-            })
-        });
+        let control = control_line::AXES.map(|axis| axis.index_in(&current.control_line));
 
         let mut language_codes: Vec<String> =
             LANGUAGES.iter().map(|(c, _)| c.to_string()).collect();
@@ -440,16 +422,7 @@ impl SettingsWindow {
         // Settings apply as they change, macOS-style; there is no Save
         // button. Enter inserts a newline in the textarea, so only Blur
         // (and closing the window) commits the prompt.
-        for select in &control_selects {
-            cx.subscribe(
-                select,
-                |view, _, event: &SelectEvent<SearchableVec<SharedString>>, cx| {
-                    let SelectEvent::Confirm(_) = event;
-                    view.save(cx);
-                },
-            )
-            .detach();
-        }
+
         cx.subscribe(&history_search, |view, input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 view.history.query = input.read(cx).value().trim().to_lowercase();
@@ -478,7 +451,7 @@ impl SettingsWindow {
         Self {
             settings,
             section: Section::General,
-            control_selects,
+            control,
             language_select,
             language_codes,
             idle_select,
@@ -497,13 +470,7 @@ impl SettingsWindow {
 
     fn save(&mut self, cx: &mut Context<Self>) {
         let defaults = SessionSettings::default();
-        let axis_index = |slot: usize| {
-            self.control_selects[slot]
-                .read(cx)
-                .selected_index(cx)
-                .map_or(0, |index| index.row)
-        };
-        let control_line = control_line::compose(axis_index(0), axis_index(1), axis_index(2));
+        let control_line = control_line::compose(self.control[0], self.control[1], self.control[2]);
         let language = self
             .language_select
             .read(cx)
@@ -829,25 +796,36 @@ impl SettingsWindow {
         v_form().large().label_text_size(rems(1.))
     }
 
-    fn dictation_pane(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn dictation_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         Self::form()
             .child(
                 field()
                     .label("Tone")
                     .description("How formal the polished text reads")
-                    .child(Select::new(&self.control_selects[0]).large()),
+                    .child(self.segmented(0, cx)),
             )
             .child(
-                field()
-                    .label("Shape")
-                    .description("Flowing prose, or broken into a list")
-                    .child(Select::new(&self.control_selects[1]).large()),
-            )
-            .child(
-                field()
-                    .label("Written for")
-                    .description("General text, or an email")
-                    .child(Select::new(&self.control_selects[2]).large()),
+                field().child(
+                    h_flex()
+                        .gap_6()
+                        .items_start()
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .gap_2()
+                                .child(Self::field_label("Shape"))
+                                .child(self.segmented(1, cx))
+                                .child(Self::field_help("Prose, or a list", cx)),
+                        )
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .gap_2()
+                                .child(Self::field_label("Written for"))
+                                .child(self.segmented(2, cx))
+                                .child(Self::field_help("General text, or an email", cx)),
+                        ),
+                ),
             )
             .child(
                 field()
@@ -855,6 +833,66 @@ impl SettingsWindow {
                     .description("The language you dictate in")
                     .child(Select::new(&self.language_select).large()),
             )
+    }
+
+    /// A row of choices with the current one raised, for axes with a handful
+    /// of values: a dropdown hides two options behind a click and reads busy
+    /// next to the rest of the pane.
+    fn segmented(&self, slot: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let axis = &control_line::AXES[slot];
+        let selected = self.control[slot];
+        let theme = cx.theme();
+        let (raised, muted, chosen) = (
+            rgba(theme::SURFACE_RAISED | 0xFF),
+            theme.muted_foreground,
+            theme.foreground,
+        );
+        h_flex()
+            .w_full()
+            // Concentric: the inner radius plus this padding is the outer one.
+            .p(px(3.))
+            .gap(px(2.))
+            .rounded(px(8.))
+            .bg(rgba(theme::SURFACE_SUNKEN | 0xFF))
+            .border_1()
+            .border_color(rgba(theme::HAIRLINE | 0x22))
+            .children((0..axis.values.len()).map(|index| {
+                let active = index == selected;
+                div()
+                    .id(("segment", slot * 16 + index))
+                    .flex_1()
+                    .h(px(30.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(5.))
+                    .text_size(px(13.))
+                    .when(active, |el| el.bg(raised).text_color(chosen).font_medium())
+                    .when(!active, |el| {
+                        el.text_color(muted)
+                            .hover(|el| el.bg(rgba(theme::HAIRLINE | 0x14)))
+                    })
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        if view.control[slot] != index {
+                            view.control[slot] = index;
+                            view.save(cx);
+                            cx.notify();
+                        }
+                    }))
+                    .child(axis.label(index))
+            }))
+    }
+
+    /// The kit's field label and help text, for rows built by hand.
+    fn field_label(text: &'static str) -> impl IntoElement {
+        div().text_size(px(15.)).font_medium().child(text)
+    }
+
+    fn field_help(text: &'static str, cx: &App) -> impl IntoElement {
+        div()
+            .text_size(px(13.))
+            .text_color(cx.theme().muted_foreground)
+            .child(text)
     }
 
     /// A muted label on the left, a truncating mono value on the right; the
@@ -1131,7 +1169,17 @@ impl Render for SettingsWindow {
                             .font_semibold()
                             .child(section.title()),
                     )
-                    .child(v_flex().mt_8().flex_1().min_h_0().child(pane)),
+                    // Panes are taller than the fixed window; without this the
+                    // last field is simply cut off.
+                    .child(
+                        div()
+                            .id("pane-scroll")
+                            .mt_8()
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .child(pane),
+                    ),
             )
     }
 }

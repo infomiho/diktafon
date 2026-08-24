@@ -18,13 +18,16 @@ use std::time::{Duration, Instant};
 /// can need hundreds of milliseconds.
 const MIC_READY_TIMEOUT: Duration = Duration::from_millis(1500);
 
-/// How a dictation ended, as recorded in the timings.
+/// How a dictation ended. The two failures are recorded alike but felt
+/// differently: only the daemon failing gets an error cue, since a paste that
+/// needs Accessibility already shows its reason in the pill.
 #[derive(Debug, PartialEq)]
 enum Outcome {
     Pasted,
     /// Nothing to paste: silence, or too little speech to transcribe.
     Empty,
-    Failed,
+    PasteFailed,
+    TranscriptionFailed,
 }
 
 impl Outcome {
@@ -32,7 +35,35 @@ impl Outcome {
         match self {
             Outcome::Pasted => "pasted",
             Outcome::Empty => "empty",
-            Outcome::Failed => "error",
+            Outcome::PasteFailed | Outcome::TranscriptionFailed => "error",
+        }
+    }
+}
+
+/// What the daemon's answer means for the user: the text to surface, and how
+/// the dictation ended. `paste` returns the reason pasting failed, if it did.
+fn classify(
+    result: anyhow::Result<String>,
+    paste: impl FnOnce(&str) -> Option<String>,
+) -> (Option<String>, Outcome) {
+    match result {
+        Ok(text) if text.is_empty() => {
+            println!("(no speech)");
+            (None, Outcome::Empty)
+        }
+        Ok(text) => {
+            println!(">>> {text}");
+            match paste(&text) {
+                Some(reason) => (Some(reason), Outcome::PasteFailed),
+                None => (None, Outcome::Pasted),
+            }
+        }
+        Err(e) => {
+            eprintln!("inference error: {e:#}");
+            (
+                Some("Transcription failed".to_string()),
+                Outcome::TranscriptionFailed,
+            )
         }
     }
 }
@@ -115,12 +146,15 @@ impl Dictations {
         // slow mics don't eat first words. A queued release is handled next.
         if !session.wait_until_live(MIC_READY_TIMEOUT) {
             eprintln!("microphone produced no samples; is another app holding it?");
-            // stop() flushes the (empty) session to the daemon; consume its
-            // result so it cannot be misdelivered to the next dictation.
             session.stop();
-            let _ = self.daemon.finish();
-            self.recorder.mark_stream_failed();
+            // Before the blocking finish() below: on a cold daemon that call
+            // can sit for up to FINISH_TIMEOUT, and the cue is the only
+            // feedback the user gets in the meantime.
             self.play(sounds::Cue::Error);
+            self.recorder.mark_stream_failed();
+            // stop() flushed the (empty) session to the daemon; consume its
+            // result so it cannot be misdelivered to the next dictation.
+            let _ = self.daemon.finish();
             self.ended(Some("Microphone unavailable".into()), false);
             return;
         }
@@ -143,28 +177,14 @@ impl Dictations {
         live.session.stop();
         self.emit(PhaseEvent::RecordingStopped);
 
-        let (error, outcome) = match self.daemon.finish() {
-            Ok(text) if text.is_empty() => {
-                println!("(no speech)");
-                (None, Outcome::Empty)
-            }
-            Ok(text) => {
-                println!(">>> {text}");
-                let error = self.paste(&text);
-                println!("stop-to-paste: {:.2?}", stopped_at.elapsed());
-                let outcome = if error.is_some() {
-                    Outcome::Failed
-                } else {
-                    Outcome::Pasted
-                };
-                (error, outcome)
-            }
-            Err(e) => {
-                self.play(sounds::Cue::Error);
-                eprintln!("inference error: {e:#}");
-                (Some("Transcription failed".to_string()), Outcome::Failed)
-            }
-        };
+        let (error, outcome) = classify(self.daemon.finish(), |text| {
+            let failure = self.paste(text);
+            println!("stop-to-paste: {:.2?}", stopped_at.elapsed());
+            failure
+        });
+        if outcome == Outcome::TranscriptionFailed {
+            self.play(sounds::Cue::Error);
+        }
 
         stats::append(&stats::Timing {
             at: diktafon_protocol::history::now_rfc3339(),
@@ -241,7 +261,53 @@ mod tests {
     fn outcome_labels_match_the_timings_format() {
         assert_eq!(Outcome::Pasted.label(), "pasted");
         assert_eq!(Outcome::Empty.label(), "empty");
-        assert_eq!(Outcome::Failed.label(), "error");
+        assert_eq!(Outcome::PasteFailed.label(), "error");
+        assert_eq!(Outcome::TranscriptionFailed.label(), "error");
+    }
+
+    /// The pill's quiet ending is reserved for "nothing was dictated"; a
+    /// failure must not borrow it.
+    fn ends_quietly(outcome: &Outcome) -> bool {
+        *outcome == Outcome::Empty
+    }
+
+    #[test]
+    fn an_empty_transcript_pastes_nothing_and_ends_quietly() {
+        let (error, outcome) = classify(Ok(String::new()), |_| panic!("must not paste"));
+        assert_eq!(error, None);
+        assert_eq!(outcome, Outcome::Empty);
+        assert!(ends_quietly(&outcome));
+    }
+
+    #[test]
+    fn a_transcript_is_pasted() {
+        let mut pasted = None;
+        let (error, outcome) = classify(Ok("hello".into()), |text| {
+            pasted = Some(text.to_string());
+            None
+        });
+        assert_eq!(pasted.as_deref(), Some("hello"));
+        assert_eq!(error, None);
+        assert_eq!(outcome, Outcome::Pasted);
+        assert!(!ends_quietly(&outcome));
+    }
+
+    #[test]
+    fn a_failed_paste_surfaces_its_reason_without_the_quiet_ending() {
+        let (error, outcome) = classify(Ok("hello".into()), |_| Some("Needs Accessibility".into()));
+        assert_eq!(error.as_deref(), Some("Needs Accessibility"));
+        assert_eq!(outcome, Outcome::PasteFailed);
+        assert!(!ends_quietly(&outcome));
+    }
+
+    #[test]
+    fn a_daemon_failure_is_reported_and_never_pastes() {
+        let (error, outcome) = classify(Err(anyhow::anyhow!("worker died")), |_| {
+            panic!("must not paste")
+        });
+        assert_eq!(error.as_deref(), Some("Transcription failed"));
+        assert_eq!(outcome, Outcome::TranscriptionFailed);
+        assert!(!ends_quietly(&outcome));
     }
 
     #[test]
