@@ -105,14 +105,29 @@ impl Sounds {
         }
     }
 
-    /// Fire and forget: playing holds a thread for the length of the cue
-    /// (~0.4s), which must not delay the dictation that triggered it.
-    pub fn play(&self, cue: Cue) {
-        let buffer = match &cue {
+    /// Same cue with no route wait, so `--test-sound` can compare our
+    /// playback against the system player at the same instant.
+    pub fn play_now(&self, cue: Cue) {
+        let buffer = self.buffer(&cue);
+        std::thread::spawn(move || {
+            if let Err(e) = play_on_default_device(buffer) {
+                eprintln!("playing feedback sound failed: {e:#}");
+            }
+        });
+    }
+
+    fn buffer(&self, cue: &Cue) -> SamplesBuffer {
+        match cue {
             Cue::Start => self.start.clone(),
             Cue::Cancel => self.cancel.clone(),
             Cue::Error => self.error.clone(),
-        };
+        }
+    }
+
+    /// Fire and forget: playing holds a thread for the length of the cue
+    /// (~0.4s), which must not delay the dictation that triggered it.
+    pub fn play(&self, cue: Cue) {
+        let buffer = self.buffer(&cue);
         // Only the start cue coincides with the microphone opening.
         let settle = matches!(cue, Cue::Start) && route_switch_pending();
         std::thread::spawn(move || {

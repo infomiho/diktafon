@@ -529,39 +529,38 @@ fn test_sound() -> Result<()> {
     let sounds = sounds::Sounds::new().context("decoding cues")?;
     println!("output: {}", sounds::Sounds::describe());
 
-    let pause = || thread::sleep(Duration::from_millis(1500));
-    println!("1/4 OURS, microphone closed");
-    sounds.play(sounds::Cue::Start);
-    pause();
-    pause();
-
+    let asset = std::env::temp_dir().join("diktafon-start-cue.mp3");
+    std::fs::write(&asset, include_bytes!("../resources/sounds/start.mp3"))?;
     let levels: capture::LevelBars = Default::default();
     let mut recorder = Recorder::new(ensure_vad_model()?, levels)?;
-    println!("    mic: {}", recorder.describe());
-    let (chunk_tx, chunk_rx) = mpsc::channel();
-    // The capture thread would otherwise block once nothing drains it.
-    thread::spawn(move || while chunk_rx.recv().is_ok() {});
-    let session = recorder.start(chunk_tx)?;
-    let mic_open = Instant::now();
-    session.wait_until_live(MIC_READY_TIMEOUT);
-    println!("    mic live after {:?}", mic_open.elapsed());
-    // Bisect the settle time: the cue is played at growing delays after the
-    // microphone opens, so the first clean one gives the delay the route
-    // actually needs. The internal route wait is a no-op once the format has
-    // already flipped, so these delays are what they say.
-    println!("2/2 microphone open, cue at growing delays after mic live:");
-    let mic_live = Instant::now();
-    for delay_ms in [200u64, 500, 1000, 2000, 3000] {
-        while mic_live.elapsed() < Duration::from_millis(delay_ms) {
-            thread::sleep(Duration::from_millis(10));
-        }
-        println!("    +{delay_ms}ms  (output {})", output_format());
-        sounds.play(sounds::Cue::Start);
-        thread::sleep(Duration::from_millis(900));
-    }
-    session.cancel();
+    println!("mic: {}", recorder.describe());
 
-    println!("Which delay was the first to sound clean?");
+    // Both rounds play at +200ms after the microphone opens, the point where
+    // our cue is known to break. If the system player breaks there too, the
+    // route simply cannot play then and waiting is the only fix; if it stays
+    // clean, the fault is our playback path.
+    for round in ["OURS", "SYSTEM afplay"] {
+        println!("Letting the headset return to music mode (20s)...");
+        thread::sleep(Duration::from_secs(20));
+        println!("{round} at +200ms after mic live. Listen.");
+        let (chunk_tx, chunk_rx) = mpsc::channel();
+        thread::spawn(move || while chunk_rx.recv().is_ok() {});
+        let session = recorder.start(chunk_tx)?;
+        session.wait_until_live(MIC_READY_TIMEOUT);
+        thread::sleep(Duration::from_millis(200));
+        if round == "OURS" {
+            sounds.play_now(sounds::Cue::Start);
+            thread::sleep(Duration::from_millis(1500));
+        } else {
+            let _ = std::process::Command::new("/usr/bin/afplay")
+                .arg(&asset)
+                .status();
+            thread::sleep(Duration::from_millis(500));
+        }
+        session.cancel();
+    }
+
+    println!("Did the system player sound broken too, or only ours?");
     Ok(())
 }
 
