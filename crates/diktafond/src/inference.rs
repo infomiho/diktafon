@@ -5,16 +5,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
-use transcribe_rs::onnx::Quantization;
-use transcribe_rs::onnx::cohere::{CohereModel, CohereParams};
 
-use diktafon_protocol::{DaemonMsg, Msg, SessionConfig, TARGET_RATE};
+use diktafon_protocol::{DaemonMsg, ModelSelection, Msg, SessionConfig, TARGET_RATE};
 
 use crate::llm::Polisher;
+use crate::manifest::{ModelBackend, model, model_path};
 
 /// Observer for model residency changes; the daemon points it at the status
 /// file, benchmarks and tests pass `None`.
-pub type Residency = Option<Box<dyn Fn(bool) + Send>>;
+pub type Residency = Option<Box<dyn Fn(bool, Option<&str>, Option<&str>) + Send>>;
 
 /// How often the worker wakes to check for idleness.
 const IDLE_POLL: Duration = Duration::from_secs(30);
@@ -33,22 +32,94 @@ fn idle_unload_after() -> Duration {
 }
 
 struct Models {
-    asr: CohereModel,
-    polisher: Polisher,
+    asr: Box<dyn Transcriber>,
+    asr_languages: Vec<String>,
+    asr_backend: String,
+    asr_device: String,
+    polisher: PolishingBackend,
 }
 
-/// Display names for the status file and UI; keep in step with the paths
-/// loaded below and the manifest.
-pub const ASR_MODEL_NAME: &str = "cohere-transcribe-int8";
-pub const LLM_MODEL_NAME: &str = "s1-mini-q4_k_m";
+enum PolishingBackend {
+    S1(Polisher),
+    AppleIntelligence,
+}
 
-fn load_models(models_dir: &Path) -> Result<Models> {
+impl PolishingBackend {
+    fn load(models_dir: &Path, selection: &ModelSelection) -> Result<Self> {
+        match model(&selection.polishing)?.backend {
+            ModelBackend::LlamaCpp => {
+                let path = model_path(models_dir, &selection.polishing)?;
+                Ok(Self::S1(Polisher::load(&path).context("loading S1-mini")?))
+            }
+            ModelBackend::AppleFoundationModels => Ok(Self::AppleIntelligence),
+            backend => Err(anyhow!("unsupported polishing backend {backend:?}")),
+        }
+    }
+
+    fn polish(&self, transcript: &str, control_line: &str) -> Result<String> {
+        match self {
+            Self::S1(polisher) => polisher.polish(transcript, control_line),
+            Self::AppleIntelligence => crate::apple_intelligence::polish(transcript, control_line),
+        }
+    }
+}
+
+trait Transcriber: Send {
+    fn transcribe(&mut self, samples: &[f32], language: &str) -> Result<String>;
+}
+
+struct TranscribeCppTranscriber(transcribe_cpp::Session);
+
+impl Transcriber for TranscribeCppTranscriber {
+    fn transcribe(&mut self, samples: &[f32], language: &str) -> Result<String> {
+        let options = transcribe_cpp::RunOptions {
+            task: transcribe_cpp::Task::Transcribe,
+            pnc: transcribe_cpp::Pnc::Default,
+            language: Some(language.to_string()),
+            ..Default::default()
+        };
+        self.0
+            .run(samples, &options)
+            .map(|transcript| transcript.text)
+            .map_err(|error| anyhow!("{error}"))
+    }
+}
+
+fn load_models(models_dir: &Path, selection: &ModelSelection) -> Result<Models> {
     let start = Instant::now();
-    let asr = CohereModel::load(&models_dir.join("cohere-int8"), &Quantization::Int8)
-        .context("loading ASR model")?;
+    let asr_path = model_path(models_dir, &selection.transcription)?;
+    let asr_model = model(&selection.transcription)?;
+    let (asr, asr_backend, asr_device): (Box<dyn Transcriber>, _, _) = match asr_model.backend {
+        ModelBackend::TranscribeCpp => {
+            let options = transcribe_cpp::ModelOptions {
+                backend: transcribe_cpp::Backend::Auto,
+                device: None,
+            };
+            let model = transcribe_cpp::Model::load_with(&asr_path, &options)
+                .context("loading transcribe.cpp model")?;
+            let backend = model.backend();
+            let device = model
+                .device()
+                .map(|device| device.name)
+                .unwrap_or_else(|_| "unknown device".into());
+            println!(
+                "ASR {} loaded through {} on {}",
+                model.arch(),
+                backend,
+                device
+            );
+            (
+                Box::new(TranscribeCppTranscriber(
+                    model.session().context("creating transcribe.cpp session")?,
+                )),
+                backend,
+                device,
+            )
+        }
+        backend => return Err(anyhow!("unsupported transcription backend {backend:?}")),
+    };
     let asr_loaded = start.elapsed();
-    let polisher =
-        Polisher::load(&models_dir.join("s1-mini-q4_k_m.gguf")).context("loading LLM")?;
+    let polisher = PolishingBackend::load(models_dir, selection)?;
     // Split reported because only the ASR gates the start of transcription;
     // the polish model is not needed until the session is flushed.
     println!(
@@ -57,7 +128,13 @@ fn load_models(models_dir: &Path) -> Result<Models> {
         asr_loaded,
         start.elapsed() - asr_loaded
     );
-    Ok(Models { asr, polisher })
+    Ok(Models {
+        asr,
+        asr_languages: asr_model.languages.clone(),
+        asr_backend,
+        asr_device,
+        polisher,
+    })
 }
 
 /// Upper bound on transcribing the queued chunks plus one polish pass. Hit when
@@ -122,6 +199,7 @@ impl Inference {
     /// models are loaded (true) or unloaded (false).
     pub fn spawn(
         models_dir: &Path,
+        selection: ModelSelection,
         history: Option<std::path::PathBuf>,
         residency: Residency,
     ) -> Result<Self> {
@@ -131,15 +209,19 @@ impl Inference {
         let models_dir = models_dir.to_path_buf();
 
         thread::spawn(move || {
-            let notify_residency = |loaded: bool| {
+            let notify_residency = |loaded: bool, models: Option<&Models>| {
                 if let Some(callback) = &residency {
-                    callback(loaded);
+                    callback(
+                        loaded,
+                        models.map(|models| models.asr_backend.as_str()),
+                        models.map(|models| models.asr_device.as_str()),
+                    );
                 }
             };
-            let mut models = match load_models(&models_dir) {
+            let mut models = match load_models(&models_dir, &selection) {
                 Ok(models) => {
                     let _ = ready_tx.send(Ok(()));
-                    notify_residency(true);
+                    notify_residency(true, Some(&models));
                     models
                 }
                 Err(e) => {
@@ -156,6 +238,7 @@ impl Inference {
             let mut parts: Vec<String> = Vec::new();
             let mut audio_secs = 0.0f32;
             let mut asr_ms = 0u64;
+            let mut session_error: Option<String> = None;
             // Real speech in the session, before any padding.
             let mut speech_samples = 0usize;
             loop {
@@ -186,42 +269,57 @@ impl Inference {
                         parts.clear();
                         audio_secs = 0.0;
                         asr_ms = 0;
+                        session_error = None;
                         speech_samples = 0;
                         config = new_config;
                     }
                     Msg::Chunk(mut samples) => {
-                        let asr = &mut models.asr;
                         speech_samples += samples.len();
                         pad_short_clip(&mut samples);
                         let secs = samples.len() as f32 / TARGET_RATE as f32;
                         let start = Instant::now();
-                        let result = catch_panic("ASR", || {
-                            asr.transcribe_with(
-                                &samples,
-                                &CohereParams {
-                                    language: Some(config.language.clone()),
-                                    ..Default::default()
-                                },
-                            )
-                            .map_err(|e| anyhow!("{e}"))
-                        });
+                        let result = if models
+                            .asr_languages
+                            .iter()
+                            .any(|code| code == &config.language)
+                        {
+                            let asr = &mut models.asr;
+                            catch_panic("ASR", || asr.transcribe(&samples, &config.language))
+                        } else {
+                            Err(anyhow!(
+                                "transcription model does not support language {:?}",
+                                config.language
+                            ))
+                        };
                         match result {
                             Ok(r) => {
                                 println!(
                                     "  chunk {:>4.1}s, ASR {:.2?}: {}",
                                     secs,
                                     start.elapsed(),
-                                    r.text
+                                    r
                                 );
                                 audio_secs += secs;
                                 asr_ms += start.elapsed().as_millis() as u64;
-                                let _ = events_tx.send(DaemonMsg::Partial(r.text.clone()));
-                                parts.push(r.text);
+                                let _ = events_tx.send(DaemonMsg::Partial(r.clone()));
+                                parts.push(r);
                             }
-                            Err(e) => eprintln!("ASR error: {e}"),
+                            Err(e) => {
+                                eprintln!("ASR error: {e}");
+                                session_error.get_or_insert_with(|| e.to_string());
+                            }
                         }
                     }
                     Msg::Flush => {
+                        if let Some(error) = session_error.take() {
+                            parts.clear();
+                            audio_secs = 0.0;
+                            asr_ms = 0;
+                            speech_samples = 0;
+                            in_session = false;
+                            let _ = events_tx.send(DaemonMsg::Error(error));
+                            continue;
+                        }
                         let chunks = parts.len();
                         let too_short = speech_samples < MIN_SESSION_SAMPLES;
                         let raw = std::mem::take(&mut parts).join(" ");
@@ -270,6 +368,8 @@ impl Inference {
                             entry.audio_secs = audio_secs;
                             entry.asr_ms = asr_ms;
                             entry.polish_ms = polish_ms;
+                            entry.transcription_model = Some(selection.transcription.clone());
+                            entry.polishing_model = Some(selection.polishing.clone());
                             if let Err(e) =
                                 diktafon_protocol::history::append_to(history_path, &entry)
                             {
@@ -284,6 +384,7 @@ impl Inference {
                     Msg::Cancel => {
                         in_session = false;
                         parts.clear();
+                        session_error = None;
                         audio_secs = 0.0;
                         asr_ms = 0;
                         speech_samples = 0;
@@ -340,6 +441,14 @@ impl Inference {
 mod tests {
     use super::*;
 
+    struct FakeTranscriber;
+
+    impl Transcriber for FakeTranscriber {
+        fn transcribe(&mut self, samples: &[f32], language: &str) -> Result<String> {
+            Ok(format!("{language}:{}", samples.len()))
+        }
+    }
+
     #[test]
     fn short_clips_are_padded_and_others_untouched() {
         let mut short = vec![0.5; MIN_CLIP / 2];
@@ -355,5 +464,21 @@ mod tests {
         let mut empty: Vec<f32> = Vec::new();
         pad_short_clip(&mut empty);
         assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn transcription_backend_receives_pcm_and_language() {
+        let mut backend: Box<dyn Transcriber> = Box::new(FakeTranscriber);
+        assert_eq!(backend.transcribe(&[0.0; 160], "en").unwrap(), "en:160");
+    }
+
+    #[test]
+    #[ignore = "loads the real Canary and S1 models"]
+    fn canary_model_pair_loads() {
+        let selection = ModelSelection {
+            transcription: "canary-1b-flash-q5-k-m".into(),
+            ..ModelSelection::default()
+        };
+        Inference::spawn(&diktafon_protocol::models_dir(), selection, None, None).unwrap();
     }
 }

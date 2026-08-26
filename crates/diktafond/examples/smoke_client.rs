@@ -31,7 +31,18 @@ fn wav_samples(path: &str) -> Vec<f32> {
 }
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: smoke_client <wav>");
+    let mut args = std::env::args().skip(1);
+    let path = args
+        .next()
+        .expect("usage: smoke_client <wav> [transcription-id] [polishing-id]");
+    let models = diktafon_protocol::ModelSelection {
+        transcription: args
+            .next()
+            .unwrap_or_else(|| diktafon_protocol::DEFAULT_TRANSCRIPTION_MODEL.into()),
+        polishing: args
+            .next()
+            .unwrap_or_else(|| diktafon_protocol::DEFAULT_POLISHING_MODEL.into()),
+    };
     let socket = std::env::var_os("DIKTAFOND_SOCKET")
         .map(PathBuf::from)
         .unwrap_or_else(socket_path);
@@ -41,6 +52,7 @@ fn main() {
         &mut stream,
         &ClientMsg::Hello {
             version: PROTOCOL_VERSION,
+            models,
         },
     )
     .unwrap();

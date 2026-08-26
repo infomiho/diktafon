@@ -133,9 +133,20 @@ impl HotkeyRebind {
 struct AppServices {
     dictation: Entity<Dictation>,
     hotkey: HotkeyRebind,
+    models: transport::ModelSelectionControl,
 }
 
 impl Global for AppServices {}
+
+fn apple_intelligence_available() -> bool {
+    let Some(bin) = daemon_bin() else {
+        return false;
+    };
+    std::process::Command::new(bin)
+        .arg("--apple-availability")
+        .output()
+        .is_ok_and(|output| output.status.success() && output.stdout == b"Available\n")
+}
 
 fn main() -> Result<()> {
     // Modes that must not touch (or auto-spawn) the daemon come first.
@@ -153,8 +164,34 @@ fn main() -> Result<()> {
         return stats::report();
     }
 
+    let mut loaded_settings = config::SessionSettings::load();
+    let original_models = (
+        loaded_settings.transcription_model.clone(),
+        loaded_settings.polishing_model.clone(),
+    );
+    let resolved_models = loaded_settings.models();
+    loaded_settings.transcription_model = resolved_models.transcription;
+    loaded_settings.polishing_model = resolved_models.polishing;
+    if loaded_settings.polishing_model == "apple-intelligence" && !apple_intelligence_available() {
+        loaded_settings.polishing_model = diktafon_protocol::DEFAULT_POLISHING_MODEL.into();
+    }
+    if original_models
+        != (
+            loaded_settings.transcription_model.clone(),
+            loaded_settings.polishing_model.clone(),
+        )
+    {
+        loaded_settings.save()?;
+    }
+    let session_settings = Arc::new(std::sync::Mutex::new(loaded_settings));
     let (phase_tx, phase_rx) = futures::channel::mpsc::unbounded::<PhaseEvent>();
-    let daemon = DaemonClient::spawn(socket_path(), daemon_bin(), Some(phase_tx.clone()));
+    let daemon = DaemonClient::spawn(
+        socket_path(),
+        daemon_bin(),
+        Some(phase_tx.clone()),
+        session_settings.lock().unwrap().models(),
+    );
+    let model_selection = daemon.models.clone();
 
     if let Some(text) = args.first() {
         let text = text.clone();
@@ -169,8 +206,6 @@ fn main() -> Result<()> {
     let levels: capture::LevelBars = Default::default();
     let recorder = Recorder::new(ensure_vad_model()?, levels.clone())?;
     println!("Mic: {}", recorder.describe());
-
-    let session_settings = Arc::new(std::sync::Mutex::new(config::SessionSettings::load()));
 
     let manager =
         std::rc::Rc::new(GlobalHotKeyManager::new().context("registering global hotkey manager")?);
@@ -319,6 +354,7 @@ fn main() -> Result<()> {
                     record_id,
                     suspended: std::cell::Cell::new(false),
                 },
+                models: model_selection,
             });
             println!(
                 "Ready. Hold {} to dictate, release to paste.",

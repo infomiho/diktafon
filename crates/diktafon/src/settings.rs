@@ -15,6 +15,7 @@ use gpui::{
     TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px,
     relative, rems, rgba, size,
 };
+use gpui_component::button::Button;
 use gpui_component::form::{Form, field, v_form};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::label::Label;
@@ -27,6 +28,87 @@ use gpui_component::{
 };
 use std::sync::{Arc, Mutex};
 
+#[derive(serde::Deserialize)]
+struct ModelCatalog {
+    models: Vec<CatalogModel>,
+}
+
+#[derive(serde::Deserialize)]
+struct CatalogModel {
+    id: String,
+    category: String,
+    name: String,
+    backend: String,
+    languages: Vec<String>,
+    files: Vec<CatalogFile>,
+}
+
+#[derive(serde::Deserialize)]
+struct CatalogFile {
+    path: String,
+    size: u64,
+}
+
+fn model_options(
+    current: &str,
+    category: &str,
+    apple_available: bool,
+) -> (Vec<String>, Vec<SharedString>, Vec<String>) {
+    let catalog: ModelCatalog = serde_json::from_str(diktafon_protocol::MODEL_CATALOG_JSON)
+        .expect("bundled model catalog must parse");
+    let mut ids = Vec::new();
+    let mut labels = Vec::new();
+    let mut descriptions = Vec::new();
+    for model in catalog.models.into_iter().filter(|model| {
+        model.category == category && (model.id != "apple-intelligence" || apple_available)
+    }) {
+        let installed = model
+            .files
+            .iter()
+            .all(|file| diktafon_protocol::models_dir().join(&file.path).exists());
+        let size: u64 = model.files.iter().map(|file| file.size).sum();
+        let source = if model.files.is_empty() {
+            "System-provided".to_string()
+        } else {
+            format!("{} MB", size / 1_000_000)
+        };
+        let state = if model.files.is_empty() {
+            "availability checked on use"
+        } else if installed {
+            "installed"
+        } else {
+            "downloads on first use"
+        };
+        labels.push(model.name.clone().into());
+        descriptions.push(format!(
+            "{source}; {} language{}; {}; {state}",
+            model.languages.len(),
+            if model.languages.len() == 1 { "" } else { "s" },
+            model.backend.replace('_', ".")
+        ));
+        ids.push(model.id);
+    }
+    if !ids.iter().any(|id| id == current) && (current != "apple-intelligence" || apple_available) {
+        ids.push(current.to_string());
+        labels.push(format!("Unknown model ({current})").into());
+        descriptions.push("Invalid for this category; the default is used until changed.".into());
+    }
+    (ids, labels, descriptions)
+}
+
+fn open_third_party_notices() -> std::io::Result<()> {
+    let executable = std::env::current_exe()?;
+    let bundled = executable
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map(|contents| contents.join("Resources/THIRD_PARTY_NOTICES.md"));
+    let source =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../THIRD_PARTY_NOTICES.md");
+    let path = bundled.filter(|path| path.exists()).unwrap_or(source);
+    std::process::Command::new("open").arg(path).spawn()?;
+    Ok(())
+}
+
 const WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(720.), px(500.));
 /// How often the open settings window re-reads the daemon's status file.
 const DAEMON_POLL: std::time::Duration = std::time::Duration::from_millis(750);
@@ -38,7 +120,6 @@ const CONTROL_HEIGHT: gpui::Pixels = px(40.);
 /// this list is appended so it stays selectable.
 const LANGUAGES: &[(&str, &str)] = &[
     ("en", "English"),
-    ("hr", "Croatian"),
     ("de", "German"),
     ("fr", "French"),
     ("es", "Spanish"),
@@ -46,19 +127,12 @@ const LANGUAGES: &[(&str, &str)] = &[
     ("pt", "Portuguese"),
     ("nl", "Dutch"),
     ("pl", "Polish"),
-    ("cs", "Czech"),
-    ("sv", "Swedish"),
-    ("da", "Danish"),
-    ("nb", "Norwegian"),
-    ("fi", "Finnish"),
-    ("hu", "Hungarian"),
-    ("ro", "Romanian"),
-    ("tr", "Turkish"),
-    ("uk", "Ukrainian"),
-    ("ru", "Russian"),
+    ("el", "Greek"),
+    ("ar", "Arabic"),
     ("ja", "Japanese"),
     ("ko", "Korean"),
     ("zh", "Chinese"),
+    ("vi", "Vietnamese"),
 ];
 
 const IDLE_OPTIONS: &[(u64, &str)] = &[
@@ -212,6 +286,12 @@ pub struct SettingsWindow {
     /// while the selects stay non-searchable: with `.searchable(true)` the
     /// selected index would point into the filtered list.
     language_codes: Vec<String>,
+    transcription_select: Entity<SelectState<SearchableVec<SharedString>>>,
+    transcription_ids: Vec<String>,
+    transcription_descriptions: Vec<String>,
+    polishing_select: Entity<SelectState<SearchableVec<SharedString>>>,
+    polishing_ids: Vec<String>,
+    polishing_descriptions: Vec<String>,
     idle_select: Entity<SelectState<SearchableVec<SharedString>>>,
     /// Seconds parallel to the idle dropdown items.
     idle_values: Vec<u64>,
@@ -302,7 +382,27 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let current = settings.lock().unwrap().clone();
+        let mut current = settings.lock().unwrap().clone();
+        let mut daemon_status = statusbar::daemon_status();
+        if daemon_status.polishing_availability.is_none() {
+            daemon_status.polishing_availability =
+                crate::apple_intelligence_available().then(|| "Available".to_string());
+        }
+        let apple_available = daemon_status.polishing_availability.as_deref() == Some("Available");
+        let resolved_models = current.models();
+        if current.transcription_model != resolved_models.transcription {
+            current.transcription_model = resolved_models.transcription;
+        }
+        if current.polishing_model == "apple-intelligence" && !apple_available {
+            current.polishing_model = diktafon_protocol::DEFAULT_POLISHING_MODEL.into();
+            if let Err(error) = current.save() {
+                eprintln!("saving Apple Intelligence fallback failed: {error:#}");
+            }
+            *settings.lock().unwrap() = current.clone();
+            cx.global::<crate::AppServices>()
+                .models
+                .set(current.models());
+        }
 
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
@@ -349,6 +449,43 @@ impl SettingsWindow {
             SelectState::new(
                 SearchableVec::new(language_items),
                 Some(IndexPath::new(language_index)),
+                window,
+                cx,
+            )
+        });
+
+        let (transcription_ids, transcription_items, transcription_descriptions) = model_options(
+            &current.transcription_model,
+            "transcription",
+            apple_available,
+        );
+        let transcription_index = transcription_ids
+            .iter()
+            .position(|id| id == &current.transcription_model)
+            .unwrap();
+        let transcription_select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(transcription_items),
+                Some(IndexPath::new(transcription_index)),
+                window,
+                cx,
+            )
+        });
+        let (polishing_ids, polishing_items, polishing_descriptions) =
+            model_options(&current.polishing_model, "polishing", apple_available);
+        let polishing_index = polishing_ids
+            .iter()
+            .position(|id| id == &current.polishing_model)
+            .or_else(|| {
+                polishing_ids
+                    .iter()
+                    .position(|id| id == diktafon_protocol::DEFAULT_POLISHING_MODEL)
+            })
+            .unwrap();
+        let polishing_select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(polishing_items),
+                Some(IndexPath::new(polishing_index)),
                 window,
                 cx,
             )
@@ -445,6 +582,16 @@ impl SettingsWindow {
             },
         )
         .detach();
+        for select in [&transcription_select, &polishing_select] {
+            cx.subscribe(
+                select,
+                |view, _, event: &SelectEvent<SearchableVec<SharedString>>, cx| {
+                    let SelectEvent::Confirm(_) = event;
+                    view.save(cx);
+                },
+            )
+            .detach();
+        }
 
         Self {
             settings,
@@ -452,6 +599,12 @@ impl SettingsWindow {
             control,
             language_select,
             language_codes,
+            transcription_select,
+            transcription_ids,
+            transcription_descriptions,
+            polishing_select,
+            polishing_ids,
+            polishing_descriptions,
             idle_select,
             idle_values,
             autostart: false,
@@ -459,7 +612,7 @@ impl SettingsWindow {
             hotkey: current.hotkey.clone(),
             capturing_hotkey: false,
             hotkey_focus,
-            daemon_status: statusbar::daemon_status(),
+            daemon_status,
             history,
             history_search,
             focus_handle,
@@ -481,18 +634,35 @@ impl SettingsWindow {
             .selected_index(cx)
             .and_then(|index| self.idle_values.get(index.row).copied())
             .unwrap_or(defaults.idle_unload_secs);
-        let updated = SessionSettings {
+        let transcription_model = self
+            .transcription_select
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|index| self.transcription_ids.get(index.row).cloned())
+            .unwrap_or(defaults.transcription_model);
+        let polishing_model = self
+            .polishing_select
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|index| self.polishing_ids.get(index.row).cloned())
+            .unwrap_or(defaults.polishing_model);
+        let mut updated = SessionSettings {
             language,
             control_line,
             idle_unload_secs,
             sound_cues: self.sound_cues,
             hotkey: self.hotkey.clone(),
+            transcription_model,
+            polishing_model,
         };
+        let models = updated.models();
+        updated.transcription_model = models.transcription.clone();
         if let Err(e) = updated.save() {
             eprintln!("saving settings failed: {e:#}");
             return;
         }
         *self.settings.lock().unwrap() = updated;
+        cx.global::<crate::AppServices>().models.set(models);
     }
 
     /// Optimistic flip, reverted if the change fails; failure is the normal
@@ -947,11 +1117,86 @@ impl SettingsWindow {
         .when_some(status.llm.clone(), |card, llm| {
             card.child(Self::daemon_row("Polishing model", llm, cx))
         })
+        .when_some(status.asr_backend.clone(), |card, backend| {
+            let runtime = match &status.asr_device {
+                Some(device) => format!("{backend} on {device}"),
+                None => backend,
+            };
+            card.child(Self::daemon_row("Transcription runtime", runtime, cx))
+        })
+        .when_some(
+            status.polishing_availability.clone(),
+            |card, availability| {
+                card.child(Self::daemon_row("Apple Intelligence", availability, cx))
+            },
+        )
     }
 
     fn advanced_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut transcription_description = self
+            .transcription_select
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|index| self.transcription_descriptions.get(index.row))
+            .cloned()
+            .unwrap_or_default();
+        let selected_transcriber = self
+            .transcription_select
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|index| self.transcription_ids.get(index.row));
+        if selected_transcriber == self.daemon_status.transcription_model_id.as_ref() {
+            transcription_description.push_str(if self.daemon_status.models_loaded {
+                "; active"
+            } else if self.daemon_status.running {
+                "; loading"
+            } else {
+                ""
+            });
+        }
+        let mut polishing_description = self
+            .polishing_select
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|index| self.polishing_descriptions.get(index.row))
+            .cloned()
+            .unwrap_or_default();
+        let selected_polisher = self
+            .polishing_select
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|index| self.polishing_ids.get(index.row));
+        if selected_polisher.is_some_and(|id| id == "apple-intelligence")
+            && let Some(availability) = &self.daemon_status.polishing_availability
+        {
+            polishing_description.push_str(&format!("; {availability}"));
+        }
+        if selected_polisher == self.daemon_status.polishing_model_id.as_ref() {
+            polishing_description.push_str(if self.daemon_status.models_loaded {
+                "; active"
+            } else if self.daemon_status.running {
+                "; loading"
+            } else {
+                ""
+            });
+        }
         v_flex()
-            .gap_8()
+            .gap_6()
+            .child(
+                Self::form()
+                    .child(
+                        field()
+                            .label("Transcription model")
+                            .description(transcription_description)
+                            .child(Select::new(&self.transcription_select).large()),
+                    )
+                    .child(
+                        field()
+                            .label("Polishing model")
+                            .description(polishing_description)
+                            .child(Select::new(&self.polishing_select).large()),
+                    ),
+            )
             .child(
                 Self::form().child(
                     field()
@@ -964,6 +1209,22 @@ impl SettingsWindow {
                 ),
             )
             .child(Self::form().child(field().label("Daemon").child(self.daemon_card(cx))))
+            .child(
+                Self::form().child(
+                    field()
+                        .label("Third-party notices")
+                        .description("Model attribution and inference runtime licenses.")
+                        .child(
+                            Button::new("open-third-party-notices")
+                                .label("Open notices")
+                                .on_click(|_, _, _| {
+                                    if let Err(error) = open_third_party_notices() {
+                                        eprintln!("opening third-party notices failed: {error}");
+                                    }
+                                }),
+                        ),
+                ),
+            )
     }
 
     fn day_header(label: &str, first: bool, cx: &App) -> impl IntoElement {
@@ -1166,5 +1427,27 @@ impl Render for SettingsWindow {
                             .child(pane),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apple_intelligence_is_only_offered_when_available() {
+        let (unavailable, _, _) = model_options(
+            diktafon_protocol::DEFAULT_POLISHING_MODEL,
+            "polishing",
+            false,
+        );
+        assert!(!unavailable.iter().any(|id| id == "apple-intelligence"));
+
+        let (available, _, _) = model_options(
+            diktafon_protocol::DEFAULT_POLISHING_MODEL,
+            "polishing",
+            true,
+        );
+        assert!(available.iter().any(|id| id == "apple-intelligence"));
     }
 }

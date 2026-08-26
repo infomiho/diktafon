@@ -13,6 +13,10 @@ fn main() -> Result<()> {
     if args.first().is_some_and(|a| a == "--polish-file") {
         return polish_file(args.get(1).map(String::as_str));
     }
+    if args.first().is_some_and(|a| a == "--apple-availability") {
+        println!("{}", diktafond::apple_intelligence::availability().label());
+        return Ok(());
+    }
     diktafond::daemon::run(
         &diktafon_protocol::models_dir(),
         &diktafon_protocol::socket_path(),
@@ -23,9 +27,10 @@ fn polish_file(path: Option<&str>) -> Result<()> {
     use anyhow::Context;
     let path = path.context("usage: --polish-file <transcript.txt>")?;
     let transcript = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
-    let polisher = diktafond::llm::Polisher::load(
-        &diktafon_protocol::models_dir().join("s1-mini-q4_k_m.gguf"),
-    )?;
+    let models_dir = diktafon_protocol::models_dir();
+    let model_path =
+        diktafond::manifest::model_path(&models_dir, diktafond::manifest::DEFAULT_POLISHING_MODEL)?;
+    let polisher = diktafond::llm::Polisher::load(&model_path)?;
     let control_line = diktafon_protocol::SessionConfig::default().control_line;
     let start = std::time::Instant::now();
     let polished = polisher.polish(transcript.trim(), &control_line)?;

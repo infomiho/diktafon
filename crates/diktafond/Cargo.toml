@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-transcribe-rs = { version = "0.3.11", features = ["onnx"] }
+transcribe-cpp = { version = "0.2.0", default-features = false, features = ["metal"] }
 llama-cpp-2 = { version = "0.1.154", features = ["metal"] }
 encoding_rs = "0.8"
 signal-hook = "0.3"
@@ -17,8 +17,3 @@ sha2 = "0.11"
 hex = "0.4"
 anyhow.workspace = true
 diktafon-protocol.workspace = true
-
-[features]
-# Experimental CoreML execution provider for the ASR model; see the asr_bench
-# example and docs/benchmarks.md.
-coreml = ["transcribe-rs/ort-coreml"]

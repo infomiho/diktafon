@@ -23,6 +23,10 @@ pub struct HistoryEntry {
     pub asr_ms: u64,
     #[serde(default)]
     pub polish_ms: u64,
+    #[serde(default)]
+    pub transcription_model: Option<String>,
+    #[serde(default)]
+    pub polishing_model: Option<String>,
 }
 
 impl HistoryEntry {
@@ -35,6 +39,8 @@ impl HistoryEntry {
             audio_secs: 0.0,
             asr_ms: 0,
             polish_ms: 0,
+            transcription_model: None,
+            polishing_model: None,
         }
     }
 }
@@ -122,6 +128,8 @@ mod tests {
         let mut entry = HistoryEntry::now("he said \"stop\"\nnew line", "He said \"stop\".");
         entry.chunks = 2;
         entry.audio_secs = 3.5;
+        entry.transcription_model = Some("transcriber".into());
+        entry.polishing_model = Some("polisher".into());
         append_to(&path, &entry).unwrap();
         append_to(&path, &HistoryEntry::now("second", "Second.")).unwrap();
 
@@ -131,9 +139,21 @@ mod tests {
         let parsed: HistoryEntry = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(parsed.raw, "he said \"stop\"\nnew line");
         assert_eq!(parsed.chunks, 2);
+        assert_eq!(parsed.transcription_model.as_deref(), Some("transcriber"));
+        assert_eq!(parsed.polishing_model.as_deref(), Some("polisher"));
         assert!(parsed.at.ends_with('Z'));
 
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn old_entries_have_no_model_provenance() {
+        let entry: HistoryEntry = serde_json::from_str(
+            r#"{"at":"2026-08-26T00:00:00Z","raw":"raw","polished":"polished"}"#,
+        )
+        .unwrap();
+        assert_eq!(entry.transcription_model, None);
+        assert_eq!(entry.polishing_model, None);
     }
 
     /// `polished` per line, oldest first.

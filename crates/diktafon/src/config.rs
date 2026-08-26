@@ -1,7 +1,9 @@
 //! Every user-tunable setting in one place. Still compile-time constants; a
 //! config file can replace this later without touching the consumers.
 
-use diktafon_protocol::SessionConfig;
+use diktafon_protocol::{
+    DEFAULT_POLISHING_MODEL, DEFAULT_TRANSCRIPTION_MODEL, ModelSelection, SessionConfig,
+};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 
 pub struct Config {
@@ -70,6 +72,8 @@ pub struct SessionSettings {
     pub sound_cues: bool,
     /// Push-to-talk chord in global-hotkey syntax, e.g. "alt+space".
     pub hotkey: String,
+    pub transcription_model: String,
+    pub polishing_model: String,
 }
 
 impl Default for SessionSettings {
@@ -80,6 +84,8 @@ impl Default for SessionSettings {
             idle_unload_secs: 300,
             sound_cues: true,
             hotkey: "alt+space".into(),
+            transcription_model: DEFAULT_TRANSCRIPTION_MODEL.into(),
+            polishing_model: DEFAULT_POLISHING_MODEL.into(),
         }
     }
 }
@@ -124,6 +130,51 @@ impl SessionSettings {
             control_line: self.control_line.clone(),
         }
     }
+
+    pub fn models(&self) -> ModelSelection {
+        let catalog: serde_json::Value =
+            serde_json::from_str(diktafon_protocol::MODEL_CATALOG_JSON)
+                .expect("bundled model catalog must parse");
+        let valid = |id: &str, category: &str| {
+            catalog["models"].as_array().is_some_and(|models| {
+                models
+                    .iter()
+                    .any(|model| model["id"] == id && model["category"].as_str() == Some(category))
+            })
+        };
+        let supports_language = |model: &serde_json::Value| {
+            model["languages"]
+                .as_array()
+                .is_some_and(|languages| languages.iter().any(|code| code == &self.language))
+        };
+        let transcription = catalog["models"]
+            .as_array()
+            .and_then(|models| {
+                models
+                    .iter()
+                    .find(|model| {
+                        model["id"] == self.transcription_model
+                            && model["category"] == "transcription"
+                            && supports_language(model)
+                    })
+                    .or_else(|| {
+                        models.iter().find(|model| {
+                            model["category"] == "transcription" && supports_language(model)
+                        })
+                    })
+            })
+            .and_then(|model| model["id"].as_str())
+            .unwrap_or(DEFAULT_TRANSCRIPTION_MODEL)
+            .to_string();
+        ModelSelection {
+            transcription,
+            polishing: if valid(&self.polishing_model, "polishing") {
+                self.polishing_model.clone()
+            } else {
+                DEFAULT_POLISHING_MODEL.into()
+            },
+        }
+    }
 }
 
 #[cfg(test)]
@@ -150,5 +201,36 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(settings.hotkey().id(), CONFIG.hotkey().id());
+    }
+
+    #[test]
+    fn unknown_or_wrong_category_models_fall_back_independently() {
+        let settings = SessionSettings {
+            transcription_model: "missing".into(),
+            polishing_model: DEFAULT_TRANSCRIPTION_MODEL.into(),
+            ..Default::default()
+        };
+        assert_eq!(settings.models(), ModelSelection::default());
+    }
+
+    #[test]
+    fn configs_without_model_fields_use_catalog_defaults() {
+        let settings: SessionSettings = serde_json::from_str(
+            r#"{"language":"de","control_line":"custom","idle_unload_secs":60,"sound_cues":false,"hotkey":"alt+d"}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.transcription_model, DEFAULT_TRANSCRIPTION_MODEL);
+        assert_eq!(settings.polishing_model, DEFAULT_POLISHING_MODEL);
+        assert_eq!(settings.language, "de");
+    }
+
+    #[test]
+    fn unsupported_transcription_model_falls_back_to_one_for_the_language() {
+        let settings = SessionSettings {
+            language: "it".into(),
+            transcription_model: "canary-1b-flash-q5-k-m".into(),
+            ..Default::default()
+        };
+        assert_eq!(settings.models().transcription, "cohere-transcribe-q5-k-m");
     }
 }

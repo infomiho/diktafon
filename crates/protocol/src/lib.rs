@@ -21,12 +21,35 @@ use bincode::{Decode, Encode};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Prefix of the daemon's handshake rejection for a version mismatch; the
 /// client matches on it to decide a resident daemon needs replacing. Every
 /// daemon version so far has used this exact wording.
 pub const VERSION_MISMATCH_PREFIX: &str = "protocol version mismatch";
+pub const MODEL_MISMATCH_PREFIX: &str = "model selection mismatch";
+
+pub const DEFAULT_TRANSCRIPTION_MODEL: &str = "canary-1b-flash-q5-k-m";
+pub const DEFAULT_POLISHING_MODEL: &str = "s1-mini-q4-k-m";
+pub const MODEL_CATALOG_JSON: &str = include_str!("models.json");
+
+/// Models a client expects the daemon to have resident. It is exchanged in the
+/// handshake so the same selection contract works over local and remote
+/// transports; local supervision restarts a warm daemon when it differs.
+#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
+pub struct ModelSelection {
+    pub transcription: String,
+    pub polishing: String,
+}
+
+impl Default for ModelSelection {
+    fn default() -> Self {
+        Self {
+            transcription: DEFAULT_TRANSCRIPTION_MODEL.into(),
+            polishing: DEFAULT_POLISHING_MODEL.into(),
+        }
+    }
+}
 
 /// Where the daemon records its pid, next to the socket, so a newer client can
 /// retire an older resident daemon.
@@ -127,7 +150,10 @@ impl Default for SessionConfig {
 pub enum ClientMsg {
     /// First message on a new connection; the daemon replies with its own
     /// `Hello`, or `Error` on a version mismatch.
-    Hello { version: u32 },
+    Hello {
+        version: u32,
+        models: ModelSelection,
+    },
     /// Begin a dictation session.
     Start(SessionConfig),
     /// 16 kHz mono f32 samples of one silence-cut chunk.
@@ -146,7 +172,10 @@ pub enum ClientMsg {
 #[derive(Encode, Decode, Debug, PartialEq)]
 pub enum DaemonMsg {
     /// Handshake reply carrying the daemon's protocol version.
-    Hello { version: u32 },
+    Hello {
+        version: u32,
+        models: ModelSelection,
+    },
     /// Raw transcript of one chunk, sent as soon as it is transcribed.
     Partial(String),
     /// Polished text for the whole session, sent after `Flush`.
@@ -236,6 +265,7 @@ mod tests {
         let msgs = vec![
             ClientMsg::Hello {
                 version: PROTOCOL_VERSION,
+                models: ModelSelection::default(),
             },
             ClientMsg::Start(SessionConfig {
                 language: "en".into(),
@@ -255,6 +285,7 @@ mod tests {
         let msgs = vec![
             DaemonMsg::Hello {
                 version: PROTOCOL_VERSION,
+                models: ModelSelection::default(),
             },
             DaemonMsg::Partial("hello world".into()),
             DaemonMsg::Final("Hello, world.".into()),
@@ -288,9 +319,19 @@ mod tests {
     #[test]
     fn hello_frame_bytes_are_stable() {
         let mut buf = Vec::new();
-        write_frame(&mut buf, &ClientMsg::Hello { version: 1 }).unwrap();
-        // 2-byte payload: variant index 0 as varint, version 1 as varint.
-        assert_eq!(buf, vec![2, 0, 0, 0, 0, 1]);
+        write_frame(
+            &mut buf,
+            &ClientMsg::Hello {
+                version: PROTOCOL_VERSION,
+                models: ModelSelection::default(),
+            },
+        )
+        .unwrap();
+        let mut expected = vec![40, 0, 0, 0, 0, 4, 22];
+        expected.extend_from_slice(b"canary-1b-flash-q5-k-m");
+        expected.push(14);
+        expected.extend_from_slice(b"s1-mini-q4-k-m");
+        assert_eq!(buf, expected);
     }
 
     /// Same freeze for the v2 startup variants.

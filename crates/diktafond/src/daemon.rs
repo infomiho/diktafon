@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use diktafon_protocol::{
-    ClientMsg, DaemonMsg, Msg, PROTOCOL_VERSION, VERSION_MISMATCH_PREFIX, read_frame, write_frame,
+    ClientMsg, DaemonMsg, MODEL_MISMATCH_PREFIX, ModelSelection, Msg, PROTOCOL_VERSION,
+    VERSION_MISMATCH_PREFIX, read_frame, write_frame,
 };
 use std::io::{BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -53,6 +54,13 @@ const SERVE_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 /// `DownloadProgress` to early clients, then serve clients one at a time until
 /// killed. SIGTERM and SIGINT remove the socket file and exit.
 pub fn run(models_dir: &Path, socket: &Path) -> Result<()> {
+    let selection = ModelSelection {
+        transcription: std::env::var("DIKTAFON_TRANSCRIPTION_MODEL")
+            .unwrap_or_else(|_| diktafon_protocol::DEFAULT_TRANSCRIPTION_MODEL.into()),
+        polishing: std::env::var("DIKTAFON_POLISHING_MODEL")
+            .unwrap_or_else(|_| diktafon_protocol::DEFAULT_POLISHING_MODEL.into()),
+    };
+    crate::manifest::validate_selection(&selection)?;
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -63,11 +71,11 @@ pub fn run(models_dir: &Path, socket: &Path) -> Result<()> {
     std::fs::write(&pid_file, std::process::id().to_string())
         .with_context(|| format!("writing {}", pid_file.display()))?;
     let status_file = diktafon_protocol::status_path_for(socket);
-    crate::status::write(&status_file, false);
+    crate::status::write(&status_file, false, &selection, None, None);
     remove_socket_on_termination(socket);
     println!("diktafond listening on {}", socket.display());
 
-    let (inference, early_clients) = start_up(&listener, models_dir, &status_file)?;
+    let (inference, early_clients) = start_up(&listener, models_dir, &status_file, &selection)?;
     listener.set_nonblocking(false)?;
 
     // Clients that connected during startup already got their Ready; serve
@@ -81,7 +89,7 @@ pub fn run(models_dir: &Path, socket: &Path) -> Result<()> {
     loop {
         let (stream, _) = listener.accept()?;
         println!("client connected");
-        let (counts, result) = serve(&stream, &inference);
+        let (counts, result) = serve(&stream, &inference, &selection);
         finish_connection(&inference, &counts, result)?;
     }
 }
@@ -127,6 +135,7 @@ fn start_up(
     listener: &UnixListener,
     models_dir: &Path,
     status_file: &Path,
+    selection: &ModelSelection,
 ) -> Result<(Inference, Vec<EarlyClient>)> {
     let status = Arc::new(StartupStatus::default());
     let (loaded_tx, loaded_rx) = mpsc::channel();
@@ -135,19 +144,24 @@ fn start_up(
         let status = status.clone();
         let models_dir = models_dir.to_path_buf();
         let status_file = status_file.to_path_buf();
+        let selection = selection.clone();
         move || {
             let mut last_log = Instant::now();
-            let result = crate::manifest::ensure_models(&models_dir, &mut |file, done, total| {
-                if last_log.elapsed() >= Duration::from_secs(1) || done == total {
-                    println!("  {file}: {}/{} MB", done / 1_000_000, total / 1_000_000);
-                    last_log = Instant::now();
-                }
-                *status.download.lock().unwrap() = Some(Download {
-                    model: file.to_string(),
-                    downloaded_bytes: done,
-                    total_bytes: total,
-                });
-            })
+            let result = crate::manifest::ensure_selected_models(
+                &models_dir,
+                &selection,
+                &mut |file, done, total| {
+                    if last_log.elapsed() >= Duration::from_secs(1) || done == total {
+                        println!("  {file}: {}/{} MB", done / 1_000_000, total / 1_000_000);
+                        last_log = Instant::now();
+                    }
+                    *status.download.lock().unwrap() = Some(Download {
+                        model: file.to_string(),
+                        downloaded_bytes: done,
+                        total_bytes: total,
+                    });
+                },
+            )
             .and_then(|()| {
                 println!("Loading models...");
                 let load_start = Instant::now();
@@ -156,11 +170,19 @@ fn start_up(
                 let history = std::env::var_os("DIKTAFOND_NO_HISTORY")
                     .is_none()
                     .then(diktafon_protocol::history::path);
+                let status_selection = selection.clone();
                 let inference = Inference::spawn(
                     &models_dir,
+                    selection,
                     history,
-                    Some(Box::new(move |loaded| {
-                        crate::status::write(&status_file, loaded)
+                    Some(Box::new(move |loaded, backend, device| {
+                        crate::status::write(
+                            &status_file,
+                            loaded,
+                            &status_selection,
+                            backend,
+                            device,
+                        )
                     })),
                 );
                 if inference.is_ok() {
@@ -183,7 +205,8 @@ fn start_up(
             Ok((stream, _)) => {
                 let status = status.clone();
                 let handover = handover_tx.clone();
-                thread::spawn(move || serve_startup_client(stream, &status, handover));
+                let selection = selection.clone();
+                thread::spawn(move || serve_startup_client(stream, &status, handover, &selection));
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(STARTUP_POLL),
             Err(e) => return Err(e).context("accepting during startup"),
@@ -203,6 +226,7 @@ fn serve_startup_client(
     stream: UnixStream,
     status: &StartupStatus,
     handover: mpsc::Sender<EarlyClient>,
+    selection: &ModelSelection,
 ) {
     let result = (|| -> Result<()> {
         // Accepted from a non-blocking listener, so undo the inherited mode.
@@ -211,7 +235,7 @@ fn serve_startup_client(
         let mut writer = stream.try_clone()?;
         stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
         stream.set_write_timeout(Some(STARTUP_WRITE_TIMEOUT))?;
-        handshake(&mut reader, &mut writer)?;
+        handshake(&mut reader, &mut writer, selection)?;
         stream.set_read_timeout(Some(STARTUP_POLL))?;
 
         let mut last_sent = None;
@@ -308,13 +332,17 @@ fn remove_socket_on_termination(socket: &Path) {
 /// `ServeCounts` says how many forwarded `Cancel`s were still unacked when the
 /// connection ended, so the reset can drain their late `Aborted`s instead of
 /// leaking them to the next client.
-fn serve(stream: &UnixStream, inference: &Inference) -> (ServeCounts, Result<()>) {
+fn serve(
+    stream: &UnixStream,
+    inference: &Inference,
+    selection: &ModelSelection,
+) -> (ServeCounts, Result<()>) {
     let counts = ServeCounts::default();
     let result = (|| {
         let mut reader = BufReader::new(stream.try_clone()?);
         let mut writer = stream.try_clone()?;
         stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
-        handshake(&mut reader, &mut writer)?;
+        handshake(&mut reader, &mut writer, selection)?;
         stream.set_read_timeout(Some(SERVE_IDLE_TIMEOUT))?;
         stream.set_write_timeout(Some(SERVE_WRITE_TIMEOUT))?;
         write_frame(&mut writer, &DaemonMsg::Ready)?;
@@ -355,20 +383,38 @@ impl ServeCounts {
     }
 }
 
-fn handshake(reader: &mut impl Read, writer: &mut impl Write) -> Result<()> {
+fn handshake(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+    loaded_models: &ModelSelection,
+) -> Result<()> {
     match read_frame::<ClientMsg>(reader).context("reading handshake")? {
-        Some(ClientMsg::Hello { version }) if version == PROTOCOL_VERSION => write_frame(
-            writer,
-            &DaemonMsg::Hello {
-                version: PROTOCOL_VERSION,
-            },
-        ),
-        Some(ClientMsg::Hello { version }) => {
+        Some(ClientMsg::Hello { version, .. }) if version != PROTOCOL_VERSION => {
             let error =
                 format!("{VERSION_MISMATCH_PREFIX}: client {version}, daemon {PROTOCOL_VERSION}");
             let _ = write_frame(writer, &DaemonMsg::Error(error.clone()));
             bail!(error);
         }
+        Some(ClientMsg::Hello { models, .. })
+            if let Err(error) = crate::manifest::validate_selection(&models) =>
+        {
+            let error = format!("invalid model selection: {error:#}");
+            let _ = write_frame(writer, &DaemonMsg::Error(error.clone()));
+            bail!(error);
+        }
+        Some(ClientMsg::Hello { models, .. }) if models != *loaded_models => {
+            let error =
+                format!("{MODEL_MISMATCH_PREFIX}: requested {models:?}, loaded {loaded_models:?}");
+            let _ = write_frame(writer, &DaemonMsg::Error(error.clone()));
+            bail!(error);
+        }
+        Some(ClientMsg::Hello { .. }) => write_frame(
+            writer,
+            &DaemonMsg::Hello {
+                version: PROTOCOL_VERSION,
+                models: loaded_models.clone(),
+            },
+        ),
         Some(_) => {
             let error = "expected Hello as the first message".to_string();
             let _ = write_frame(writer, &DaemonMsg::Error(error.clone()));
@@ -456,6 +502,63 @@ fn reset_worker(inference: &Inference, unacked_cancels: usize) -> Result<()> {
             if aborteds_to_drain == 0 {
                 return Ok(());
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn handshake_reply(models: ModelSelection) -> (Result<()>, DaemonMsg) {
+        let mut request = Vec::new();
+        write_frame(
+            &mut request,
+            &ClientMsg::Hello {
+                version: PROTOCOL_VERSION,
+                models,
+            },
+        )
+        .unwrap();
+        let mut reply = Vec::new();
+        let result = handshake(
+            &mut Cursor::new(request),
+            &mut reply,
+            &ModelSelection::default(),
+        );
+        let reply = read_frame(&mut Cursor::new(reply)).unwrap().unwrap();
+        (result, reply)
+    }
+
+    #[test]
+    fn handshake_accepts_the_loaded_model_pair() {
+        let (result, reply) = handshake_reply(ModelSelection::default());
+        result.unwrap();
+        assert_eq!(
+            reply,
+            DaemonMsg::Hello {
+                version: PROTOCOL_VERSION,
+                models: ModelSelection::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn handshake_rejects_unknown_and_wrong_category_models() {
+        for models in [
+            ModelSelection {
+                transcription: "missing".into(),
+                ..ModelSelection::default()
+            },
+            ModelSelection {
+                transcription: diktafon_protocol::DEFAULT_POLISHING_MODEL.into(),
+                ..ModelSelection::default()
+            },
+        ] {
+            let (result, reply) = handshake_reply(models);
+            assert!(result.is_err());
+            assert!(matches!(reply, DaemonMsg::Error(_)));
         }
     }
 }

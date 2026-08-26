@@ -221,6 +221,11 @@ pub struct DaemonStatus {
     pub models_loaded: bool,
     pub asr: Option<String>,
     pub llm: Option<String>,
+    pub transcription_model_id: Option<String>,
+    pub polishing_model_id: Option<String>,
+    pub asr_backend: Option<String>,
+    pub asr_device: Option<String>,
+    pub polishing_availability: Option<String>,
 }
 
 /// Reads the daemon state from its status.json (see
@@ -232,6 +237,11 @@ pub fn daemon_status() -> DaemonStatus {
         models_loaded: false,
         asr: None,
         llm: None,
+        transcription_model_id: None,
+        polishing_model_id: None,
+        asr_backend: None,
+        asr_device: None,
+        polishing_availability: None,
     };
     let Ok(raw) = std::fs::read_to_string(diktafon_protocol::status_path()) else {
         // A daemon from before the status file exists only in the pidfile.
@@ -252,6 +262,15 @@ pub fn daemon_status() -> DaemonStatus {
         models_loaded: status["models_loaded"].as_bool().unwrap_or(false),
         asr: status["asr_model"].as_str().map(str::to_string),
         llm: status["llm_model"].as_str().map(str::to_string),
+        transcription_model_id: status["transcription_model_id"]
+            .as_str()
+            .map(str::to_string),
+        polishing_model_id: status["polishing_model_id"].as_str().map(str::to_string),
+        asr_backend: status["asr_backend"].as_str().map(str::to_string),
+        asr_device: status["asr_device"].as_str().map(str::to_string),
+        polishing_availability: status["polishing_availability"]
+            .as_str()
+            .map(str::to_string),
     }
 }
 

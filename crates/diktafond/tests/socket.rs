@@ -1,5 +1,5 @@
 use diktafon_protocol::{
-    ClientMsg, DaemonMsg, PROTOCOL_VERSION, SessionConfig, read_frame, write_frame,
+    ClientMsg, DaemonMsg, ModelSelection, PROTOCOL_VERSION, SessionConfig, read_frame, write_frame,
 };
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -52,13 +52,15 @@ fn daemon_serves_sessions_over_the_socket() {
         &mut stream,
         &ClientMsg::Hello {
             version: PROTOCOL_VERSION,
+            models: ModelSelection::default(),
         },
     )
     .unwrap();
     assert_eq!(
         read_daemon_msg(&mut stream),
         DaemonMsg::Hello {
-            version: PROTOCOL_VERSION
+            version: PROTOCOL_VERSION,
+            models: ModelSelection::default(),
         }
     );
     wait_for_ready(&mut stream);
@@ -82,13 +84,15 @@ fn daemon_serves_sessions_over_the_socket() {
         &mut stream,
         &ClientMsg::Hello {
             version: PROTOCOL_VERSION,
+            models: ModelSelection::default(),
         },
     )
     .unwrap();
     assert_eq!(
         read_daemon_msg(&mut stream),
         DaemonMsg::Hello {
-            version: PROTOCOL_VERSION
+            version: PROTOCOL_VERSION,
+            models: ModelSelection::default(),
         }
     );
     wait_for_ready(&mut stream);
@@ -100,6 +104,7 @@ fn daemon_serves_sessions_over_the_socket() {
         &mut mismatched,
         &ClientMsg::Hello {
             version: PROTOCOL_VERSION + 1,
+            models: ModelSelection::default(),
         },
     )
     .unwrap();

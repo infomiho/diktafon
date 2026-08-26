@@ -61,7 +61,13 @@ fn main() {
     println!("\nin-process:");
     let mut chunk_times = Vec::new();
     {
-        let inference = Inference::spawn(&models_dir, None, None).expect("loading models");
+        let inference = Inference::spawn(
+            &models_dir,
+            diktafon_protocol::ModelSelection::default(),
+            None,
+            None,
+        )
+        .expect("loading models");
         // Warm up Metal shaders and caches.
         inference
             .chunk_tx
@@ -123,6 +129,7 @@ fn main() {
         &mut writer,
         &ClientMsg::Hello {
             version: PROTOCOL_VERSION,
+            models: diktafon_protocol::ModelSelection::default(),
         },
     )
     .unwrap();

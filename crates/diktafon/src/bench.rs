@@ -1,5 +1,6 @@
 //! Headless benchmark mode: `diktafon --transcribe-file x.wav [--repeat N]
-//! [--json] [--paced] [--chunk-secs N]`. Feeds a 16kHz mono s16 WAV through
+//! [--json] [--paced] [--chunk-secs N] [--transcription-model ID]
+//! [--polishing-model ID]`. Feeds a 16kHz mono s16 WAV through
 //! the daemon (auto-spawning it like a normal session would) and reports
 //! per-stage timings; the daemon's `Polishing` frame marks the ASR/polish
 //! boundary. Batch mode sends the whole file at once and measures raw
@@ -11,7 +12,8 @@
 use crate::transport::DaemonClient;
 use anyhow::{Context, Result, bail};
 use diktafon_protocol::{
-    ClientMsg, DaemonMsg, Msg, PROTOCOL_VERSION, TARGET_RATE, read_frame, socket_path, write_frame,
+    ClientMsg, DaemonMsg, ModelSelection, Msg, PROTOCOL_VERSION, TARGET_RATE, read_frame,
+    socket_path, write_frame,
 };
 use std::io::BufReader;
 use std::os::unix::net::UnixStream;
@@ -25,6 +27,7 @@ struct Run {
     asr_secs: f32,
     polish_secs: f32,
     total_secs: f32,
+    raw_text: String,
     text: String,
 }
 
@@ -52,11 +55,18 @@ pub fn transcribe_file(args: &[String]) -> Result<()> {
         .transpose()
         .context("--chunk-secs wants a number")?
         .unwrap_or(5.0);
+    let mut models = crate::config::SessionSettings::load().models();
+    if let Some(model) = option(args, "--transcription-model") {
+        models.transcription = model.to_string();
+    }
+    if let Some(model) = option(args, "--polishing-model") {
+        models.polishing = model.to_string();
+    }
 
     let samples = wav_samples(path)?;
     let audio_secs = samples.len() as f32 / TARGET_RATE as f32;
 
-    ensure_daemon()?;
+    ensure_daemon(&models)?;
     let stream = UnixStream::connect(socket_path()).context("connecting to diktafond")?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
@@ -64,6 +74,7 @@ pub fn transcribe_file(args: &[String]) -> Result<()> {
         &mut writer,
         &ClientMsg::Hello {
             version: PROTOCOL_VERSION,
+            models: models.clone(),
         },
     )?;
     loop {
@@ -73,11 +84,24 @@ pub fn transcribe_file(args: &[String]) -> Result<()> {
             other => bail!("unexpected startup reply: {other:?}"),
         }
     }
+    let (backend, device) = runtime_metadata();
+    let clip = std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path);
 
     if paced {
-        return run_paced(
-            reader, writer, &samples, chunk_secs, repeat, json, audio_secs,
-        );
+        let options = PacedOptions {
+            chunk_secs,
+            repeat,
+            json,
+            audio_secs,
+            models: &models,
+            clip,
+            backend: &backend,
+            device: &device,
+        };
+        return run_paced(reader, writer, &samples, &options);
     }
 
     let mut runs = Vec::new();
@@ -93,9 +117,10 @@ pub fn transcribe_file(args: &[String]) -> Result<()> {
         write_frame(&mut writer, &ClientMsg::Flush)?;
 
         let mut polishing_at = None;
+        let mut raw_parts = Vec::new();
         let (text, total) = loop {
             match read_frame::<DaemonMsg>(&mut reader)?.context("daemon closed")? {
-                DaemonMsg::Partial(_) => {}
+                DaemonMsg::Partial(text) => raw_parts.push(text),
                 DaemonMsg::Polishing => polishing_at = Some(start.elapsed()),
                 DaemonMsg::Final(text) => break (text, start.elapsed()),
                 other => bail!("unexpected reply: {other:?}"),
@@ -106,6 +131,7 @@ pub fn transcribe_file(args: &[String]) -> Result<()> {
             asr_secs: asr.as_secs_f32(),
             polish_secs: (total - asr.min(total)).as_secs_f32(),
             total_secs: total.as_secs_f32(),
+            raw_text: raw_parts.join(" "),
             text,
         };
         if !json {
@@ -136,8 +162,14 @@ pub fn transcribe_file(args: &[String]) -> Result<()> {
             })
             .collect();
         println!(
-            "{{\"audio_secs\":{audio_secs:.3},\"best_total_secs\":{best:.3},\"runs\":[{}],\"text\":{}}}",
+            "{{\"transcription_model\":{},\"polishing_model\":{},\"clip\":{},\"state\":\"warm\",\"backend\":{},\"device\":{},\"audio_secs\":{audio_secs:.3},\"best_total_secs\":{best:.3},\"runs\":[{}],\"raw_text\":{},\"text\":{}}}",
+            json_string(&models.transcription),
+            json_string(&models.polishing),
+            json_string(clip),
+            json_string(&backend),
+            json_string(&device),
             runs_json.join(","),
+            json_string(&runs.last().expect("at least one run").raw_text),
             json_string(&runs.last().expect("at least one run").text)
         );
     } else {
@@ -145,7 +177,9 @@ pub fn transcribe_file(args: &[String]) -> Result<()> {
             "best of {repeat}: {best:.2}s total ({:.1}x RT) for {audio_secs:.1}s audio",
             audio_secs / best
         );
-        println!("text: {}", runs.last().expect("at least one run").text);
+        let last = runs.last().expect("at least one run");
+        println!("raw: {}", last.raw_text);
+        println!("text: {}", last.text);
     }
     Ok(())
 }
@@ -155,20 +189,29 @@ struct PacedRun {
     tail_asr_secs: f32,
     polish_secs: f32,
     stop_to_text_secs: f32,
+    raw_text: String,
     text: String,
 }
 
 /// Replay the clip as if spoken live: each chunk is sent at the moment its
 /// speech would have ended, so ASR overlaps "speaking" exactly as in a real
 /// session. What remains at Flush is what a user would wait for.
-fn run_paced(
-    reader: BufReader<UnixStream>,
-    mut writer: UnixStream,
-    samples: &[f32],
+struct PacedOptions<'a> {
     chunk_secs: f32,
     repeat: usize,
     json: bool,
     audio_secs: f32,
+    models: &'a ModelSelection,
+    clip: &'a str,
+    backend: &'a str,
+    device: &'a str,
+}
+
+fn run_paced(
+    reader: BufReader<UnixStream>,
+    mut writer: UnixStream,
+    samples: &[f32],
+    options: &PacedOptions<'_>,
 ) -> Result<()> {
     let (event_tx, events) = mpsc::channel();
     thread::spawn(move || {
@@ -180,15 +223,16 @@ fn run_paced(
         }
     });
 
-    let chunk_len = ((TARGET_RATE as f32 * chunk_secs) as usize).max(1);
+    let chunk_len = ((TARGET_RATE as f32 * options.chunk_secs) as usize).max(1);
     let mut runs = Vec::new();
-    for i in 0..repeat {
+    for i in 0..options.repeat {
         write_frame(
             &mut writer,
             &ClientMsg::Start(crate::config::SessionSettings::default().session()),
         )?;
         let started = Instant::now();
         let mut acked = 0usize;
+        let mut raw_parts = Vec::new();
         let mut sent_secs: Vec<f32> = Vec::new();
         let mut consumed = 0usize;
         for chunk in samples.chunks(chunk_len) {
@@ -200,7 +244,10 @@ fn run_paced(
                     break;
                 }
                 match events.recv_timeout(due - now) {
-                    Ok((DaemonMsg::Partial(_), _)) => acked += 1,
+                    Ok((DaemonMsg::Partial(text), _)) => {
+                        acked += 1;
+                        raw_parts.push(text);
+                    }
                     Ok(_) => {}
                     Err(RecvTimeoutError::Timeout) => break,
                     Err(RecvTimeoutError::Disconnected) => bail!("daemon connection ended"),
@@ -220,7 +267,8 @@ fn run_paced(
             {
                 // Only chunks acknowledged before the flush reduce the
                 // backlog the user would have waited for.
-                (DaemonMsg::Partial(_), at) => {
+                (DaemonMsg::Partial(text), at) => {
+                    raw_parts.push(text);
                     if at <= flushed_at {
                         acked += 1;
                     }
@@ -236,12 +284,14 @@ fn run_paced(
             tail_asr_secs: (asr_done - flushed_at).as_secs_f32(),
             polish_secs: (finished_at - asr_done).as_secs_f32(),
             stop_to_text_secs: (finished_at - flushed_at).as_secs_f32(),
+            raw_text: raw_parts.join(" "),
             text,
         };
-        if !json {
+        if !options.json {
             println!(
-                "paced run {}: {audio_secs:.1}s audio in {} chunks | backlog at flush {:.2}s | tail asr {:.2}s | polish {:.2}s | stop-to-text {:.2}s",
+                "paced run {}: {:.1}s audio in {} chunks | backlog at flush {:.2}s | tail asr {:.2}s | polish {:.2}s | stop-to-text {:.2}s",
                 i + 1,
+                options.audio_secs,
                 sent_secs.len(),
                 run.backlog_secs,
                 run.tail_asr_secs,
@@ -252,7 +302,7 @@ fn run_paced(
         runs.push(run);
     }
 
-    if json {
+    if options.json {
         let runs_json: Vec<String> = runs
             .iter()
             .map(|r| {
@@ -263,8 +313,16 @@ fn run_paced(
             })
             .collect();
         println!(
-            "{{\"audio_secs\":{audio_secs:.3},\"chunk_secs\":{chunk_secs:.3},\"runs\":[{}],\"text\":{}}}",
+            "{{\"transcription_model\":{},\"polishing_model\":{},\"clip\":{},\"state\":\"warm\",\"backend\":{},\"device\":{},\"audio_secs\":{:.3},\"chunk_secs\":{:.3},\"runs\":[{}],\"raw_text\":{},\"text\":{}}}",
+            json_string(&options.models.transcription),
+            json_string(&options.models.polishing),
+            json_string(options.clip),
+            json_string(options.backend),
+            json_string(options.device),
+            options.audio_secs,
+            options.chunk_secs,
             runs_json.join(","),
+            json_string(&runs.last().expect("at least one run").raw_text),
             json_string(&runs.last().expect("at least one run").text)
         );
     } else {
@@ -272,8 +330,13 @@ fn run_paced(
             .iter()
             .map(|r| r.stop_to_text_secs)
             .fold(f32::INFINITY, f32::min);
-        println!("best stop-to-text of {repeat}: {best:.2}s for {audio_secs:.1}s audio");
-        println!("text: {}", runs.last().expect("at least one run").text);
+        println!(
+            "best stop-to-text of {}: {best:.2}s for {:.1}s audio",
+            options.repeat, options.audio_secs
+        );
+        let last = runs.last().expect("at least one run");
+        println!("raw: {}", last.raw_text);
+        println!("text: {}", last.text);
     }
     Ok(())
 }
@@ -298,11 +361,29 @@ fn isolate_daemon() {
 
 /// One throwaway client session so auto-spawn brings the daemon up, then its
 /// connection closes and frees the daemon for our raw connection.
-fn ensure_daemon() -> Result<()> {
-    let warmup = DaemonClient::spawn(socket_path(), crate::daemon_bin(), None);
+fn ensure_daemon(models: &ModelSelection) -> Result<()> {
+    let warmup = DaemonClient::spawn(socket_path(), crate::daemon_bin(), None, models.clone());
     warmup.chunk_tx.send(Msg::Flush)?;
     warmup.finish().context("daemon is not reachable")?;
     Ok(())
+}
+
+fn option<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    args.iter()
+        .position(|arg| arg == name)
+        .and_then(|index| args.get(index + 1))
+        .map(String::as_str)
+}
+
+fn runtime_metadata() -> (String, String) {
+    let status = std::fs::read_to_string(diktafon_protocol::status_path())
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .unwrap_or_default();
+    (
+        status["asr_backend"].as_str().unwrap_or("unknown").into(),
+        status["asr_device"].as_str().unwrap_or("unknown").into(),
+    )
 }
 
 fn wav_samples(path: &str) -> Result<Vec<f32>> {
@@ -324,9 +405,5 @@ fn wav_samples(path: &str) -> Result<Vec<f32>> {
 }
 
 fn json_string(text: &str) -> String {
-    let escaped = text
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n");
-    format!("\"{escaped}\"")
+    serde_json::to_string(text).expect("strings always serialize")
 }

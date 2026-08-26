@@ -1,63 +1,321 @@
-//! What the daemon needs on disk and where to get it. Every URL is pinned to
-//! an immutable HuggingFace revision (`resolve/<commit-sha>`), so the bytes
-//! always match the recorded size and sha256; the hash is the trust anchor
-//! that makes resumed downloads safe.
+//! Bundled model catalog and provisioning. The JSON is release metadata, not
+//! runtime configuration: it is compiled into the daemon and validated before
+//! any path is joined or download begins.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
+use serde::Deserialize;
+use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::LazyLock;
 
 use crate::fetch::{RemoteFile, fetch};
 
-struct ModelFile {
-    /// Path relative to the models dir, e.g. "cohere-int8/tokens.txt".
-    dest: &'static str,
-    url: &'static str,
-    size: u64,
-    sha256: &'static str,
+pub use diktafon_protocol::{DEFAULT_POLISHING_MODEL, DEFAULT_TRANSCRIPTION_MODEL};
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelCategory {
+    Transcription,
+    Polishing,
 }
 
-/// Directory models are only loadable once complete; their files stage in
-/// `<dir>.downloading` until every one is present.
-const DIRECTORY_MODELS: [&str; 1] = ["cohere-int8"];
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelBackend {
+    LlamaCpp,
+    TranscribeCpp,
+    AppleFoundationModels,
+}
 
-const MODEL_FILES: [ModelFile; 5] = [
-    ModelFile {
-        dest: "cohere-int8/cohere-decoder.int8.onnx",
-        url: "https://huggingface.co/tristanripke/cohere-transcribe-onnx-int8/resolve/9ecc3a5e64b132ab094bada232650e49e4340ad2/cohere-decoder.int8.onnx",
-        size: 153_250_705,
-        sha256: "8372ca6c8ff4db8b916ca3592f5c757a715e691b9edec751ba19b29fc854baf9",
-    },
-    ModelFile {
-        dest: "cohere-int8/cohere-encoder.int8.onnx",
-        url: "https://huggingface.co/tristanripke/cohere-transcribe-onnx-int8/resolve/9ecc3a5e64b132ab094bada232650e49e4340ad2/cohere-encoder.int8.onnx",
-        size: 3_118_156,
-        sha256: "58386cad715aa0ab30aaa118a479e43115380c114bd180178a0d110434991a54",
-    },
-    ModelFile {
-        dest: "cohere-int8/cohere-encoder.int8.onnx.data",
-        url: "https://huggingface.co/tristanripke/cohere-transcribe-onnx-int8/resolve/9ecc3a5e64b132ab094bada232650e49e4340ad2/cohere-encoder.int8.onnx.data",
-        size: 2_732_687_328,
-        sha256: "c115cacd07bef2c5d6bbfa800bb38e6f025ecbfbd220b81b711f0eef8cc28578",
-    },
-    ModelFile {
-        dest: "cohere-int8/tokens.txt",
-        url: "https://huggingface.co/tristanripke/cohere-transcribe-onnx-int8/resolve/9ecc3a5e64b132ab094bada232650e49e4340ad2/tokens.txt",
-        size: 223_821,
-        sha256: "5e74bb2f65da624256b9d97fef197a282ce7d14811e2f7b1b97c25c89b93dfcb",
-    },
-    ModelFile {
-        dest: "s1-mini-q4_k_m.gguf",
-        url: "https://huggingface.co/superwhisper/s1-mini-GGUF/resolve/8eab4779866f477ae6e7f237ca45fc2c65153f50/s1-mini-q4_k_m.gguf",
-        size: 484_219_808,
-        sha256: "3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634",
-    },
-];
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct Capabilities {
+    pub streaming: bool,
+    pub translation: bool,
+    pub language_detection: bool,
+    pub timestamps: bool,
+    pub local_only: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ModelFile {
+    /// Path relative to the models dir.
+    #[serde(rename = "path")]
+    pub dest: String,
+    pub url: String,
+    pub size: u64,
+    pub sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Model {
+    pub id: String,
+    pub category: ModelCategory,
+    pub name: String,
+    pub backend: ModelBackend,
+    #[allow(dead_code)]
+    pub languages: Vec<String>,
+    #[allow(dead_code)]
+    pub capabilities: Capabilities,
+    #[allow(dead_code)]
+    pub license: String,
+    #[allow(dead_code)]
+    pub notices: Vec<String>,
+    pub directory: Option<String>,
+    #[allow(dead_code)]
+    pub minimum_macos: Option<u32>,
+    pub files: Vec<ModelFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Catalog {
+    version: u32,
+    models: Vec<Model>,
+}
+
+static CATALOG: LazyLock<Catalog> = LazyLock::new(|| {
+    let catalog: Catalog = serde_json::from_str(diktafon_protocol::MODEL_CATALOG_JSON)
+        .expect("bundled models.json must parse");
+    validate_catalog(&catalog).expect("bundled models.json must be valid");
+    catalog
+});
+
+pub fn model(id: &str) -> Result<&'static Model> {
+    CATALOG
+        .models
+        .iter()
+        .find(|model| model.id == id)
+        .with_context(|| format!("unknown model {id:?}"))
+}
+
+pub fn model_path(models_dir: &Path, id: &str) -> Result<PathBuf> {
+    let model = model(id)?;
+    if let Some(directory) = &model.directory {
+        return Ok(models_dir.join(directory));
+    }
+    ensure!(
+        model.files.len() == 1,
+        "model {id:?} has no single load path"
+    );
+    Ok(models_dir.join(&model.files[0].dest))
+}
+
+pub fn validate_selection(selection: &diktafon_protocol::ModelSelection) -> Result<()> {
+    for (id, category) in [
+        (&selection.transcription, ModelCategory::Transcription),
+        (&selection.polishing, ModelCategory::Polishing),
+    ] {
+        let selected = model(id)?;
+        ensure!(
+            selected.category == category,
+            "model {id:?} belongs to the wrong category"
+        );
+    }
+    Ok(())
+}
+
+fn validate_catalog(catalog: &Catalog) -> Result<()> {
+    const LICENSES: &[&str] = &[
+        "apache-2.0",
+        "cc-by-4.0",
+        "s1-mini-license",
+        "system-provided",
+    ];
+    const NOTICES: &[&str] = &[
+        "apple-foundation-models",
+        "cohere-transcribe",
+        "handy-canary-gguf",
+        "handy-cohere-gguf",
+        "llama-cpp",
+        "nvidia-canary",
+        "qwen3",
+        "s1-mini",
+        "transcribe-cpp",
+    ];
+    ensure!(
+        catalog.version == 1,
+        "unsupported catalog version {}",
+        catalog.version
+    );
+    ensure!(!catalog.models.is_empty(), "catalog contains no models");
+
+    let mut ids = HashSet::new();
+    let mut destinations = HashSet::new();
+    for model in &catalog.models {
+        ensure!(!model.id.is_empty(), "model ID is empty");
+        ensure!(
+            model
+                .id
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'),
+            "model ID {:?} is not a lowercase slug",
+            model.id
+        );
+        ensure!(ids.insert(&model.id), "duplicate model ID {:?}", model.id);
+        ensure!(
+            !model.name.trim().is_empty(),
+            "model {:?} has no name",
+            model.id
+        );
+        ensure!(
+            LICENSES.contains(&model.license.as_str()),
+            "model {:?} has unknown license {:?}",
+            model.id,
+            model.license
+        );
+        ensure!(
+            !model.notices.is_empty(),
+            "model {:?} has no notices",
+            model.id
+        );
+        for notice in &model.notices {
+            ensure!(
+                NOTICES.contains(&notice.as_str()),
+                "model {:?} has unknown notice {:?}",
+                model.id,
+                notice
+            );
+        }
+        ensure!(
+            !model.languages.is_empty(),
+            "model {:?} has no languages",
+            model.id
+        );
+
+        let backend_matches_category = matches!(
+            (model.category, model.backend),
+            (ModelCategory::Transcription, ModelBackend::TranscribeCpp)
+                | (
+                    ModelCategory::Polishing,
+                    ModelBackend::LlamaCpp | ModelBackend::AppleFoundationModels
+                )
+        );
+        ensure!(
+            backend_matches_category,
+            "model {:?} has a backend incompatible with its category",
+            model.id
+        );
+
+        let system_model = model.backend == ModelBackend::AppleFoundationModels;
+        if system_model {
+            ensure!(
+                model.files.is_empty(),
+                "system model {:?} has files",
+                model.id
+            );
+            ensure!(
+                model.directory.is_none(),
+                "system model {:?} has a directory",
+                model.id
+            );
+            ensure!(
+                model.minimum_macos.is_some(),
+                "system model {:?} has no minimum macOS",
+                model.id
+            );
+        } else {
+            ensure!(
+                !model.files.is_empty(),
+                "downloadable model {:?} has no files",
+                model.id
+            );
+        }
+
+        if let Some(directory) = &model.directory {
+            validate_relative_path(directory)
+                .with_context(|| format!("model {:?} directory", model.id))?;
+            let prefix = format!("{directory}/");
+            ensure!(
+                model
+                    .files
+                    .iter()
+                    .all(|file| file.dest.starts_with(&prefix)),
+                "model {:?} has a file outside directory {:?}",
+                model.id,
+                directory
+            );
+        }
+
+        for file in &model.files {
+            validate_relative_path(&file.dest)
+                .with_context(|| format!("model {:?} file path", model.id))?;
+            ensure!(
+                destinations.insert(&file.dest),
+                "duplicate model destination {:?}",
+                file.dest
+            );
+            ensure!(file.size > 0, "model file {:?} has zero size", file.dest);
+            ensure!(
+                file.sha256.len() == 64 && file.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                "model file {:?} has an invalid sha256",
+                file.dest
+            );
+            ensure!(
+                file.url.starts_with("https://") && pinned_revision(&file.url).is_some(),
+                "model file {:?} URL is not pinned to a commit",
+                file.dest
+            );
+        }
+    }
+
+    for (id, category) in [
+        (DEFAULT_TRANSCRIPTION_MODEL, ModelCategory::Transcription),
+        (DEFAULT_POLISHING_MODEL, ModelCategory::Polishing),
+    ] {
+        let selected = catalog
+            .models
+            .iter()
+            .find(|model| model.id == id)
+            .with_context(|| format!("default model {id:?} is absent"))?;
+        ensure!(
+            selected.category == category,
+            "default model {id:?} has the wrong category"
+        );
+    }
+    Ok(())
+}
+
+fn validate_relative_path(path: &str) -> Result<()> {
+    ensure!(!path.is_empty(), "path is empty");
+    let path = Path::new(path);
+    ensure!(!path.is_absolute(), "path is absolute");
+    ensure!(
+        path.components()
+            .all(|component| matches!(component, Component::Normal(_))),
+        "path contains a non-normal component"
+    );
+    Ok(())
+}
+
+fn pinned_revision(url: &str) -> Option<&str> {
+    let revision = url.split("/resolve/").nth(1)?.split('/').next()?;
+    (revision.len() == 40 && revision.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then_some(revision)
+}
 
 /// Ensure every manifest file is present under `models_dir`, downloading what
 /// is missing. `progress` receives `(file, downloaded_bytes, total_bytes)`.
-pub fn ensure_models(models_dir: &Path, progress: &mut dyn FnMut(&str, u64, u64)) -> Result<()> {
-    ensure_files(models_dir, &MODEL_FILES, &DIRECTORY_MODELS, progress)
+pub fn ensure_selected_models(
+    models_dir: &Path,
+    selection: &diktafon_protocol::ModelSelection,
+    progress: &mut dyn FnMut(&str, u64, u64),
+) -> Result<()> {
+    validate_selection(selection)?;
+    let selected = [
+        model(&selection.transcription)?,
+        model(&selection.polishing)?,
+    ];
+    let files: Vec<_> = selected
+        .iter()
+        .copied()
+        .flat_map(|model| model.files.iter().cloned())
+        .collect();
+    let directories: Vec<_> = selected
+        .iter()
+        .filter_map(|model| model.directory.as_deref())
+        .collect();
+    ensure_files(models_dir, &files, &directories, progress)
 }
 
 fn ensure_files(
@@ -68,7 +326,7 @@ fn ensure_files(
 ) -> Result<()> {
     fs::create_dir_all(models_dir)?;
     for file in files {
-        let target = match download_path(models_dir, file.dest) {
+        let target = match download_path(models_dir, &file.dest) {
             Some(path) => path,
             // Already present (final location, or verified in staging).
             None => continue,
@@ -83,12 +341,12 @@ fn ensure_files(
         );
         fetch(
             &RemoteFile {
-                url: file.url.to_string(),
+                url: file.url.clone(),
                 size: file.size,
-                sha256: file.sha256.to_string(),
+                sha256: file.sha256.clone(),
             },
             &target,
-            &mut |done, total| progress(file.dest, done, total),
+            &mut |done, total| progress(&file.dest, done, total),
         )
         .with_context(|| format!("downloading {}", file.dest))?;
     }
@@ -164,13 +422,125 @@ mod tests {
         dir
     }
 
-    fn model_file(dest: &'static str, url: String, body: &[u8]) -> ModelFile {
+    fn model_file(dest: &str, url: String, body: &[u8]) -> ModelFile {
         ModelFile {
-            dest,
-            url: url.leak(),
+            dest: dest.to_string(),
+            url,
             size: body.len() as u64,
-            sha256: hex::encode(Sha256::digest(body)).leak(),
+            sha256: hex::encode(Sha256::digest(body)),
         }
+    }
+
+    fn bundled_value() -> serde_json::Value {
+        serde_json::from_str(diktafon_protocol::MODEL_CATALOG_JSON).unwrap()
+    }
+
+    fn validate_value(value: serde_json::Value) -> Result<()> {
+        let catalog: Catalog = serde_json::from_value(value)?;
+        validate_catalog(&catalog)
+    }
+
+    #[test]
+    fn bundled_catalog_is_valid_and_resolves_load_paths() {
+        validate_value(bundled_value()).unwrap();
+        let root = Path::new("/models");
+        assert_eq!(
+            model_path(root, DEFAULT_TRANSCRIPTION_MODEL).unwrap(),
+            root.join("canary-1b-flash-Q5_K_M.gguf")
+        );
+        assert_eq!(
+            model_path(root, DEFAULT_POLISHING_MODEL).unwrap(),
+            root.join("s1-mini-q4_k_m.gguf")
+        );
+        let canary = model("canary-1b-flash-q5-k-m").unwrap();
+        assert_eq!(canary.backend, ModelBackend::TranscribeCpp);
+        assert_eq!(canary.languages, ["en", "de", "es", "fr"]);
+        assert_eq!(canary.files.len(), 1);
+        assert_eq!(canary.files[0].size, 769_563_424);
+        assert_eq!(
+            canary.files[0].sha256,
+            "7eed3cac92f255a4adbd518c58663d3fbf65984d2619189e593f2d374b05c601"
+        );
+    }
+
+    #[test]
+    fn catalog_rejects_version_identity_and_destination_drift() {
+        let mut value = bundled_value();
+        value["version"] = 2.into();
+        assert!(validate_value(value).is_err());
+
+        let mut value = bundled_value();
+        value["models"][1]["id"] = value["models"][0]["id"].clone();
+        assert!(validate_value(value).is_err());
+
+        let mut value = bundled_value();
+        value["models"][1]["files"][0]["path"] = value["models"][0]["files"][0]["path"].clone();
+        assert!(validate_value(value).is_err());
+    }
+
+    #[test]
+    fn catalog_requires_known_license_and_notice_ids() {
+        let mut value = bundled_value();
+        value["models"][0]["license"] = "unknown".into();
+        assert!(validate_value(value).is_err());
+
+        let mut value = bundled_value();
+        value["models"][0]["notices"] = serde_json::json!([]);
+        assert!(validate_value(value).is_err());
+
+        let mut value = bundled_value();
+        value["models"][0]["notices"] = serde_json::json!(["unknown"]);
+        assert!(validate_value(value).is_err());
+    }
+
+    #[test]
+    fn catalog_rejects_unsafe_paths_and_unpinned_files() {
+        for path in ["/tmp/model.gguf", "../model.gguf", "models/../model.gguf"] {
+            let mut value = bundled_value();
+            value["models"][1]["files"][0]["path"] = path.into();
+            assert!(validate_value(value).is_err(), "accepted {path:?}");
+        }
+
+        for field in ["size", "sha256", "url"] {
+            let mut value = bundled_value();
+            value["models"][1]["files"][0][field] = match field {
+                "size" => 0.into(),
+                "sha256" => "bad".into(),
+                "url" => "https://example.com/model.gguf".into(),
+                _ => unreachable!(),
+            };
+            assert!(validate_value(value).is_err(), "accepted bad {field}");
+        }
+    }
+
+    #[test]
+    fn catalog_rejects_unknown_or_incompatible_backends() {
+        let mut value = bundled_value();
+        value["models"][0]["backend"] = "shell_command".into();
+        let parsed: Result<Catalog, _> = serde_json::from_value(value);
+        assert!(parsed.is_err());
+
+        let mut value = bundled_value();
+        value["models"][0]["backend"] = "llama_cpp".into();
+        assert!(validate_value(value).is_err());
+    }
+
+    #[test]
+    fn system_models_require_no_files_and_a_minimum_os() {
+        let mut value = bundled_value();
+        validate_value(value.clone()).unwrap();
+
+        let apple_index = value["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|model| model["id"] == "apple-intelligence")
+            .unwrap();
+        value["models"][apple_index]
+            .as_object_mut()
+            .unwrap()
+            .remove("minimum_macos");
+        assert!(validate_value(value).is_err());
     }
 
     #[test]

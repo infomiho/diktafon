@@ -1,7 +1,8 @@
 use crate::dictation::PhaseEvent;
 use anyhow::{Context, Result, anyhow, bail};
 use diktafon_protocol::{
-    ClientMsg, DaemonMsg, Msg, PROTOCOL_VERSION, VERSION_MISMATCH_PREFIX, read_frame, write_frame,
+    ClientMsg, DaemonMsg, MODEL_MISMATCH_PREFIX, ModelSelection, Msg, PROTOCOL_VERSION,
+    VERSION_MISMATCH_PREFIX, read_frame, write_frame,
 };
 use std::cell::Cell;
 use std::io::BufReader;
@@ -46,6 +47,7 @@ enum SessionResult {
 /// `finish` surfaces the error.
 pub struct DaemonClient {
     pub chunk_tx: mpsc::Sender<Msg>,
+    pub models: ModelSelectionControl,
     /// When the transport last auto-spawned diktafond; a spawn inside a
     /// session's window marks that session as a cold start in the timings.
     pub spawned_at: Arc<Mutex<Option<Instant>>>,
@@ -57,6 +59,19 @@ pub struct DaemonClient {
     stale_results: Cell<usize>,
 }
 
+#[derive(Clone)]
+pub struct ModelSelectionControl(Arc<Mutex<ModelSelection>>);
+
+impl ModelSelectionControl {
+    pub fn set(&self, models: ModelSelection) {
+        *self.0.lock().unwrap() = models;
+    }
+
+    fn get(&self) -> ModelSelection {
+        self.0.lock().unwrap().clone()
+    }
+}
+
 impl DaemonClient {
     /// `daemon_bin`: the diktafond binary to auto-spawn when the socket is
     /// dead; `None` disables auto-spawn (the daemon must be started manually).
@@ -66,6 +81,7 @@ impl DaemonClient {
         socket: PathBuf,
         daemon_bin: Option<PathBuf>,
         phase_tx: Option<futures::channel::mpsc::UnboundedSender<PhaseEvent>>,
+        models: ModelSelection,
     ) -> Self {
         let (chunk_tx, cmd_rx) = mpsc::channel::<Msg>();
         let (results_tx, results_rx) = mpsc::channel();
@@ -76,11 +92,21 @@ impl DaemonClient {
         });
         let spawned_at = Arc::new(Mutex::new(None));
         let transport_spawned_at = spawned_at.clone();
+        let models = ModelSelectionControl(Arc::new(Mutex::new(models)));
+        let transport_models = models.clone();
         thread::spawn(move || {
-            Transport::new(socket, daemon_bin, ledger, transport_spawned_at).run(cmd_rx)
+            Transport::new(
+                socket,
+                daemon_bin,
+                ledger,
+                transport_spawned_at,
+                transport_models,
+            )
+            .run(cmd_rx)
         });
         Self {
             chunk_tx,
+            models,
             spawned_at,
             results_rx,
             stale_results: Cell::new(0),
@@ -192,7 +218,7 @@ pub fn disable_daemon_spawn() {
 impl Supervisor {
     /// Spawn the daemon if allowed: auto-spawn enabled, not shutting down, no
     /// live child of ours, and not within the crash-loop cooldown.
-    fn try_spawn(&mut self, socket: &Path) -> bool {
+    fn try_spawn(&mut self, socket: &Path, models: &ModelSelection) -> bool {
         if SHUTTING_DOWN.load(std::sync::atomic::Ordering::Relaxed) {
             return false;
         }
@@ -239,6 +265,8 @@ impl Supervisor {
         }
         match command
             .env("DIKTAFOND_SOCKET", socket)
+            .env("DIKTAFON_TRANSCRIPTION_MODEL", &models.transcription)
+            .env("DIKTAFON_POLISHING_MODEL", &models.polishing)
             .process_group(0)
             .stdin(Stdio::null())
             .stdout(stdout)
@@ -282,6 +310,8 @@ struct Transport {
     retired_mismatch: bool,
     /// Mirrored to [`DaemonClient::spawned_at`] whenever a daemon is spawned.
     spawned_at: Arc<Mutex<Option<Instant>>>,
+    models: ModelSelectionControl,
+    connected_models: Option<ModelSelection>,
 }
 
 impl Transport {
@@ -290,6 +320,7 @@ impl Transport {
         daemon_bin: Option<PathBuf>,
         ledger: Arc<FlushLedger>,
         spawned_at: Arc<Mutex<Option<Instant>>>,
+        models: ModelSelectionControl,
     ) -> Self {
         Self {
             socket,
@@ -305,6 +336,8 @@ impl Transport {
             dropped_chunks: 0,
             retired_mismatch: false,
             spawned_at,
+            models,
+            connected_models: None,
         }
     }
 
@@ -318,6 +351,7 @@ impl Transport {
         for msg in cmd_rx {
             match msg {
                 Msg::Start(config) => {
+                    self.prepare_session();
                     self.dropped_chunks = 0;
                     self.send(&ClientMsg::Start(config));
                 }
@@ -335,6 +369,12 @@ impl Transport {
         }
         // The client is gone; shutting down unblocks the reader thread.
         self.drop_conn();
+    }
+
+    fn prepare_session(&mut self) {
+        if self.connected_models.as_ref() != Some(&self.models.get()) {
+            self.drop_conn();
+        }
     }
 
     /// End the session. If any of its audio was dropped, the daemon only holds
@@ -378,13 +418,14 @@ impl Transport {
             return false;
         }
         let mut failure = match self.connect() {
-            Ok(stream) => return self.adopt(stream),
+            Ok((stream, models)) => return self.adopt(stream, models),
             Err(f) => f,
         };
         // A resident daemon from an older build refuses our handshake forever;
         // retire it and fall through to spawning our own.
         if let ConnectFailure::Rejected(e) = &failure
-            && format!("{e:#}").contains(VERSION_MISMATCH_PREFIX)
+            && (format!("{e:#}").contains(VERSION_MISMATCH_PREFIX)
+                || format!("{e:#}").contains(MODEL_MISMATCH_PREFIX))
         {
             if self.retired_mismatch {
                 eprintln!(
@@ -397,14 +438,15 @@ impl Transport {
                 }
             }
         }
-        if matches!(failure, ConnectFailure::NoDaemon(_)) && self.supervisor.try_spawn(&self.socket)
+        if matches!(failure, ConnectFailure::NoDaemon(_))
+            && self.supervisor.try_spawn(&self.socket, &self.models.get())
         {
             *self.spawned_at.lock().unwrap() = Some(Instant::now());
             if let Some(tx) = &self.ledger.phase_tx {
                 let _ = tx.unbounded_send(PhaseEvent::DaemonStarting);
             }
             match self.wait_for_spawned_daemon() {
-                Some(stream) => return self.adopt(stream),
+                Some((stream, models)) => return self.adopt(stream, models),
                 // The wait already printed why it gave up.
                 None => return self.schedule_retry(),
             }
@@ -422,17 +464,19 @@ impl Transport {
         false
     }
 
-    fn adopt(&mut self, stream: UnixStream) -> bool {
+    fn adopt(&mut self, stream: UnixStream, models: ModelSelection) -> bool {
         self.backoff = INITIAL_BACKOFF;
+        self.retired_mismatch = false;
         eprintln!("connected to diktafond");
         self.conn = Some(stream);
+        self.connected_models = Some(models);
         true
     }
 
     /// Poll until the daemon we just spawned answers the handshake, it dies, or
     /// the model-load deadline passes. Blocking the transport thread here is
     /// deliberate: queued session messages flow on as soon as the daemon is up.
-    fn wait_for_spawned_daemon(&mut self) -> Option<UnixStream> {
+    fn wait_for_spawned_daemon(&mut self) -> Option<(UnixStream, ModelSelection)> {
         let deadline = Instant::now() + DAEMON_READY_TIMEOUT;
         while Instant::now() < deadline {
             if let Some(status) = self.supervisor.child_exit_status() {
@@ -440,7 +484,7 @@ impl Transport {
                 return None;
             }
             match self.connect() {
-                Ok(stream) => return Some(stream),
+                Ok(connection) => return Some(connection),
                 Err(ConnectFailure::NoDaemon(_)) => thread::sleep(DAEMON_READY_POLL),
                 Err(ConnectFailure::Rejected(e)) => {
                     eprintln!("spawned diktafond rejected the handshake: {e:#}");
@@ -452,9 +496,11 @@ impl Transport {
         None
     }
 
-    fn connect(&self) -> Result<UnixStream, ConnectFailure> {
+    fn connect(&self) -> Result<(UnixStream, ModelSelection), ConnectFailure> {
+        let requested = self.models.get();
         let stream = UnixStream::connect(&self.socket).map_err(ConnectFailure::NoDaemon)?;
-        self.handshake(&stream).map_err(ConnectFailure::Rejected)?;
+        self.handshake(&stream, &requested)
+            .map_err(ConnectFailure::Rejected)?;
         self.await_ready(&stream)
             .map_err(ConnectFailure::Rejected)?;
         spawn_reader(
@@ -463,19 +509,29 @@ impl Transport {
                 .map_err(|e| ConnectFailure::Rejected(e.into()))?,
             self.ledger.clone(),
         );
-        Ok(stream)
+        Ok((stream, requested))
     }
 
-    fn handshake(&self, stream: &UnixStream) -> Result<()> {
+    fn handshake(&self, stream: &UnixStream, requested: &ModelSelection) -> Result<()> {
         stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
         write_frame(
             &mut &*stream,
             &ClientMsg::Hello {
                 version: PROTOCOL_VERSION,
+                models: requested.clone(),
             },
         )?;
         match read_frame::<DaemonMsg>(&mut &*stream)? {
-            Some(DaemonMsg::Hello { .. }) => Ok(()),
+            Some(DaemonMsg::Hello { version, models })
+                if version == PROTOCOL_VERSION && models == *requested =>
+            {
+                Ok(())
+            }
+            Some(DaemonMsg::Hello { version, models }) => bail!(
+                "{MODEL_MISMATCH_PREFIX}: requested {:?}, daemon v{version} loaded {:?}",
+                requested,
+                models
+            ),
             Some(DaemonMsg::Error(e)) => bail!("daemon refused the connection: {e}"),
             Some(other) => bail!("unexpected handshake reply: {other:?}"),
             None => bail!("daemon closed the connection during the handshake"),
@@ -549,6 +605,7 @@ impl Transport {
             // Wakes the reader thread out of its blocking read.
             let _ = conn.shutdown(Shutdown::Both);
         }
+        self.connected_models = None;
     }
 }
 
@@ -636,6 +693,7 @@ mod tests {
                     &mut writer,
                     &DaemonMsg::Hello {
                         version: PROTOCOL_VERSION,
+                        models: ModelSelection::default(),
                     },
                 )
                 .unwrap();
@@ -678,13 +736,80 @@ mod tests {
     }
 
     #[test]
+    fn desired_model_selection_can_change_without_touching_the_connection() {
+        let control = ModelSelectionControl(Arc::new(Mutex::new(ModelSelection::default())));
+        let cohere = ModelSelection {
+            transcription: "cohere-transcribe-q5-k-m".into(),
+            ..ModelSelection::default()
+        };
+        control.set(cohere.clone());
+        assert_eq!(control.get(), cohere);
+    }
+
+    #[test]
+    fn connection_remembers_the_models_used_by_its_handshake() {
+        let socket = test_socket("model-race");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            let Some(ClientMsg::Hello { models, .. }) = read_frame(&mut reader).unwrap() else {
+                panic!("expected Hello");
+            };
+            write_frame(
+                &mut writer,
+                &DaemonMsg::Hello {
+                    version: PROTOCOL_VERSION,
+                    models,
+                },
+            )
+            .unwrap();
+            thread::sleep(Duration::from_millis(50));
+            write_frame(&mut writer, &DaemonMsg::Ready).unwrap();
+            thread::sleep(Duration::from_millis(100));
+        });
+        let initial = ModelSelection::default();
+        let control = ModelSelectionControl(Arc::new(Mutex::new(initial.clone())));
+        let change = control.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(10));
+            change.set(ModelSelection {
+                transcription: "cohere-transcribe-q5-k-m".into(),
+                ..ModelSelection::default()
+            });
+        });
+        let (results_tx, _) = mpsc::channel();
+        let ledger = Arc::new(FlushLedger {
+            results_tx,
+            pending_flushes: Mutex::new(0),
+            phase_tx: None,
+        });
+        let mut transport = Transport::new(
+            socket.clone(),
+            None,
+            ledger,
+            Arc::new(Mutex::new(None)),
+            control,
+        );
+        let (stream, connected_models) = transport
+            .connect()
+            .unwrap_or_else(|failure| panic!("connecting failed: {failure}"));
+        assert_eq!(connected_models, initial);
+        transport.drop_conn();
+        drop(stream);
+        server.join().unwrap();
+        let _ = std::fs::remove_file(socket);
+    }
+
+    #[test]
     fn sessions_roundtrip_and_survive_daemon_restart() {
         let socket = test_socket("roundtrip");
         let listener = UnixListener::bind(&socket).unwrap();
         // First fake daemon: serves two sessions on one connection, then dies.
         let first = thread::spawn(move || serve_conn(listener.accept().unwrap().0, 2));
 
-        let client = DaemonClient::spawn(socket.clone(), None, None);
+        let client = DaemonClient::spawn(socket.clone(), None, None, ModelSelection::default());
         assert_eq!(run_session(&client, 2).unwrap(), "2 chunks");
         assert_eq!(run_session(&client, 3).unwrap(), "3 chunks");
 
@@ -718,7 +843,8 @@ mod tests {
 
     #[test]
     fn finish_fails_fast_when_daemon_never_existed() {
-        let client = DaemonClient::spawn(test_socket("absent"), None, None);
+        let client =
+            DaemonClient::spawn(test_socket("absent"), None, None, ModelSelection::default());
         let start = Instant::now();
         assert!(run_session(&client, 0).is_err());
         assert!(
@@ -735,6 +861,7 @@ mod tests {
             test_socket("badspawn"),
             Some(PathBuf::from("/usr/bin/false")),
             None,
+            ModelSelection::default(),
         );
         let start = Instant::now();
         assert!(run_session(&client, 0).is_err());
@@ -756,7 +883,8 @@ mod tests {
             bin.exists(),
             "build diktafond first: cargo build -p diktafond"
         );
-        let client = DaemonClient::spawn(socket.clone(), Some(bin), None);
+        let client =
+            DaemonClient::spawn(socket.clone(), Some(bin), None, ModelSelection::default());
         assert_eq!(run_session(&client, 0).unwrap(), "");
 
         // Kill the daemon we spawned: every process on the socket that is not

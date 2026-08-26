@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "id": "canary-1b-flash-q5-k-m",
+      "category": "transcription",
+      "name": "Canary 1B Flash",
+      "backend": "transcribe_cpp",
+      "languages": ["en", "de", "es", "fr"],
+      "capabilities": {
+        "streaming": false,
+        "translation": true,
+        "language_detection": false,
+        "timestamps": false,
+        "local_only": true
+      },
+      "license": "cc-by-4.0",
+      "notices": ["nvidia-canary", "handy-canary-gguf", "transcribe-cpp"],
+      "files": [
+        {
+          "path": "canary-1b-flash-Q5_K_M.gguf",
+          "url": "https://huggingface.co/handy-computer/canary-1b-flash-gguf/resolve/b427664769b93c021df108a2fa8bfb858ae236c1/canary-1b-flash-Q5_K_M.gguf",
+          "size": 769563424,
+          "sha256": "7eed3cac92f255a4adbd518c58663d3fbf65984d2619189e593f2d374b05c601"
+        }
+      ]
+    },
+    {
+      "id": "cohere-transcribe-q5-k-m",
+      "category": "transcription",
+      "name": "Cohere Transcribe",
+      "backend": "transcribe_cpp",
+      "languages": ["en", "fr", "de", "es", "it", "pt", "nl", "pl", "el", "ar", "ja", "zh", "vi", "ko"],
+      "capabilities": {
+        "streaming": false,
+        "translation": false,
+        "language_detection": false,
+        "timestamps": false,
+        "local_only": true
+      },
+      "license": "apache-2.0",
+      "notices": ["cohere-transcribe", "handy-cohere-gguf", "transcribe-cpp"],
+      "files": [
+        {
+          "path": "cohere-transcribe-03-2026-Q5_K_M.gguf",
+          "url": "https://huggingface.co/handy-computer/cohere-transcribe-03-2026-gguf/resolve/dfa4adebb64f3076b7b6b90b721275cc069cb421/cohere-transcribe-03-2026-Q5_K_M.gguf",
+          "size": 1770270208,
+          "sha256": "14d02f1ad6dd77b3a60f82639879012c3adb4fe25c50a5a47a2c4c661daf1558"
+        }
+      ]
+    },
+    {
+      "id": "apple-intelligence",
+      "category": "polishing",
+      "name": "Apple Intelligence",
+      "backend": "apple_foundation_models",
+      "languages": ["en"],
+      "capabilities": {
+        "streaming": false,
+        "translation": false,
+        "language_detection": false,
+        "timestamps": false,
+        "local_only": true
+      },
+      "license": "system-provided",
+      "notices": ["apple-foundation-models"],
+      "minimum_macos": 26,
+      "files": []
+    },
+    {
+      "id": "s1-mini-q4-k-m",
+      "category": "polishing",
+      "name": "S1-mini by Superwhisper",
+      "backend": "llama_cpp",
+      "languages": ["en"],
+      "capabilities": {
+        "streaming": false,
+        "translation": false,
+        "language_detection": false,
+        "timestamps": false,
+        "local_only": true
+      },
+      "license": "s1-mini-license",
+      "notices": ["s1-mini", "qwen3", "llama-cpp"],
+      "files": [
+        {
+          "path": "s1-mini-q4_k_m.gguf",
+          "url": "https://huggingface.co/superwhisper/s1-mini-GGUF/resolve/8eab4779866f477ae6e7f237ca45fc2c65153f50/s1-mini-q4_k_m.gguf",
+          "size": 484219808,
+          "sha256": "3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634"
+        }
+      ]
+    }
+  ]
+}

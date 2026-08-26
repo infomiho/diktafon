@@ -20,6 +20,8 @@ mkdir -p "$app/Contents/MacOS"
 cp crates/diktafon/resources/Info.plist "$app/Contents/Info.plist"
 mkdir -p "$app/Contents/Resources"
 cp crates/diktafon/resources/diktafon.icns "$app/Contents/Resources/diktafon.icns"
+cp THIRD_PARTY_NOTICES.md "$app/Contents/Resources/THIRD_PARTY_NOTICES.md"
+cp -R licenses "$app/Contents/Resources/licenses"
 cp target/release/diktafon "$app/Contents/MacOS/diktafon"
 # Next to the client so its auto-spawn finds it.
 cp target/release/diktafond "$app/Contents/MacOS/diktafond"
@@ -36,6 +38,8 @@ fi
 codesign --force --sign "${identity:--}" "$app"
 codesign --verify --deep "$app"
 plutil -lint "$app/Contents/Info.plist" > /dev/null
+test -f "$app/Contents/Resources/THIRD_PARTY_NOTICES.md"
+test -f "$app/Contents/Resources/licenses/Apache-2.0.txt"
 
 echo "Built $app"
 echo "Launch with: open $app  (permissions attach to the app; no console output)"

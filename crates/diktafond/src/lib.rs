@@ -1,3 +1,4 @@
+pub mod apple_intelligence;
 pub mod daemon;
 pub mod fetch;
 mod inference;
