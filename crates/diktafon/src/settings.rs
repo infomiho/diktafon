@@ -1,5 +1,5 @@
 //! Settings window, opened from the menu bar: a sidebar of sections
-//! (General / Dictation / History / Advanced) with a titled content pane,
+//! (General / Models / History / Advanced) with a titled content pane,
 //! built from gpui-component widgets. Edits persist to config.json; the
 //! prompt and language apply to the next dictation, the idle-unload time
 //! when the daemon restarts.
@@ -11,13 +11,13 @@ use crate::{autostart, statusbar, theme};
 use chrono::{Datelike, Local, NaiveDate};
 use diktafon_protocol::HistoryEntry;
 use gpui::{
-    App, AppContext, Bounds, ClipboardItem, Context, Entity, ParentElement, Render, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px,
-    relative, rems, rgba, size,
+    App, AppContext, Bounds, ClipboardItem, Context, Div, Entity, ParentElement, Render,
+    SharedString, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, div, point,
+    prelude::*, px, relative, rems, rgba, size,
 };
-use gpui_component::button::Button;
+use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::form::{Form, field, v_form};
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::label::Label;
 use gpui_component::list::ListItem;
 use gpui_component::searchable_list::SearchableVec;
@@ -38,14 +38,11 @@ struct CatalogModel {
     id: String,
     category: String,
     name: String,
-    backend: String,
-    languages: Vec<String>,
     files: Vec<CatalogFile>,
 }
 
 #[derive(serde::Deserialize)]
 struct CatalogFile {
-    path: String,
     size: u64,
 }
 
@@ -62,40 +59,28 @@ fn model_options(
     for model in catalog.models.into_iter().filter(|model| {
         model.category == category && (model.id != "apple-intelligence" || apple_available)
     }) {
-        let installed = model
-            .files
-            .iter()
-            .all(|file| diktafon_protocol::models_dir().join(&file.path).exists());
         let size: u64 = model.files.iter().map(|file| file.size).sum();
-        let source = if model.files.is_empty() {
-            "System-provided".to_string()
+        let metadata = if model.files.is_empty() {
+            "Built into macOS. No download.".to_string()
         } else {
-            format!("{} MB", size / 1_000_000)
-        };
-        let state = if model.files.is_empty() {
-            "availability checked on use"
-        } else if installed {
-            "installed"
-        } else {
-            "downloads on first use"
+            let size = size as f64 / 1_000_000_000.0;
+            if size >= 1.0 {
+                format!("Size: {size:.2} GB")
+            } else {
+                format!("Size: {} MB", (size * 1_000.0).round() as u64)
+            }
         };
         labels.push(model.name.clone().into());
-        descriptions.push(format!(
-            "{source}; {} language{}; {}; {state}",
-            model.languages.len(),
-            if model.languages.len() == 1 { "" } else { "s" },
-            model.backend.replace('_', ".")
-        ));
+        descriptions.push(metadata);
         ids.push(model.id);
     }
     if !ids.iter().any(|id| id == current) && (current != "apple-intelligence" || apple_available) {
         ids.push(current.to_string());
         labels.push(format!("Unknown model ({current})").into());
-        descriptions.push("Invalid for this category; the default is used until changed.".into());
+        descriptions.push("This model is not available. Choose another model.".into());
     }
     (ids, labels, descriptions)
 }
-
 fn open_third_party_notices() -> std::io::Result<()> {
     let executable = std::env::current_exe()?;
     let bundled = executable
@@ -145,7 +130,7 @@ const IDLE_OPTIONS: &[(u64, &str)] = &[
 #[derive(Clone, Copy, PartialEq)]
 enum Section {
     General,
-    Dictation,
+    Models,
     History,
     Advanced,
 }
@@ -153,7 +138,7 @@ enum Section {
 impl Section {
     const ALL: [Section; 4] = [
         Section::General,
-        Section::Dictation,
+        Section::Models,
         Section::History,
         Section::Advanced,
     ];
@@ -161,7 +146,7 @@ impl Section {
     fn title(self) -> &'static str {
         match self {
             Section::General => "General",
-            Section::Dictation => "Dictation",
+            Section::Models => "Models",
             Section::History => "History",
             Section::Advanced => "Advanced",
         }
@@ -170,7 +155,7 @@ impl Section {
     fn icon(self) -> IconName {
         match self {
             Section::General => IconName::Settings,
-            Section::Dictation => IconName::ALargeSmall,
+            Section::Models => IconName::Bot,
             Section::History => IconName::Calendar,
             Section::Advanced => IconName::Cpu,
         }
@@ -292,6 +277,7 @@ pub struct SettingsWindow {
     polishing_select: Entity<SelectState<SearchableVec<SharedString>>>,
     polishing_ids: Vec<String>,
     polishing_descriptions: Vec<String>,
+    apple_prompt_input: Entity<TextareaState>,
     idle_select: Entity<SelectState<SearchableVec<SharedString>>>,
     /// Seconds parallel to the idle dropdown items.
     idle_values: Vec<u64>,
@@ -490,6 +476,12 @@ impl SettingsWindow {
                 cx,
             )
         });
+        let apple_prompt_input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(4, 8)
+                .placeholder("Describe how the transcript should be polished.")
+                .default_value(current.apple_prompt.clone())
+        });
 
         let mut idle_values: Vec<u64> = IDLE_OPTIONS.iter().map(|(secs, _)| *secs).collect();
         let mut idle_items: Vec<SharedString> = IDLE_OPTIONS
@@ -554,9 +546,7 @@ impl SettingsWindow {
         })
         .detach();
 
-        // Settings apply as they change, macOS-style; there is no Save
-        // button. Enter inserts a newline in the textarea, so only Blur
-        // (and closing the window) commits the prompt.
+        // Settings apply as they change, macOS-style; there is no Save button.
 
         cx.subscribe(&history_search, |view, input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
@@ -566,32 +556,46 @@ impl SettingsWindow {
             }
         })
         .detach();
-        cx.subscribe(
+        cx.subscribe_in(
             &language_select,
-            |view, _, event: &SelectEvent<SearchableVec<SharedString>>, cx| {
+            window,
+            |view, _, event: &SelectEvent<SearchableVec<SharedString>>, window, cx| {
                 let SelectEvent::Confirm(_) = event;
-                view.save(cx);
+                view.save(window, cx);
             },
         )
         .detach();
-        cx.subscribe(
+        cx.subscribe_in(
             &idle_select,
-            |view, _, event: &SelectEvent<SearchableVec<SharedString>>, cx| {
+            window,
+            |view, _, event: &SelectEvent<SearchableVec<SharedString>>, window, cx| {
                 let SelectEvent::Confirm(_) = event;
-                view.save(cx);
+                view.save(window, cx);
             },
         )
         .detach();
         for select in [&transcription_select, &polishing_select] {
-            cx.subscribe(
+            cx.subscribe_in(
                 select,
-                |view, _, event: &SelectEvent<SearchableVec<SharedString>>, cx| {
+                window,
+                |view, _, event: &SelectEvent<SearchableVec<SharedString>>, window, cx| {
                     let SelectEvent::Confirm(_) = event;
-                    view.save(cx);
+                    view.save(window, cx);
+                    cx.notify();
                 },
             )
             .detach();
         }
+        cx.subscribe_in(
+            &apple_prompt_input,
+            window,
+            |view, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    view.save(window, cx);
+                }
+            },
+        )
+        .detach();
 
         Self {
             settings,
@@ -605,6 +609,7 @@ impl SettingsWindow {
             polishing_select,
             polishing_ids,
             polishing_descriptions,
+            apple_prompt_input,
             idle_select,
             idle_values,
             autostart: false,
@@ -619,7 +624,7 @@ impl SettingsWindow {
         }
     }
 
-    fn save(&mut self, cx: &mut Context<Self>) {
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let defaults = SessionSettings::default();
         let control_line = control_line::compose(self.control[0], self.control[1], self.control[2]);
         let language = self
@@ -649,14 +654,26 @@ impl SettingsWindow {
         let mut updated = SessionSettings {
             language,
             control_line,
+            apple_prompt: self.apple_prompt_input.read(cx).value().to_string(),
             idle_unload_secs,
             sound_cues: self.sound_cues,
             hotkey: self.hotkey.clone(),
-            transcription_model,
+            transcription_model: transcription_model.clone(),
             polishing_model,
         };
         let models = updated.models();
         updated.transcription_model = models.transcription.clone();
+        if updated.transcription_model != transcription_model
+            && let Some(index) = self
+                .transcription_ids
+                .iter()
+                .position(|id| id == &updated.transcription_model)
+        {
+            self.transcription_select.update(cx, |select, cx| {
+                select.set_selected_index(Some(IndexPath::new(index)), window, cx);
+                cx.notify();
+            });
+        }
         if let Err(e) = updated.save() {
             eprintln!("saving settings failed: {e:#}");
             return;
@@ -797,7 +814,7 @@ impl SettingsWindow {
             .gap_8()
             .child(Self::control_row(
                 "Start at login",
-                "",
+                "Open Diktafon when you sign in.",
                 Switch::new("autostart")
                     .large()
                     .checked(self.autostart)
@@ -808,20 +825,20 @@ impl SettingsWindow {
             ))
             .child(Self::control_row(
                 "Sound cues",
-                "A cue when the mic goes live, and on cancel or error",
+                "Play a sound when recording starts, is canceled, or fails.",
                 Switch::new("sound-cues")
                     .large()
                     .checked(self.sound_cues)
-                    .on_click(cx.listener(|view, checked: &bool, _, cx| {
+                    .on_click(cx.listener(|view, checked: &bool, window, cx| {
                         view.sound_cues = *checked;
-                        view.save(cx);
+                        view.save(window, cx);
                         cx.notify();
                     })),
                 cx,
             ))
             .child(Self::control_row(
                 "Hotkey",
-                "Hold to dictate, release to paste. Click to change.",
+                "Hold to record. Release to paste.",
                 self.hotkey_control(cx),
                 cx,
             ))
@@ -904,7 +921,7 @@ impl SettingsWindow {
             Ok(()) => {
                 self.hotkey = candidate;
                 self.capturing_hotkey = false;
-                self.save(cx);
+                self.save(window, cx);
                 self.focus_handle.focus(window, cx);
                 cx.notify();
             }
@@ -966,7 +983,7 @@ impl SettingsWindow {
         v_form().large().label_text_size(rems(1.))
     }
 
-    fn dictation_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn polishing_prompt(&self, cx: &mut Context<Self>) -> impl IntoElement {
         Self::form()
             .child(field().label("Tone").child(self.segmented(0, cx)))
             .child(
@@ -990,11 +1007,12 @@ impl SettingsWindow {
                         ),
                 ),
             )
-            .child(
-                field()
-                    .label("Language")
-                    .child(Select::new(&self.language_select).large()),
-            )
+    }
+
+    fn apple_prompt(&self) -> impl IntoElement {
+        Self::form().child(field().label("Instructions").child(
+            Textarea::new(&self.apple_prompt_input).aria_label("Apple Intelligence instructions"),
+        ))
     }
 
     /// A row of choices with the current one raised, for axes with a handful
@@ -1034,10 +1052,10 @@ impl SettingsWindow {
                         el.text_color(muted)
                             .hover(|el| el.bg(rgba(theme::HAIRLINE | 0x14)))
                     })
-                    .on_click(cx.listener(move |view, _, _, cx| {
+                    .on_click(cx.listener(move |view, _, window, cx| {
                         if view.control[slot] != index {
                             view.control[slot] = index;
-                            view.save(cx);
+                            view.save(window, cx);
                             cx.notify();
                         }
                     }))
@@ -1048,6 +1066,28 @@ impl SettingsWindow {
     /// The kit's field label and help text, for rows built by hand.
     fn field_label(text: &'static str) -> impl IntoElement {
         div().text_size(px(15.)).font_medium().child(text)
+    }
+
+    /// A pane subsection as a bordered card whose first row is the section
+    /// name in eyebrow style (small uppercase, muted): the size/case/color
+    /// step between the pane title and the 15px field labels, and the card
+    /// edge keeps the section's fields visibly one unit while scrolling.
+    /// Settled in docs/mockups/settings.html.
+    fn section_card(title: &'static str, cx: &App) -> Div {
+        v_flex()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(rgba(theme::SURFACE | 0xFF))
+            .p_5()
+            .gap_4()
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .font_semibold()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(title.to_uppercase()),
+            )
     }
 
     /// A muted label on the left, a truncating mono value on the right; the
@@ -1132,29 +1172,15 @@ impl SettingsWindow {
         )
     }
 
-    fn advanced_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut transcription_description = self
+    fn models_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let transcription_description = self
             .transcription_select
             .read(cx)
             .selected_index(cx)
             .and_then(|index| self.transcription_descriptions.get(index.row))
             .cloned()
             .unwrap_or_default();
-        let selected_transcriber = self
-            .transcription_select
-            .read(cx)
-            .selected_index(cx)
-            .and_then(|index| self.transcription_ids.get(index.row));
-        if selected_transcriber == self.daemon_status.transcription_model_id.as_ref() {
-            transcription_description.push_str(if self.daemon_status.models_loaded {
-                "; active"
-            } else if self.daemon_status.running {
-                "; loading"
-            } else {
-                ""
-            });
-        }
-        let mut polishing_description = self
+        let polishing_description = self
             .polishing_select
             .read(cx)
             .selected_index(cx)
@@ -1166,63 +1192,62 @@ impl SettingsWindow {
             .read(cx)
             .selected_index(cx)
             .and_then(|index| self.polishing_ids.get(index.row));
-        if selected_polisher.is_some_and(|id| id == "apple-intelligence")
-            && let Some(availability) = &self.daemon_status.polishing_availability
-        {
-            polishing_description.push_str(&format!("; {availability}"));
-        }
-        if selected_polisher == self.daemon_status.polishing_model_id.as_ref() {
-            polishing_description.push_str(if self.daemon_status.models_loaded {
-                "; active"
-            } else if self.daemon_status.running {
-                "; loading"
-            } else {
-                ""
-            });
-        }
-        v_flex()
-            .gap_6()
+        let uses_s1_prompt = selected_polisher.is_some_and(|id| id == "s1-mini-q4-k-m");
+        let uses_apple_prompt = selected_polisher.is_some_and(|id| id == "apple-intelligence");
+        let transcription = Self::section_card("Transcription", cx).child(
+            Self::form()
+                .child(
+                    field()
+                        .label("Transcription model")
+                        .description(transcription_description)
+                        .child(Select::new(&self.transcription_select).large()),
+                )
+                .child(
+                    field()
+                        .label("Language")
+                        .description("Choose the language you speak.")
+                        .child(Select::new(&self.language_select).large()),
+                ),
+        );
+        let polishing = Self::section_card("Polishing", cx)
             .child(
-                Self::form()
-                    .child(
-                        field()
-                            .label("Transcription model")
-                            .description(transcription_description)
-                            .child(Select::new(&self.transcription_select).large()),
-                    )
-                    .child(
-                        field()
-                            .label("Polishing model")
-                            .description(polishing_description)
-                            .child(Select::new(&self.polishing_select).large()),
-                    ),
+                Self::form().child(
+                    field()
+                        .label("Polishing model")
+                        .description(polishing_description)
+                        .child(Select::new(&self.polishing_select).large()),
+                ),
             )
+            .when(uses_s1_prompt, |card| card.child(self.polishing_prompt(cx)))
+            .when(uses_apple_prompt, |card| card.child(self.apple_prompt()));
+        v_flex().gap_8().child(transcription).child(polishing)
+    }
+
+    fn advanced_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_8()
             .child(
                 Self::form().child(
                     field()
                         .label("Unload models when idle")
                         .description(
-                            "Frees a few GB of RAM. Models reload on the next dictation. \
-                             Applies when the daemon restarts.",
+                            "Free memory when Diktafon is idle. Models reload with the next dictation.",
                         )
                         .child(Select::new(&self.idle_select).large()),
                 ),
             )
             .child(Self::form().child(field().label("Daemon").child(self.daemon_card(cx))))
             .child(
-                Self::form().child(
-                    field()
+                h_flex().child(
+                    Button::new("open-third-party-notices")
                         .label("Third-party notices")
-                        .description("Model attribution and inference runtime licenses.")
-                        .child(
-                            Button::new("open-third-party-notices")
-                                .label("Open notices")
-                                .on_click(|_, _, _| {
-                                    if let Err(error) = open_third_party_notices() {
-                                        eprintln!("opening third-party notices failed: {error}");
-                                    }
-                                }),
-                        ),
+                        .link()
+                        .small()
+                        .on_click(|_, _, _| {
+                            if let Err(error) = open_third_party_notices() {
+                                eprintln!("opening third-party notices failed: {error}");
+                            }
+                        }),
                 ),
             )
     }
@@ -1384,7 +1409,7 @@ impl Render for SettingsWindow {
 
         let pane: gpui::AnyElement = match section {
             Section::General => self.general_pane(cx).into_any_element(),
-            Section::Dictation => self.dictation_pane(cx).into_any_element(),
+            Section::Models => self.models_pane(cx).into_any_element(),
             Section::History => self.history_pane(cx).into_any_element(),
             Section::Advanced => self.advanced_pane(cx).into_any_element(),
         };
@@ -1393,10 +1418,8 @@ impl Render for SettingsWindow {
             .size_full()
             .track_focus(&self.focus_handle)
             .bg(cx.theme().background)
-            // A pending prompt edit would be lost on Cmd+W: Blur never fires
-            // for a closing window.
             .on_action(cx.listener(|view, _: &crate::CloseWindow, window, cx| {
-                view.save(cx);
+                view.save(window, cx);
                 window.remove_window();
             }))
             .child(sidebar)
@@ -1449,5 +1472,27 @@ mod tests {
             true,
         );
         assert!(available.iter().any(|id| id == "apple-intelligence"));
+    }
+
+    #[test]
+    fn model_descriptions_are_brief() {
+        let (_, _, descriptions) = model_options(
+            diktafon_protocol::DEFAULT_TRANSCRIPTION_MODEL,
+            "transcription",
+            false,
+        );
+        assert!(
+            descriptions
+                .iter()
+                .all(|description| !description.contains(';')
+                    && description.split_whitespace().count() <= 6)
+        );
+
+        let (ids, _, descriptions) = model_options("apple-intelligence", "polishing", true);
+        let apple = ids
+            .iter()
+            .position(|id| id == "apple-intelligence")
+            .unwrap();
+        assert_eq!(descriptions[apple], "Built into macOS. No download.");
     }
 }

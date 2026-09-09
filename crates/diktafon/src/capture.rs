@@ -388,8 +388,8 @@ impl VadChunker {
 }
 
 /// Handy's mic-calibrated level meter: an FFT over the most recent ~32ms of
-/// 16kHz audio, 16 log-spaced buckets across 400-4000Hz, each mapped from a
-/// -68..-30dB range with gain and a softening power curve.
+/// 16kHz audio, 16 log-spaced buckets across 400-8000Hz, tilt-equalized, each
+/// mapped from a -68..-30dB range with gain and a softening power curve.
 struct LevelMeter {
     fft: Arc<dyn rustfft::Fft<f32>>,
     hann: Vec<f32>,
@@ -405,7 +405,17 @@ const LEVEL_MAX_DB: f32 = -30.0;
 const LEVEL_GAIN: f32 = 1.3;
 const LEVEL_POWER: f32 = 0.7;
 const LEVEL_FREQ_MIN: f32 = 400.0;
-const LEVEL_FREQ_MAX: f32 = 4000.0;
+/// Sibilance (s, sh) lives at 4-8kHz; at the 16kHz sample rate Nyquist is
+/// 8kHz, and without that octave the meter's top columns never move during
+/// speech.
+const LEVEL_FREQ_MAX: f32 = 8000.0;
+/// Spectral-tilt EQ, per octave above LEVEL_FREQ_MIN. Speech rolls off
+/// steeply above the first formant, so a flat meter lights only the low
+/// bands; pro analyzers call this "slope" (pink-noise flattening is +3dB/oct,
+/// close-mic speech needs more). Tuned on the eval clips so loud moments read
+/// evenly across the display columns while vowel medians still descend left
+/// to right.
+const LEVEL_TILT_DB_PER_OCT: f32 = 6.5;
 /// Per-tick decay factor of a falling bar.
 const LEVEL_DECAY: f32 = 0.78;
 
@@ -469,7 +479,9 @@ impl LevelMeter {
                 .sum::<f32>()
                 / (hi_bin - lo_bin) as f32
                 / (FFT_WINDOW as f32 / 2.0);
-            let db = 20.0 * mean.max(1e-9).log10();
+            let center = (lo * hi).sqrt();
+            let db = 20.0 * mean.max(1e-9).log10()
+                + LEVEL_TILT_DB_PER_OCT * (center / LEVEL_FREQ_MIN).log2();
             let norm = ((db - LEVEL_MIN_DB) / (LEVEL_MAX_DB - LEVEL_MIN_DB)).clamp(0.0, 1.0);
             *bar = (norm * LEVEL_GAIN).min(1.0).powf(LEVEL_POWER);
         }
@@ -620,9 +632,10 @@ mod tests {
             .max_by(|a, b| a.1.total_cmp(b.1))
             .map(|(i, _)| i)
             .unwrap();
-        // 1 kHz lands in log bucket 6 of 400..4000 Hz across 16 buckets.
+        // 1 kHz lands in log bucket 4-5 of 400..8000 Hz across 16 buckets
+        // (the exact FFT peak bin sits on the 4/5 boundary).
         assert!(
-            (5..=7).contains(&loudest),
+            (4..=5).contains(&loudest),
             "loudest bucket {loudest}: {bars:?}"
         );
         assert!(bars[loudest] > 0.5, "{bars:?}");

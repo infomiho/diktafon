@@ -2,9 +2,12 @@
 //! config file can replace this later without touching the consumers.
 
 use diktafon_protocol::{
-    DEFAULT_POLISHING_MODEL, DEFAULT_TRANSCRIPTION_MODEL, ModelSelection, SessionConfig,
+    DEFAULT_APPLE_PROMPT, DEFAULT_POLISHING_MODEL, DEFAULT_TRANSCRIPTION_MODEL, ModelSelection,
+    SessionConfig,
 };
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+
+const TEMPLATE_DEFAULT_APPLE_PROMPT: &str = "Touch up the raw transcript slightly so it looks a bit more like written communication.\n\nReturn only the cleaned transcript.\n\nTranscript:\n${output}";
 
 pub struct Config {
     /// Push-to-talk hotkey.
@@ -65,6 +68,7 @@ pub fn parse_hotkey(s: &str) -> Option<HotKey> {
 pub struct SessionSettings {
     pub language: String,
     pub control_line: String,
+    pub apple_prompt: String,
     /// Seconds of daemon idleness before the models are unloaded; passed as
     /// DIKTAFOND_IDLE_SECS when the client spawns the daemon.
     pub idle_unload_secs: u64,
@@ -81,6 +85,7 @@ impl Default for SessionSettings {
         Self {
             language: CONFIG.language.into(),
             control_line: CONFIG.control_line.into(),
+            apple_prompt: DEFAULT_APPLE_PROMPT.into(),
             idle_unload_secs: 300,
             sound_cues: true,
             hotkey: "alt+space".into(),
@@ -106,6 +111,9 @@ impl SessionSettings {
         if parse_hotkey(&settings.hotkey).is_none() {
             settings.hotkey = Self::default().hotkey;
         }
+        if settings.apple_prompt == TEMPLATE_DEFAULT_APPLE_PROMPT {
+            settings.apple_prompt = DEFAULT_APPLE_PROMPT.into();
+        }
         settings
     }
 
@@ -128,6 +136,7 @@ impl SessionSettings {
         SessionConfig {
             language: self.language.clone(),
             control_line: self.control_line.clone(),
+            apple_prompt: self.apple_prompt.clone(),
         }
     }
 
@@ -222,6 +231,13 @@ mod tests {
         assert_eq!(settings.transcription_model, DEFAULT_TRANSCRIPTION_MODEL);
         assert_eq!(settings.polishing_model, DEFAULT_POLISHING_MODEL);
         assert_eq!(settings.language, "de");
+        assert_eq!(settings.apple_prompt, DEFAULT_APPLE_PROMPT);
+    }
+
+    #[test]
+    fn an_explicitly_empty_apple_prompt_stays_empty() {
+        let settings: SessionSettings = serde_json::from_str(r#"{"apple_prompt":""}"#).unwrap();
+        assert!(settings.apple_prompt.is_empty());
     }
 
     #[test]

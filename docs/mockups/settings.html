@@ -188,6 +188,24 @@
     font-weight: 500;
   }
 
+  /* A pane subsection as a bordered card whose first row is the section
+     name in eyebrow style (small uppercase, muted): the size/case/color step
+     between the pane title and the field labels. */
+  .group-card {
+    border: 1px solid var(--outline);
+    border-radius: 8px;
+    background: var(--surface);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+  .group-card .card-head {
+    font-size: 12px; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted);
+    margin-bottom: -8px;
+  }
+
   .card {
     border: 1px solid var(--outline);
     border-radius: 8px;
@@ -274,6 +292,44 @@
           <div class="field-label">Language</div>
           <div class="control select"><span>English (en)</span><span class="chev">⌄</span></div>
           <div class="help">The language you dictate in</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Models -->
+  <div class="window">
+    <div class="sidebar">
+      <div class="traffic"><span></span><span></span><span></span></div>
+      <div class="brand-row"><img src="../../assets/diktafon-mark-flat.svg" width="32" height="18" alt=""><span>diktafon</span></div>
+      <div class="nav-item"><span class="icon">⚙</span>General</div>
+      <div class="nav-item"><span class="icon">Aa</span>Dictation</div>
+      <div class="nav-item active"><span class="icon">◈</span>Models</div>
+      <div class="nav-item"><span class="icon">▣</span>Advanced</div>
+    </div>
+    <div class="pane">
+      <h1>Models</h1>
+      <div class="content">
+        <div class="group-card">
+          <div class="card-head">Transcription</div>
+          <div class="field">
+            <div class="field-label">Transcription model</div>
+            <div class="control select"><span>Canary 1B Flash</span><span class="chev">⌄</span></div>
+            <div class="help">Size: 770 MB</div>
+          </div>
+          <div class="field">
+            <div class="field-label">Language</div>
+            <div class="control select"><span>English (en)</span><span class="chev">⌄</span></div>
+            <div class="help">Choose the language you speak.</div>
+          </div>
+        </div>
+        <div class="group-card">
+          <div class="card-head">Polishing</div>
+          <div class="field">
+            <div class="field-label">Polishing model</div>
+            <div class="control select"><span>Apple Intelligence</span><span class="chev">⌄</span></div>
+            <div class="help">On-device model built into macOS.</div>
+          </div>
         </div>
       </div>
     </div>

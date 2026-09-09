@@ -28,7 +28,7 @@ public func appleIntelligenceAvailability() -> Int32 {
 @_cdecl("apple_intelligence_polish")
 public func appleIntelligencePolish(
     _ instructions: UnsafePointer<CChar>,
-    _ transcript: UnsafePointer<CChar>,
+    _ prompt: UnsafePointer<CChar>,
     _ maxResponseTokens: Int32
 ) -> ResponsePointer {
     let response = ResponsePointer.allocate(capacity: 1)
@@ -51,16 +51,24 @@ public func appleIntelligencePolish(
     let box = ResultBox()
     let semaphore = DispatchSemaphore(value: 0)
     let swiftInstructions = String(cString: instructions)
-    let swiftTranscript = String(cString: transcript)
+    let swiftPrompt = String(cString: prompt)
     let task = Task.detached(priority: .userInitiated) {
         defer { semaphore.signal() }
         do {
-            let session = LanguageModelSession(model: model, instructions: swiftInstructions)
             let options = GenerationOptions(
                 sampling: .greedy,
                 maximumResponseTokens: max(1, Int(maxResponseTokens))
             )
-            box.output = try await session.respond(to: swiftTranscript, options: options).content
+            if #available(macOS 26.4, *) {
+                let promptTokens = try await model.tokenCount(for: swiftPrompt)
+                let reservedInstructionTokens = 128
+                guard promptTokens + Int(maxResponseTokens) + reservedInstructionTokens <= model.contextSize else {
+                    box.error = "Apple Intelligence request exceeds the model context window"
+                    return
+                }
+            }
+            let session = LanguageModelSession(model: model, instructions: swiftInstructions)
+            box.output = try await session.respond(to: swiftPrompt, options: options).content
         } catch {
             box.error = error.localizedDescription
         }

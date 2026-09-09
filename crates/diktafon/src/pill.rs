@@ -77,6 +77,27 @@ const BLOOM_WAVE: Duration = Duration::from_millis(380);
 /// motion instead of strobing. Per-frame rates at the 30fps repaint cadence.
 const ATTACK: f32 = 0.55;
 const DECAY: f32 = 0.14;
+/// Global auto-sensitivity (cava's "sens"): one gain over all columns,
+/// adapting to quiet/loud talkers and mic differences while preserving the
+/// contrast between columns. Per-column AGC would asymptotically flatten
+/// every column to the same height and erase the spectral shape, which is
+/// why cava deliberately uses a global gain.
+/// Per-frame step down when any column clips; fast, so a loud burst stops
+/// clipping within a few frames.
+const SENS_DOWN: f32 = 0.98;
+/// Per-frame creep up while nothing clips; slow, so pauses between phrases
+/// don't pump the gain.
+const SENS_UP: f32 = 1.0005;
+const SENS_MIN: f32 = 0.6;
+/// The gain never amplifies past this: with a higher ceiling, the creep
+/// turns pauses and soft speech into full bars and the meter reads as
+/// oversensitive.
+const SENS_MAX: f32 = 1.5;
+/// Monstercat-style neighbor spread (from cava's monstercat filter): a loud
+/// column radiates a skirt into its neighbors, decaying by this factor per
+/// column of distance, so speech reads as a coherent shape instead of
+/// isolated spikes.
+const SPREAD: f32 = 2.25;
 /// Per-frame convergence of the grille color toward the phase target.
 const COLOR_RATE: f32 = 0.22;
 /// Per-frame convergence of the chip width toward its fitted target.
@@ -89,6 +110,10 @@ pub fn manage(cx: &mut App, dictation: Entity<Dictation>, levels: LevelBars) {
     // A pill lingering through its ending hold; a new session would otherwise
     // open a second pill at the same spot on top of it.
     let held: std::rc::Rc<std::cell::Cell<Option<WindowHandle<Pill>>>> = Default::default();
+    // The auto-sensitivity outlives the per-session Pill: SENS_UP's creep
+    // takes tens of seconds to matter, so a gain reset every session would
+    // never adapt upward within one dictation.
+    let sens: Sens = std::rc::Rc::new(std::cell::Cell::new(1.0));
     cx.observe(&dictation, move |dictation, cx| {
         let idle = dictation.read(cx).phase == Phase::Idle;
         match (&open, idle) {
@@ -134,7 +159,7 @@ pub fn manage(cx: &mut App, dictation: Entity<Dictation>, levels: LevelBars) {
                 if let Some(superseded) = held.take() {
                     let _ = superseded.update(cx, |_, window, _| window.remove_window());
                 }
-                open = open_pill(&dictation, levels.clone(), cx);
+                open = open_pill(&dictation, levels.clone(), sens.clone(), cx);
             }
             _ => {}
         }
@@ -145,6 +170,7 @@ pub fn manage(cx: &mut App, dictation: Entity<Dictation>, levels: LevelBars) {
 fn open_pill(
     dictation: &Entity<Dictation>,
     levels: LevelBars,
+    sens: Sens,
     cx: &mut App,
 ) -> Option<WindowHandle<Pill>> {
     let bounds = pill_bounds()?;
@@ -164,7 +190,7 @@ fn open_pill(
         },
         |window, cx| {
             configure_overlay_window(window);
-            cx.new(|cx| Pill::new(dictation, levels, cx))
+            cx.new(|cx| Pill::new(dictation, levels, sens, cx))
         },
     )
     .ok()
@@ -262,10 +288,21 @@ pub struct Pill {
     /// Per-band smoothed aurora intensity (fast attack, slow decay), so the
     /// glow breathes with speech instead of flickering with the raw meter.
     aurora_smooth: [f32; 3],
+    /// The meter's global auto-sensitivity gain (see SENS_DOWN), shared
+    /// across sessions via manage().
+    sens: Sens,
 }
 
+/// The auto-sensitivity gain, shared by every Pill the manager opens.
+type Sens = std::rc::Rc<std::cell::Cell<f32>>;
+
 impl Pill {
-    fn new(dictation: Entity<Dictation>, levels: LevelBars, cx: &mut Context<Self>) -> Self {
+    fn new(
+        dictation: Entity<Dictation>,
+        levels: LevelBars,
+        sens: Sens,
+        cx: &mut Context<Self>,
+    ) -> Self {
         cx.observe(&dictation, |_, _, cx| cx.notify()).detach();
         // Drive repaints for the pill's whole (short) life: this non-activating
         // panel gets no frames on its own, so every animation advances only
@@ -292,27 +329,52 @@ impl Pill {
             live_color: color_components(theme::SIGNAL_RED),
             chip_width: CHIP_MIN,
             aurora_smooth: [0.; 3],
+            sens,
         }
     }
 
-    /// The meter's five bands from the 16-band capture spectrum.
-    fn meter_bands(&self) -> [f32; COLS] {
+    /// The meter's five columns from the 16-band capture spectrum, scaled by
+    /// the global auto-sensitivity and spread into neighbors; advances the
+    /// sensitivity, so call once per frame while recording.
+    fn meter_bands(&mut self) -> [f32; COLS] {
         let levels = *self.levels.lock().unwrap();
         let band = |range: std::ops::Range<usize>| {
             let len = range.len() as f32;
             levels[range].iter().sum::<f32>() / len
         };
-        [
-            band(0..3),
-            band(3..6),
-            band(6..10),
+        // Mel-ish grouping of the 400-8000Hz capture bands:
+        // 400-846 / 846-1483 / 1483-2601 / 2601-4562 / 4562-8000 Hz.
+        let mut bands = [
+            band(0..4),
+            band(4..7),
+            band(7..10),
             band(10..13),
             band(13..16),
-        ]
+        ];
+        let sens = self.sens.get();
+        let mut clipped = false;
+        for band in &mut bands {
+            *band *= sens;
+            if *band > 1.0 {
+                clipped = true;
+                *band = 1.0;
+            }
+        }
+        let step = if clipped { SENS_DOWN } else { SENS_UP };
+        self.sens.set((sens * step).clamp(SENS_MIN, SENS_MAX));
+        for z in 0..COLS {
+            for m in 0..COLS {
+                let skirt = bands[z] / SPREAD.powi((m as i32 - z as i32).abs());
+                bands[m] = bands[m].max(skirt);
+            }
+        }
+        bands
     }
 
     /// Spectrum thirds (lows, mids, highs) smoothed with fast attack and slow
-    /// decay; called once per frame while the aurora is active.
+    /// decay; called once per frame while the aurora is active. Rides the
+    /// capture meter's tilted 400-8000Hz bands, so the highs blob runs hotter
+    /// than raw spectrum would suggest and now answers to sibilance.
     fn aurora_bands(&mut self) -> [f32; 3] {
         let levels = *self.levels.lock().unwrap();
         let band = |range: std::ops::Range<usize>| {
@@ -397,7 +459,15 @@ impl Pill {
     }
 
     /// The target lit level for one dot this frame, before ballistics.
-    fn dot_target(&self, col: usize, row: usize, view: &GrilleView, reduce_motion: bool) -> f32 {
+    /// `meter` is the frame's normalized bands, used while recording.
+    fn dot_target(
+        &self,
+        col: usize,
+        row: usize,
+        view: &GrilleView,
+        meter: &[f32; COLS],
+        reduce_motion: bool,
+    ) -> f32 {
         let t = self.opened_at.elapsed().as_secs_f32();
         match view {
             GrilleView::Bloom => {
@@ -416,8 +486,9 @@ impl Pill {
             GrilleView::Cancel => 0.,
             GrilleView::Error => 0.5,
             GrilleView::Phase(Phase::Recording) => {
-                let level = self.meter_bands()[col];
-                (level * 3.6 - (ROWS - 1 - row) as f32).clamp(0., 1.)
+                // The meter rule: columns are frequency (lows left, highs
+                // right), and each column fills bottom-up like a VU bar.
+                (meter[col] * 3.6 - (ROWS - 1 - row) as f32).clamp(0., 1.)
             }
             GrilleView::Phase(Phase::Transcribing) => {
                 if reduce_motion {
@@ -466,9 +537,13 @@ impl Pill {
         }
         let color = pack_color(self.live_color);
 
+        let meter = match view {
+            GrilleView::Phase(Phase::Recording) => self.meter_bands(),
+            _ => [0.; COLS],
+        };
         let mut targets = [0.; COLS * ROWS];
         for (i, target) in targets.iter_mut().enumerate() {
-            *target = self.dot_target(i % COLS, i / COLS, view, reduce_motion);
+            *target = self.dot_target(i % COLS, i / COLS, view, &meter, reduce_motion);
         }
         for (smooth, target) in self.dot_smooth.iter_mut().zip(targets) {
             let rate = if target > *smooth { ATTACK } else { DECAY };

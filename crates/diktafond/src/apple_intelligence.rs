@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use std::ffi::{CStr, CString, c_char, c_int};
 
-const MAX_INPUT_CHARS: usize = 12_000;
+const MAX_CONTEXT_BUDGET: usize = 4_000;
 
 #[repr(C)]
 struct AppleIntelligenceResponse {
@@ -14,7 +14,7 @@ unsafe extern "C" {
     fn apple_intelligence_availability() -> c_int;
     fn apple_intelligence_polish(
         instructions: *const c_char,
-        transcript: *const c_char,
+        prompt: *const c_char,
         max_response_tokens: c_int,
     ) -> *mut AppleIntelligenceResponse;
     fn apple_intelligence_response_free(response: *mut AppleIntelligenceResponse);
@@ -58,33 +58,48 @@ pub fn availability() -> Availability {
     Availability::from_code(unsafe { apple_intelligence_availability() })
 }
 
-fn instructions(control_line: &str) -> String {
-    format!(
-        "Clean speech-to-text transcripts for direct insertion into another application. \
-         Preserve meaning, entities, numbers, and every intended sentence. Remove filler and \
-         false starts only when the speaker clearly corrected them. Apply this user preference: \
-         {control_line}. Return only the cleaned transcript, with no explanation, label, or quotes."
-    )
+fn instructions() -> &'static str {
+    "Clean speech-to-text transcripts for direct insertion into another application. \
+     Preserve meaning, entities, numbers, and every intended sentence. Remove filler and \
+     false starts only when the speaker clearly corrected them. Return only the cleaned \
+     transcript, with no explanation, label, or quotes."
 }
 
-pub fn polish(transcript: &str, control_line: &str) -> Result<String> {
+fn request(transcript: &str, user_prompt: &str) -> String {
+    let user_prompt = user_prompt.trim();
+    if user_prompt.is_empty() {
+        format!("Transcript:\n{transcript}")
+    } else {
+        format!("{user_prompt}\n\nTranscript:\n{transcript}")
+    }
+}
+
+fn checked_request(transcript: &str, user_prompt: &str, response_tokens: usize) -> Result<String> {
+    let request = request(transcript, user_prompt);
+    if instructions().len() + request.len() + response_tokens > MAX_CONTEXT_BUDGET {
+        bail!("Apple Intelligence request is too long");
+    }
+    Ok(request)
+}
+
+pub fn polish(transcript: &str, user_prompt: &str) -> Result<String> {
     let state = availability();
     if state != Availability::Available {
         bail!("Apple Intelligence is unavailable: {state:?}");
     }
-    if transcript.chars().count() > MAX_INPUT_CHARS {
-        bail!("transcript exceeds Apple Intelligence input limit");
-    }
-    let instructions = CString::new(instructions(control_line))?;
-    let transcript = CString::new(transcript)?;
+    let instructions = CString::new(instructions())?;
     let word_count = transcript
         .as_bytes()
         .split(|byte| byte.is_ascii_whitespace())
         .count();
     let max_tokens = (word_count.saturating_mul(2) + 64).min(2_048) as c_int;
-    let response = unsafe {
-        apple_intelligence_polish(instructions.as_ptr(), transcript.as_ptr(), max_tokens)
-    };
+    let request = CString::new(checked_request(
+        transcript,
+        user_prompt,
+        max_tokens as usize,
+    )?)?;
+    let response =
+        unsafe { apple_intelligence_polish(instructions.as_ptr(), request.as_ptr(), max_tokens) };
     if response.is_null() {
         bail!("Apple Intelligence returned a null response");
     }
@@ -129,17 +144,33 @@ mod tests {
 
     #[test]
     fn instructions_constrain_output_and_preserve_intent() {
-        let prompt = instructions("[Styling: formal]");
+        let prompt = instructions();
         assert!(prompt.contains("Preserve meaning, entities, numbers"));
         assert!(prompt.contains("Return only the cleaned transcript"));
-        assert!(prompt.contains("[Styling: formal]"));
+    }
+
+    #[test]
+    fn request_labels_the_transcript() {
+        assert_eq!(
+            request("Hello world", "Use a formal tone."),
+            "Use a formal tone.\n\nTranscript:\nHello world"
+        );
+        assert_eq!(request("Hello world", ""), "Transcript:\nHello world");
+    }
+
+    #[test]
+    fn oversized_request_is_rejected_before_inference() {
+        let error = checked_request("Hello", &"x".repeat(MAX_CONTEXT_BUDGET), 64)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("too long"));
     }
 
     #[test]
     #[ignore = "requires Apple Intelligence"]
     fn eligible_system_model_polishes_text() {
         assert_eq!(availability(), Availability::Available);
-        let output = polish("hello comma world", "[Styling: semi-formal]").unwrap();
-        assert!(!output.is_empty());
+        let output = polish("hello comma world", diktafon_protocol::DEFAULT_APPLE_PROMPT).unwrap();
+        assert!(output.to_lowercase().contains("hello"), "{output}");
     }
 }

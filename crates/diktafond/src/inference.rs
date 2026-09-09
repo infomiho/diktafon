@@ -56,10 +56,12 @@ impl PolishingBackend {
         }
     }
 
-    fn polish(&self, transcript: &str, control_line: &str) -> Result<String> {
+    fn polish(&self, transcript: &str, config: &SessionConfig) -> Result<String> {
         match self {
-            Self::S1(polisher) => polisher.polish(transcript, control_line),
-            Self::AppleIntelligence => crate::apple_intelligence::polish(transcript, control_line),
+            Self::S1(polisher) => polisher.polish(transcript, &config.control_line),
+            Self::AppleIntelligence => {
+                crate::apple_intelligence::polish(transcript, &config.apple_prompt)
+            }
         }
     }
 }
@@ -347,13 +349,11 @@ impl Inference {
                             let _ = events_tx.send(DaemonMsg::Polishing);
                             let start = Instant::now();
                             let polisher = &models.polisher;
-                            let polished = catch_panic("polish", || {
-                                polisher.polish(&raw, &config.control_line)
-                            })
-                            .unwrap_or_else(|e| {
-                                eprintln!("polish error, using raw text: {e}");
-                                raw.clone()
-                            });
+                            let polished = catch_panic("polish", || polisher.polish(&raw, &config))
+                                .unwrap_or_else(|e| {
+                                    eprintln!("polish error, using raw text: {e}");
+                                    raw.clone()
+                                });
                             polish_ms = start.elapsed().as_millis() as u64;
                             println!("  polish {:.2?}", start.elapsed());
                             polished

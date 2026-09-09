@@ -23,6 +23,7 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const READY_FRAME_TIMEOUT: Duration = Duration::from_secs(120);
 const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
 const MAX_BACKOFF: Duration = Duration::from_secs(8);
+const MODEL_SELECTION_POLL: Duration = Duration::from_millis(250);
 
 /// How long a freshly spawned daemon may take to bind its socket (it binds
 /// before provisioning, so this is process startup, not model loading). Once
@@ -38,6 +39,12 @@ const SPAWN_COOLDOWN: Duration = Duration::from_secs(5);
 enum SessionResult {
     Final(String),
     Failed(String),
+}
+
+#[derive(Clone, Copy)]
+enum TransportSession {
+    Idle,
+    Active { start_failed: bool },
 }
 
 /// Client side of the streaming protocol, exposing the same chunks-in/text-out
@@ -64,7 +71,10 @@ pub struct ModelSelectionControl(Arc<Mutex<ModelSelection>>);
 
 impl ModelSelectionControl {
     pub fn set(&self, models: ModelSelection) {
-        *self.0.lock().unwrap() = models;
+        let mut current = self.0.lock().unwrap();
+        if *current != models {
+            *current = models;
+        }
     }
 
     fn get(&self) -> ModelSelection {
@@ -153,6 +163,10 @@ struct FlushLedger {
 impl FlushLedger {
     fn begin_flush(&self) {
         *self.pending_flushes.lock().unwrap() += 1;
+    }
+
+    fn has_pending_flushes(&self) -> bool {
+        *self.pending_flushes.lock().unwrap() > 0
     }
 
     /// Deliver a result for the oldest pending flush; a result arriving with
@@ -312,6 +326,9 @@ struct Transport {
     spawned_at: Arc<Mutex<Option<Instant>>>,
     models: ModelSelectionControl,
     connected_models: Option<ModelSelection>,
+    observed_models: ModelSelection,
+    model_refresh_pending: bool,
+    session: TransportSession,
 }
 
 impl Transport {
@@ -322,6 +339,7 @@ impl Transport {
         spawned_at: Arc<Mutex<Option<Instant>>>,
         models: ModelSelectionControl,
     ) -> Self {
+        let observed_models = models.get();
         Self {
             socket,
             ledger,
@@ -338,6 +356,9 @@ impl Transport {
             spawned_at,
             models,
             connected_models: None,
+            observed_models,
+            model_refresh_pending: false,
+            session: TransportSession::Idle,
         }
     }
 
@@ -348,24 +369,47 @@ impl Transport {
                 self.socket.display()
             );
         }
-        for msg in cmd_rx {
+        loop {
+            let msg = match cmd_rx.recv_timeout(MODEL_SELECTION_POLL) {
+                Ok(msg) => msg,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.refresh_models_if_idle();
+                    continue;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            };
             match msg {
                 Msg::Start(config) => {
                     self.prepare_session();
                     self.dropped_chunks = 0;
-                    self.send(&ClientMsg::Start(config));
+                    let start_failed = !self.send_start(config);
+                    self.session = TransportSession::Active { start_failed };
                 }
                 Msg::Chunk(samples) => {
-                    if !self.send(&ClientMsg::Chunk(samples)) {
+                    let start_failed = matches!(
+                        self.session,
+                        TransportSession::Active { start_failed: true }
+                    );
+                    if start_failed || !self.send(&ClientMsg::Chunk(samples)) {
                         self.dropped_chunks += 1;
                     }
                 }
                 Msg::Cancel => {
                     self.dropped_chunks = 0;
-                    self.send(&ClientMsg::Cancel);
+                    if !matches!(
+                        self.session,
+                        TransportSession::Active { start_failed: true }
+                    ) {
+                        self.send(&ClientMsg::Cancel);
+                    }
+                    self.session = TransportSession::Idle;
                 }
-                Msg::Flush => self.flush(),
+                Msg::Flush => {
+                    self.flush();
+                    self.session = TransportSession::Idle;
+                }
             }
+            self.refresh_models_if_idle();
         }
         // The client is gone; shutting down unblocks the reader thread.
         self.drop_conn();
@@ -377,12 +421,54 @@ impl Transport {
         }
     }
 
+    fn send_start(&mut self, config: diktafon_protocol::SessionConfig) -> bool {
+        if self.send(&ClientMsg::Start(config.clone())) {
+            return true;
+        }
+        self.next_attempt = Instant::now();
+        self.send(&ClientMsg::Start(config))
+    }
+
+    fn observe_model_selection(&mut self) {
+        let desired = self.models.get();
+        if desired != self.observed_models {
+            self.observed_models = desired;
+            self.model_refresh_pending = true;
+            self.retired_mismatch = false;
+        }
+    }
+
+    fn refresh_models_if_idle(&mut self) {
+        self.observe_model_selection();
+        if !self.model_refresh_pending
+            || matches!(self.session, TransportSession::Active { .. })
+            || self.ledger.has_pending_flushes()
+        {
+            return;
+        }
+        if self.connected_models.as_ref() != Some(&self.observed_models) {
+            self.drop_conn();
+        }
+        if self.ensure_connected() && self.connected_models.as_ref() == Some(&self.observed_models)
+        {
+            self.model_refresh_pending = false;
+        }
+    }
+
     /// End the session. If any of its audio was dropped, the daemon only holds
     /// a fragment; discard that instead of pasting silently truncated text, and
     /// surface the loss as the session's error.
     fn flush(&mut self) {
         self.ledger.begin_flush();
-        if self.dropped_chunks > 0 {
+        if matches!(
+            self.session,
+            TransportSession::Active { start_failed: true }
+        ) {
+            self.dropped_chunks = 0;
+            self.ledger.deliver(SessionResult::Failed(
+                "dictation could not start because diktafond was unreachable".to_string(),
+            ));
+        } else if self.dropped_chunks > 0 {
             let dropped = std::mem::take(&mut self.dropped_chunks);
             self.send(&ClientMsg::Cancel);
             self.ledger.deliver(SessionResult::Failed(format!(
@@ -434,6 +520,7 @@ impl Transport {
             } else {
                 self.retired_mismatch = true;
                 if retire_mismatched_daemon(&self.socket) {
+                    self.supervisor.last_spawn = None;
                     failure = ConnectFailure::NoDaemon(std::io::Error::other("retired old daemon"));
                 }
             }
@@ -609,15 +696,15 @@ impl Transport {
     }
 }
 
-/// SIGTERM a resident daemon that refuses our protocol version, then wait
-/// briefly for its socket to vanish.
+/// SIGTERM a resident daemon that refuses our protocol version or model pair,
+/// then wait briefly for its socket to vanish.
 fn retire_mismatched_daemon(socket: &Path) -> bool {
     use crate::daemon_process::StopError;
     let Some(pid) = crate::daemon_process::pid_for(socket) else {
-        eprintln!("version-mismatched daemon has no usable pid file; stop it manually");
+        eprintln!("mismatched daemon has no usable pid file; stop it manually");
         return false;
     };
-    eprintln!("retiring version-mismatched diktafond (pid {pid})");
+    eprintln!("retiring mismatched diktafond (pid {pid})");
     match crate::daemon_process::stop(pid) {
         Ok(()) => {}
         Err(StopError::NotOurs) => {
@@ -747,6 +834,132 @@ mod tests {
     }
 
     #[test]
+    fn a_new_model_choice_gets_its_own_restart_attempt() {
+        let control = ModelSelectionControl(Arc::new(Mutex::new(ModelSelection::default())));
+        let (results_tx, _) = mpsc::channel();
+        let ledger = Arc::new(FlushLedger {
+            results_tx,
+            pending_flushes: Mutex::new(0),
+            phase_tx: None,
+        });
+        let mut transport = Transport::new(
+            test_socket("new-model-restart"),
+            None,
+            ledger,
+            Arc::new(Mutex::new(None)),
+            control.clone(),
+        );
+        transport.retired_mismatch = true;
+        control.set(ModelSelection {
+            transcription: "cohere-transcribe-q5-k-m".into(),
+            ..ModelSelection::default()
+        });
+
+        transport.observe_model_selection();
+
+        assert!(!transport.retired_mismatch);
+        assert!(transport.model_refresh_pending);
+    }
+
+    #[test]
+    fn chunks_do_not_reconnect_after_start_failed() {
+        let socket = test_socket("failed-start-quarantine");
+        let client = DaemonClient::spawn(socket.clone(), None, None, ModelSelection::default());
+        client
+            .chunk_tx
+            .send(Msg::Start(SessionConfig::default()))
+            .unwrap();
+        thread::sleep(Duration::from_millis(50));
+
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        thread::sleep(INITIAL_BACKOFF + Duration::from_millis(50));
+        client.chunk_tx.send(Msg::Chunk(vec![0.0; 160])).unwrap();
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+
+        client.chunk_tx.send(Msg::Flush).unwrap();
+        assert!(client.finish().unwrap_err().to_string().contains("start"));
+        drop(client);
+        drop(listener);
+        let _ = std::fs::remove_file(socket);
+    }
+
+    #[test]
+    fn idle_model_change_reconnects_without_waiting_for_a_session() {
+        let socket = test_socket("model-prewarm");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (initial_tx, initial_rx) = mpsc::channel();
+        let (switched_tx, switched_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            for (expected, ready) in [
+                (ModelSelection::default(), &initial_tx),
+                (
+                    ModelSelection {
+                        transcription: "cohere-transcribe-q5-k-m".into(),
+                        ..ModelSelection::default()
+                    },
+                    &switched_tx,
+                ),
+            ] {
+                let (stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut writer = stream;
+                let Some(ClientMsg::Hello { models, .. }) = read_frame(&mut reader).unwrap() else {
+                    panic!("expected Hello");
+                };
+                assert_eq!(models, expected);
+                write_frame(
+                    &mut writer,
+                    &DaemonMsg::Hello {
+                        version: PROTOCOL_VERSION,
+                        models,
+                    },
+                )
+                .unwrap();
+                write_frame(&mut writer, &DaemonMsg::Ready).unwrap();
+                ready.send(()).unwrap();
+                let _ = read_frame::<ClientMsg>(&mut reader);
+            }
+        });
+
+        let client = DaemonClient::spawn(socket.clone(), None, None, ModelSelection::default());
+        initial_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        client.models.set(ModelSelection {
+            transcription: "cohere-transcribe-q5-k-m".into(),
+            ..ModelSelection::default()
+        });
+        switched_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        drop(client);
+        server.join().unwrap();
+        let _ = std::fs::remove_file(socket);
+    }
+
+    #[test]
+    fn start_reconnects_after_the_daemon_closed_an_idle_socket() {
+        let socket = test_socket("idle-close");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let first = thread::spawn(move || serve_conn(listener.accept().unwrap().0, 0));
+        let client = DaemonClient::spawn(socket.clone(), None, None, ModelSelection::default());
+        first.join().unwrap();
+        thread::sleep(Duration::from_millis(50));
+
+        std::fs::remove_file(&socket).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        let second = thread::spawn(move || serve_conn(listener.accept().unwrap().0, 1));
+
+        assert_eq!(run_session(&client, 1).unwrap(), "1 chunks");
+
+        drop(client);
+        second.join().unwrap();
+        let _ = std::fs::remove_file(socket);
+    }
+
+    #[test]
     fn connection_remembers_the_models_used_by_its_handshake() {
         let socket = test_socket("model-race");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -814,12 +1027,15 @@ mod tests {
         assert_eq!(run_session(&client, 3).unwrap(), "3 chunks");
 
         // Daemon died; the next session fails instead of hanging. Whether the
-        // error reports the dropped audio or the closed connection depends on
-        // when the old connection's reader observed EOF; both are honest.
+        // error reports a failed start, dropped audio, or the closed connection
+        // depends on when the old connection's reader observed EOF.
         std::fs::remove_file(&socket).unwrap();
         first.join().unwrap();
         let err = run_session(&client, 1).unwrap_err().to_string();
-        assert!(err.contains("lost") || err.contains("closed"), "{err}");
+        assert!(
+            err.contains("start") || err.contains("lost") || err.contains("closed"),
+            "{err}"
+        );
 
         // Daemon comes back; once the backoff elapses a session succeeds. The
         // exact backoff state depends on how many attempts the failed session

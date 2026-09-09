@@ -21,7 +21,8 @@ use bincode::{Decode, Encode};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
+pub const DEFAULT_APPLE_PROMPT: &str = "Touch up the raw transcript slightly so it looks a bit more like written communication.\n\nReturn only the cleaned transcript.";
 
 /// Prefix of the daemon's handshake rejection for a version mismatch; the
 /// client matches on it to decide a resident daemon needs replacing. Every
@@ -131,6 +132,8 @@ pub struct SessionConfig {
     pub language: String,
     /// S1-mini control line selecting styling, structure, and context.
     pub control_line: String,
+    /// Free-form user instructions for Apple Intelligence polishing.
+    pub apple_prompt: String,
 }
 
 impl Default for SessionConfig {
@@ -138,6 +141,7 @@ impl Default for SessionConfig {
         Self {
             language: "en".into(),
             control_line: "[Styling: semi-formal] [Structure: prose] [Context: general]".into(),
+            apple_prompt: DEFAULT_APPLE_PROMPT.into(),
         }
     }
 }
@@ -270,6 +274,7 @@ mod tests {
             ClientMsg::Start(SessionConfig {
                 language: "en".into(),
                 control_line: "[Styling: semi-formal]".into(),
+                apple_prompt: "Keep product names unchanged.".into(),
             }),
             ClientMsg::Chunk(vec![0.0, -0.5, 0.25]),
             ClientMsg::Flush,
@@ -327,7 +332,7 @@ mod tests {
             },
         )
         .unwrap();
-        let mut expected = vec![40, 0, 0, 0, 0, 4, 22];
+        let mut expected = vec![40, 0, 0, 0, 0, 5, 22];
         expected.extend_from_slice(b"canary-1b-flash-q5-k-m");
         expected.push(14);
         expected.extend_from_slice(b"s1-mini-q4-k-m");
