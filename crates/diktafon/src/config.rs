@@ -25,8 +25,10 @@ pub struct Config {
     pub prefill_frames: usize,
     /// Non-speech frames before a speech segment is declared over.
     pub hangover_frames: usize,
-    /// Speech segments shorter than this are merged with the next one instead
-    /// of paying a per-chunk ASR roundtrip.
+    /// Speech segments shorter than this are merged with the next one. Each
+    /// chunk is a whole ASR roundtrip, and a sliver cut out of the middle of
+    /// a phrase can send the decoder into a loop: 1.7s of "on the ... and"
+    /// decoded as "and" 281 times.
     pub min_chunk_secs: f32,
 }
 
@@ -41,7 +43,7 @@ pub const CONFIG: Config = Config {
     onset_frames: 2,
     prefill_frames: 15,
     hangover_frames: 15,
-    min_chunk_secs: 1.5,
+    min_chunk_secs: 3.0,
 };
 
 impl Config {

@@ -561,14 +561,14 @@ mod tests {
     #[test]
     fn cuts_after_speech_ends() {
         let mut chunker = test_chunker();
-        let mut samples = noise(2.0);
+        let mut samples = noise(3.5);
         samples.extend(silence(1.0));
-        samples.extend(noise(2.0));
+        samples.extend(noise(3.5));
         let chunks = feed(&mut chunker, &samples);
         assert_eq!(chunks.len(), 1);
         let secs = chunks[0].len() as f32 / TARGET_RATE as f32;
         // Speech plus up to prefill (well under one second here) and hangover.
-        assert!((2.0..=2.7).contains(&secs), "chunk of {secs}s");
+        assert!((3.5..=4.2).contains(&secs), "chunk of {secs}s");
         // The trailing speech has no silence after it yet; finish flushes it.
         assert!(chunker.finish(&[]).is_some());
     }
@@ -578,12 +578,12 @@ mod tests {
         let mut chunker = test_chunker();
         let mut samples = noise(0.5);
         samples.extend(silence(1.0));
-        samples.extend(noise(1.5));
+        samples.extend(noise(3.0));
         samples.extend(silence(1.0));
         let chunks = feed(&mut chunker, &samples);
         assert_eq!(chunks.len(), 1);
         let secs = chunks[0].len() as f32 / TARGET_RATE as f32;
-        assert!(secs >= 2.0, "merged chunk of {secs}s");
+        assert!(secs >= 3.5, "merged chunk of {secs}s");
         assert!(chunker.finish(&[]).is_none());
     }
 
@@ -593,18 +593,18 @@ mod tests {
     fn quick_resume_does_not_duplicate_hangover_audio() {
         let frame = 480;
         let mut chunker = test_chunker();
-        let mut samples = noise(80.0 * frame as f32 / TARGET_RATE as f32);
+        let mut samples = noise(120.0 * frame as f32 / TARGET_RATE as f32);
         samples.extend(vec![0.0; 17 * frame]);
-        samples.extend(noise(80.0 * frame as f32 / TARGET_RATE as f32));
+        samples.extend(noise(120.0 * frame as f32 / TARGET_RATE as f32));
         samples.extend(vec![0.0; 40 * frame]);
         let chunks = feed(&mut chunker, &samples);
         assert_eq!(chunks.len(), 2);
-        // Second chunk: 80 speech frames + 15 hangover + the few silence
+        // Second chunk: 120 speech frames + 15 hangover + the few silence
         // frames of non-overlapping prefill. With the overlap re-emitted it
-        // would be ~109 frames.
+        // would be ~149 frames.
         let frames = chunks[1].len() / frame;
         assert!(
-            (95..=100).contains(&frames),
+            (135..=140).contains(&frames),
             "second chunk has {frames} frames"
         );
     }

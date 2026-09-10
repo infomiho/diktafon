@@ -5,5 +5,6 @@ mod inference;
 pub mod llm;
 pub mod manifest;
 mod status;
+mod transcript;
 
 pub use inference::Inference;

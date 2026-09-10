@@ -294,7 +294,12 @@ impl Inference {
                             ))
                         };
                         match result {
-                            Ok(r) => {
+                            Ok(mut r) => {
+                                if let Some(collapsed) = crate::transcript::collapse_word_loops(&r)
+                                {
+                                    println!("  decoder looped, collapsed: {r}");
+                                    r = collapsed;
+                                }
                                 println!(
                                     "  chunk {:>4.1}s, ASR {:.2?}: {}",
                                     secs,
