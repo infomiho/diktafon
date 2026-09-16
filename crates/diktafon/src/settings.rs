@@ -332,6 +332,7 @@ pub fn open(
                 ..Default::default()
             },
             |window, cx| {
+                crate::window_lifecycle::release_view_on_close(window, cx);
                 force_dark_titlebar(window);
                 let view = cx.new(|cx| SettingsWindow::new(settings, window, cx));
                 cx.new(|cx| Root::new(view, window, cx))

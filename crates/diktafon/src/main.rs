@@ -18,6 +18,7 @@ mod stats;
 mod statusbar;
 mod theme;
 mod transport;
+mod window_lifecycle;
 
 use anyhow::{Context, Result};
 use capture::Recorder;

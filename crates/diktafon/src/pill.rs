@@ -189,6 +189,7 @@ fn open_pill(
             ..Default::default()
         },
         |window, cx| {
+            crate::window_lifecycle::release_view_on_close(window, cx);
             configure_overlay_window(window);
             cx.new(|cx| Pill::new(dictation, levels, sens, cx))
         },

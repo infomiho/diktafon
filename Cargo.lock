@@ -1824,7 +1824,7 @@ dependencies = [
 
 [[package]]
 name = "diktafon"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1856,7 +1856,7 @@ dependencies = [
 
 [[package]]
 name = "diktafon-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bincode 2.0.1",
@@ -1868,7 +1868,7 @@ dependencies = [
 
 [[package]]
 name = "diktafond"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "diktafon-protocol",
