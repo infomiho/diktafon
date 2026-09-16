@@ -4,6 +4,7 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag};
 
 use crate::assets::{Fingerprint, LOGO_PATH, OG_IMAGE_PATH, SCREENSHOT_PATH, STYLESHEET_PATH};
 use crate::github::{REPOSITORY_URL, Release, latest_with_download};
+use crate::viz;
 
 const DESCRIPTION: &str = "diktafon is local-only dictation for macOS. Hold a key, speak, release, and polished text is pasted where you are typing.";
 const OG_IMAGE_ALT: &str = "diktafon's General settings";
@@ -46,35 +47,44 @@ pub fn home(releases: &[Release], fingerprint: &Fingerprint) -> String {
             }
             div .bento {
                 article .tile-wide {
-                    h2 { "Speech, on device" }
-                    p { "Canary 1B Flash or Cohere Transcribe runs locally through transcribe.cpp. Your audio never leaves the Mac." }
+                    (viz::speech())
+                    h2 { "On-device speech" }
+                    p { "Canary 1B Flash or Cohere Transcribe runs locally through transcribe.cpp, so your audio never leaves the Mac." }
                     ul .chips {
                         li { "Canary 1B Flash" }
                         li { "Cohere Transcribe" }
                     }
                 }
                 article {
-                    h2 { "An optional cleanup pass" }
-                    p { "S1-mini removes fillers and false starts and fixes punctuation, numbers, dates, and emails before pasting." }
+                    (viz::cleanup())
+                    h2 { "Cleanup on every take" }
+                    p { "S1-mini by Superwhisper removes fillers and false starts and fixes punctuation, numbers, dates, and emails. On supported Macs, Apple Intelligence can polish instead." }
                     ul .chips {
-                        li { "S1-mini" }
+                        li { "S1-mini by Superwhisper" }
+                        li { "Apple Intelligence" }
                     }
                 }
                 article {
+                    (viz::silence())
                     h2 { "Split at silence" }
-                    p { "A pause is a clean cut, so you can dictate without stopping and it still pastes as one block." }
+                    p { "A pause is a clean cut, so you can dictate without stopping and still paste one block." }
+                    ul .chips {
+                        li { "Silero VAD" }
+                    }
                 }
                 article {
+                    (viz::history())
                     h2 { "Local history" }
-                    p { "Every dictation is kept on your Mac, grouped by day and searchable." }
+                    p { "Every dictation is saved on your Mac, grouped by day and searchable." }
                 }
                 article {
+                    (viz::idle())
                     h2 { "Unloads when idle" }
-                    p { "The daemon frees the models after five minutes of inactivity, so memory drops back down between dictations." }
+                    p { "The daemon releases the models after five minutes of inactivity, so memory drops between dictations." }
                 }
             }
             p .built-with {
-                "Built with Rust, GPUI, transcribe.cpp, and llama.cpp. Free and open source."
+                "Built with Rust, GPUI, transcribe.cpp, and llama.cpp."
             }
         },
     )
@@ -83,11 +93,11 @@ pub fn home(releases: &[Release], fingerprint: &Fingerprint) -> String {
 pub fn releases(releases: &[Release], fingerprint: &Fingerprint) -> String {
     layout(
         "/releases",
-        "Release Notes · diktafon",
+        "Release notes · diktafon",
         fingerprint,
         html! {
             header .page-head {
-                h1 { "Release Notes" }
+                h1 { "Release notes" }
                 p { "Every release of diktafon, newest first." }
             }
             @if releases.is_empty() {
@@ -183,7 +193,7 @@ fn nav(fingerprint: &Fingerprint) -> Markup {
                     span { "diktafon" }
                 }
                 nav .nav-links {
-                    a href="/releases" { "Release Notes" }
+                    a href="/releases" { "Release notes" }
                     a href=(REPOSITORY_URL) { "GitHub" }
                 }
             }
@@ -196,7 +206,7 @@ fn footer() -> Markup {
         footer .footer {
             p { "diktafon is free and open source." }
             p {
-                a href="/releases" { "Release Notes" }
+                a href="/releases" { "Release notes" }
                 " · "
                 a href=(REPOSITORY_URL) { "GitHub" }
             }

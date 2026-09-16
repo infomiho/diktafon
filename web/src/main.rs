@@ -1,6 +1,7 @@
 mod assets;
 mod github;
 mod render;
+mod viz;
 
 use std::sync::Arc;
 use std::time::Duration;
