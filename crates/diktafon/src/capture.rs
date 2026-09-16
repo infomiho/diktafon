@@ -33,8 +33,11 @@ fn default_input() -> Result<InputDevice> {
         .context("no input device")?;
     let config = device.default_input_config()?;
     let channels = config.channels() as usize;
-    let rate = config.sample_rate().0;
-    let name = device.name().unwrap_or_else(|_| "unknown".into());
+    let rate = config.sample_rate();
+    let name = device
+        .description()
+        .map(|description| description.name().to_owned())
+        .unwrap_or_else(|_| "unknown".into());
     Ok(InputDevice {
         device,
         config,
@@ -102,9 +105,11 @@ impl Recorder {
     /// Returns whether the device was rebuilt.
     fn refresh_input_if_needed(&mut self) -> bool {
         let failed = self.stream_failed.swap(false, Ordering::Relaxed);
-        let default_name = cpal::default_host()
-            .default_input_device()
-            .and_then(|d| d.name().ok());
+        let default_name = cpal::default_host().default_input_device().and_then(|d| {
+            d.description()
+                .map(|description| description.name().to_owned())
+                .ok()
+        });
         let default_changed = default_name
             .as_ref()
             .is_some_and(|name| *name != self.input.name);
@@ -669,6 +674,53 @@ mod tests {
 #[cfg(test)]
 mod silero_tests {
     use super::*;
+
+    #[test]
+    #[ignore = "loads the real Silero model and local evaluation audio, run alone"]
+    fn repeated_vad_sessions_release_memory() {
+        let wav = std::fs::read(diktafon_protocol::data_dir().join("eval-own/01.wav")).unwrap();
+        let samples: Vec<f32> = wav[44..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b) as f32 / 32768.0)
+            .collect();
+        let replay = || {
+            let silero = SileroVad::new(
+                diktafon_protocol::models_dir().join("silero_vad_v4.onnx"),
+                CONFIG.speech_threshold,
+            )
+            .unwrap();
+            let mut chunker = VadChunker::new(Box::new(silero));
+            let mut emitted = 0;
+            for frame in samples.chunks_exact(chunker.frame_size()) {
+                if let Some(chunk) = chunker.push_frame(frame) {
+                    emitted += chunk.len();
+                }
+            }
+            if let Some(chunk) = chunker.finish(&[]) {
+                emitted += chunk.len();
+            }
+            assert!(emitted > samples.len() / 2);
+        };
+        let live_bytes = || {
+            let mut stats: libc::malloc_statistics_t = unsafe { std::mem::zeroed() };
+            unsafe { libc::malloc_zone_statistics(std::ptr::null_mut(), &raw mut stats) };
+            stats.size_in_use
+        };
+        for _ in 0..3 {
+            replay();
+        }
+        let baseline = live_bytes();
+        for cycle in 1..=30 {
+            replay();
+            if cycle % 10 == 0 {
+                let after = live_bytes();
+                eprintln!("VAD cycle {cycle}: live heap {baseline} -> {after}");
+                assert!(after.saturating_sub(baseline) < 2 * 1024 * 1024);
+            }
+        }
+    }
 
     /// Needs the real model and eval clips in Application Support; run with
     /// `cargo test -p diktafon -- --ignored`.

@@ -42,10 +42,13 @@ unsafe extern "C" {
     fn AXIsProcessTrusted() -> u8;
 }
 
-/// The paste keystroke needs Accessibility; surface that at launch instead of
-/// letting the first paste silently do nothing.
+pub fn accessibility_granted() -> bool {
+    unsafe { AXIsProcessTrusted() != 0 }
+}
+
+/// Surface missing Accessibility at launch before a paste can silently fail.
 fn check_accessibility() {
-    if unsafe { AXIsProcessTrusted() } != 0 {
+    if accessibility_granted() {
         return;
     }
     eprintln!(

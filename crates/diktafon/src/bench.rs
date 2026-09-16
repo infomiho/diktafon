@@ -1,6 +1,6 @@
 //! Headless benchmark mode: `diktafon --transcribe-file x.wav [--repeat N]
 //! [--json] [--paced] [--chunk-secs N] [--transcription-model ID]
-//! [--polishing-model ID]`. Feeds a 16kHz mono s16 WAV through
+//! [--polishing-model ID] [--memory-dir DIR]`. Feeds a 16kHz mono s16 WAV through
 //! the daemon (auto-spawning it like a normal session would) and reports
 //! per-stage timings; the daemon's `Polishing` frame marks the ASR/polish
 //! boundary. Batch mode sends the whole file at once and measures raw
@@ -45,6 +45,7 @@ pub fn transcribe_file(args: &[String]) -> Result<()> {
         .transpose()
         .context("--repeat wants a number")?
         .unwrap_or(1);
+    let memory_dir = option(args, "--memory-dir");
     let json = args.iter().any(|a| a == "--json");
     let paced = args.iter().any(|a| a == "--paced");
     let chunk_secs = args
@@ -90,6 +91,10 @@ pub fn transcribe_file(args: &[String]) -> Result<()> {
         .and_then(|name| name.to_str())
         .unwrap_or(path);
 
+    anyhow::ensure!(
+        memory_dir.is_none() || (!paced && !json),
+        "--memory-dir currently requires batch mode without --json"
+    );
     if paced {
         let options = PacedOptions {
             chunk_secs,
@@ -104,6 +109,7 @@ pub fn transcribe_file(args: &[String]) -> Result<()> {
         return run_paced(reader, writer, &samples, &options);
     }
 
+    snapshot_memory(memory_dir, 0)?;
     let mut runs = Vec::new();
     for i in 0..repeat {
         let start = Instant::now();
@@ -144,9 +150,15 @@ pub fn transcribe_file(args: &[String]) -> Result<()> {
                 audio_secs / run.total_secs
             );
         }
-        runs.push(run);
+        if memory_dir.is_none() {
+            runs.push(run);
+        }
+        snapshot_memory(memory_dir, i + 1)?;
     }
 
+    if memory_dir.is_some() {
+        return Ok(());
+    }
     let best = runs
         .iter()
         .map(|r| r.total_secs)
@@ -406,4 +418,25 @@ fn wav_samples(path: &str) -> Result<Vec<f32>> {
 
 fn json_string(text: &str) -> String {
     serde_json::to_string(text).expect("strings always serialize")
+}
+
+fn snapshot_memory(directory: Option<&str>, cycle: usize) -> Result<()> {
+    let Some(directory) = directory else {
+        return Ok(());
+    };
+    let directory = std::path::Path::new(directory);
+    std::fs::create_dir_all(directory)?;
+    let pid = std::process::id().to_string();
+    for (tool, args) in [
+        ("footprint", vec!["-p", pid.as_str()]),
+        ("vmmap", vec!["-summary", pid.as_str()]),
+    ] {
+        let output = std::process::Command::new(tool).args(args).output()?;
+        anyhow::ensure!(output.status.success(), "{tool} failed: {}", output.status);
+        std::fs::write(
+            directory.join(format!("{cycle:03}-{tool}.txt")),
+            output.stdout,
+        )?;
+    }
+    Ok(())
 }

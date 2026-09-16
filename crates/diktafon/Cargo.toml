@@ -12,7 +12,7 @@ gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "14359a0cd" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "14359a0cd" }
-cpal = "0.16"
+cpal = "0.17.3"
 futures = "0.3"
 rustfft = "6"
 objc2 = "0.6"
@@ -52,7 +52,7 @@ transcribe-rs = { version = "0.3.11", default-features = false, features = ["vad
 global-hotkey = "0.8"
 libc = "0.2"
 arboard = "3"
-enigo = "0.6"
+core-graphics = "0.24"
 anyhow.workspace = true
 diktafon-protocol.workspace = true
 
