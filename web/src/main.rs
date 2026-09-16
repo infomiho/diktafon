@@ -26,7 +26,7 @@ const RETRY_INTERVAL: Duration = Duration::from_secs(2 * 60);
 const MAX_BACKOFF: Duration = Duration::from_secs(30 * 60);
 const HTML_CACHE_CONTROL: &str = "public, max-age=300";
 const ASSET_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
-const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'none'; \
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; \
      style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 #[derive(Clone)]
@@ -68,6 +68,7 @@ async fn main() {
         .route("/releases", get(releases_page))
         .route("/download", get(download))
         .route(STYLESHEET_PATH, get(stylesheet))
+        .route(crate::assets::SPEECH_SCRIPT_PATH, get(speech_script))
         .route(LOGO_PATH, get(logo))
         .route(SCREENSHOT_PATH, get(screenshot))
         .route(OG_IMAGE_PATH, get(og_image))
@@ -167,6 +168,13 @@ async fn stylesheet() -> Response {
     asset(
         Bytes::from_static(crate::assets::STYLESHEET.as_bytes()),
         "text/css; charset=utf-8",
+    )
+}
+
+async fn speech_script() -> Response {
+    asset(
+        Bytes::from_static(crate::assets::SPEECH_SCRIPT.as_bytes()),
+        "text/javascript; charset=utf-8",
     )
 }
 

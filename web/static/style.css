@@ -14,6 +14,8 @@
   --text-primary: #f1f2ff;
   --text-dim: #aaacd6;
   --text-faint: #7f84a2;
+  --aurora-ember: #ff5a36;
+  --aurora-rose: #e0459e;
   --signal-red: #ff3b4d;
   --signal-magenta: #ce5cff;
   --accent: #9843c0;
@@ -31,6 +33,7 @@
   --radius-pill: 980px;
   --page-width: 1040px;
   --measure: 692px;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
 }
 
 *,
@@ -308,53 +311,95 @@ a {
 }
 
 /* Rest states: every illustration reads with no motion at all. */
-.viz-speech .dot,
 .viz-silence .bar,
 .viz-history .label,
 .viz-history .time,
-.viz-history .text,
+.viz-history .snippet,
 .viz-history .front,
-.viz-idle .chip,
-.viz-idle .name,
-.viz-idle .meta,
-.viz-cleanup .filler {
+.viz-cleanup .filler,
+.viz-idle .monitor-light {
   fill: var(--viz-idle);
 }
 
-.viz-speech .dot {
-  opacity: 0.24;
-  fill: var(--viz-idle);
-  transform-box: fill-box;
-  transform-origin: center;
+.viz-speech {
+  display: grid;
+  place-items: center;
+  min-block-size: 96px;
 }
 
-.viz-speech .pill {
-  fill: var(--surface);
-  stroke: var(--hairline-strong);
-  stroke-width: 1;
-  filter: drop-shadow(0 8px 12px #00000033);
+.speech-pill {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 172px;
+  height: 38px;
+  padding-inline: 14px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  overflow: hidden;
+  transform: scale(1.5);
+  color: var(--text-faint);
 }
 
-.viz-speech .status {
-  fill: var(--text-primary);
-  font-family: var(--font-sans);
-  font-size: 18px;
-  font-weight: 500;
+.speech-dots {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(5, 4.5px);
+  grid-template-rows: repeat(3, 4.5px);
+  gap: 3px;
+  flex: none;
 }
 
-.viz-speech .status-transcribing,
-.viz-speech .status-polishing {
+.speech-dots span {
+  border-radius: 50%;
+  background: var(--text-primary);
+  opacity: 0.506;
+}
+
+.speech-label {
+  position: relative;
+  flex: 1;
+  text-align: right;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.speech-pill[data-phase="recording"] .speech-label {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.speech-wash {
+  position: absolute;
+  inset: 0;
   opacity: 0;
 }
 
-.viz-speech .aurora {
-  opacity: 0.5;
+.speech-wash span {
+  position: absolute;
+  top: 15px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  color: var(--aurora-ember);
+  background: currentColor;
+  filter: blur(6px);
+  box-shadow: 0 0 22px 10px currentColor;
 }
+
+.speech-wash span:nth-child(2) { color: var(--signal-red); }
+.speech-wash span:nth-child(3) { color: var(--aurora-rose); }
 
 .viz-cleanup .line,
 .viz-history .card,
-.viz-idle .card {
+.viz-idle .monitor,
+.viz-idle .memory-track {
   fill: var(--surface-raised);
+}
+
+.viz-cleanup .line {
   opacity: 0.55;
 }
 
@@ -395,13 +440,24 @@ a {
   stroke-linecap: round;
 }
 
-.viz-history .label,
-.viz-history .time {
+.viz-history .label {
   opacity: 0.5;
 }
 
-.viz-history .text {
-  opacity: 0.35;
+.viz-history .time {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  opacity: 0.7;
+}
+
+.viz-history .snippet {
+  fill: var(--text-dim);
+  font-family: var(--font-sans);
+  font-size: 8px;
+}
+
+.viz-history .snippet.secondary {
+  fill: var(--text-faint);
 }
 
 .viz-history .back {
@@ -412,112 +468,105 @@ a {
   opacity: 0.6;
 }
 
-/* Idle: the real mark moving from loaded to released. */
-.viz-idle .face {
-  fill: var(--surface-raised);
-  stroke: var(--signal-magenta);
-  stroke-width: 1.5;
+/* Idle: a simplified Activity Monitor row for the resident daemon. */
+.viz-idle .monitor {
+  stroke: var(--hairline-strong);
+  stroke-width: 1;
 }
 
-.viz-idle .face-sleep {
-  fill: var(--surface);
-  stroke: var(--viz-idle);
-  opacity: 0.55;
-}
-
-.viz-idle .hub {
+.viz-idle .monitor-light {
   fill: var(--signal-magenta);
 }
 
-.viz-idle .hub.asleep {
-  fill: var(--viz-idle);
+.viz-idle .monitor-title,
+.viz-idle .monitor-memory,
+.viz-idle .process-name,
+.viz-idle .process-memory,
+.viz-idle .memory-caption,
+.viz-idle .idle-note {
+  font-family: var(--font-sans);
+  font-size: 9px;
 }
 
-.viz-idle .handoff,
-.viz-idle .arrow {
-  fill: none;
-  stroke: var(--viz-idle);
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.viz-idle .device-label,
-.viz-idle .idle-label {
-  fill: var(--viz-idle);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  text-anchor: middle;
-}
-
-.viz-idle .idle-label {
+.viz-idle .monitor-title,
+.viz-idle .process-name,
+.viz-idle .memory-loaded {
   fill: var(--text-primary);
-  font-size: 12px;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  @keyframes pill-phase {
-    0%, 34% {
-      fill: var(--signal-red);
-      opacity: 0.5;
-    }
-    35%, 59% {
-      fill: var(--text-primary);
-      opacity: 0.9;
-    }
-    60%, 84% {
-      fill: var(--signal-magenta);
-      opacity: 0.85;
-    }
-    85%, 100% {
-      fill: var(--text-primary);
-      opacity: 0.95;
-    }
-  }
+.viz-idle .monitor-memory,
+.viz-idle .idle-note,
+.viz-idle .memory-caption,
+.viz-idle .memory-released {
+  fill: var(--text-faint);
+}
 
-  @keyframes pill-dot-scan {
-    0%, 12% { transform: scale(0.9); }
-    18%, 35% { transform: scale(1.08); }
-    46%, 100% { transform: scale(0.9); }
-  }
+.viz-idle .monitor-memory,
+.viz-idle .process-memory {
+  text-anchor: end;
+}
 
-  @keyframes pill-transcribing {
-    0%, 34% { opacity: 0; }
-    35%, 59% { opacity: 1; }
-    60%, 100% { opacity: 0; }
-  }
+.viz-idle .monitor-rule {
+  stroke: var(--hairline-strong);
+  stroke-width: 1;
+}
 
-  @keyframes pill-polishing {
-    0%, 59% { opacity: 0; }
-    60%, 84% { opacity: 1; fill: var(--signal-magenta); }
-    85%, 100% { opacity: 0; }
-  }
+.viz-idle .process-selected {
+  fill: var(--surface-raised);
+}
 
-  .viz-speech .dot {
-    animation: pill-phase 9s linear infinite, pill-dot-scan 1.4s linear infinite;
-    animation-delay: calc(var(--col, 0) * 180ms - 240ms);
-  }
+.viz-idle .memory-fill {
+  fill: var(--signal-magenta);
+  width: 148px;
+}
 
-  .viz-speech .status-transcribing {
-    animation: pill-transcribing 9s linear infinite;
-  }
+.viz-idle .memory-released {
+  opacity: 0;
+}
 
-  .viz-speech .status-polishing {
-    animation: pill-polishing 9s linear infinite;
-  }
-
-  .bento article:hover .viz-speech .dot {
-    transform: scale(1.12);
-    fill: var(--signal-magenta);
-    opacity: 1;
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .viz-cleanup .filler,
+  .viz-cleanup .strike,
+  .viz-silence .chunk-left,
+  .viz-silence .chunk-right,
+  .viz-silence .cut,
+  .viz-history .card,
+  .viz-history .snippet,
+  .viz-history .front,
+  .viz-history .back,
+  .viz-idle .memory-fill,
+  .viz-idle .idle-note {
+    transition-duration: 300ms;
+    transition-timing-function: var(--ease-out);
   }
 
   .viz-cleanup .filler {
-    transition: opacity 0.3s ease;
+    transition-property: opacity;
   }
 
-  .viz-cleanup .strike {
-    transition: transform 0.4s cubic-bezier(0.2, 0, 0, 1);
+  .viz-cleanup .strike,
+  .viz-silence .chunk-left,
+  .viz-silence .chunk-right,
+  .viz-idle .memory-fill {
+    transition-property: transform, width;
+  }
+
+  .viz-silence .cut {
+    transition-property: opacity, fill;
+  }
+
+  .viz-history .card,
+  .viz-history .snippet {
+    transition-property: opacity, fill;
+  }
+
+  .viz-history .front,
+  .viz-history .back {
+    transition-property: opacity, fill, stroke;
+  }
+
+  .viz-idle .idle-note {
+    transition-property: fill;
   }
 
   .bento article:hover .viz-cleanup .filler {
@@ -526,15 +575,6 @@ a {
 
   .bento article:hover .viz-cleanup .strike {
     transform: scaleX(1);
-  }
-
-  .viz-silence .chunk-left,
-  .viz-silence .chunk-right {
-    transition: transform 0.4s cubic-bezier(0.2, 0, 0, 1);
-  }
-
-  .viz-silence .cut {
-    transition: opacity 0.3s ease;
   }
 
   .bento article:hover .viz-silence .chunk-left {
@@ -549,20 +589,12 @@ a {
     opacity: 1;
   }
 
-  .viz-history .card,
-  .viz-history .text,
-  .viz-history .front,
-  .viz-history .back {
-    transition: opacity 0.3s ease, fill 0.3s ease, stroke 0.3s ease;
-    transition-delay: calc(var(--i, 0) * 80ms);
-  }
-
   .bento article:hover .viz-history .card {
     opacity: 0.8;
   }
 
-  .bento article:hover .viz-history .text {
-    opacity: 0.7;
+  .bento article:hover .viz-history .snippet {
+    fill: var(--text-primary);
   }
 
   .bento article:hover .viz-history .front {
@@ -575,38 +607,23 @@ a {
     opacity: 0.9;
   }
 
-  .viz-idle .device-awake,
-  .viz-idle .device-sleep,
-  .viz-idle .handoff,
-  .viz-idle .arrow,
-  .viz-idle .idle-label {
-    transition: opacity 0.45s ease, fill 0.45s ease, stroke 0.45s ease;
+  .bento article:hover .viz-idle .memory-fill {
+    width: 10px;
   }
 
-  .bento article:hover .viz-idle .device-awake {
-    opacity: 0.45;
+  .bento article:hover .viz-idle .memory-loaded {
+    opacity: 0;
   }
 
-  .bento article:hover .viz-idle .device-sleep {
+  .bento article:hover .viz-idle .memory-released {
+    fill: var(--signal-magenta);
     opacity: 1;
-    stroke: var(--signal-magenta);
   }
 
-  .bento article:hover .viz-idle .handoff,
-  .bento article:hover .viz-idle .arrow {
-    stroke: var(--signal-magenta);
-  }
-
-  .bento article:hover .viz-idle .idle-label {
+  .bento article:hover .viz-idle .idle-note {
     fill: var(--signal-magenta);
   }
-
-  /* Keep these old state selectors inert if a cached page contains them. */
-  .bento article:hover .viz-idle .live {
-    fill: var(--viz-idle);
-  }
 }
-
 .built-with {
   max-width: var(--measure);
   margin-inline: auto;

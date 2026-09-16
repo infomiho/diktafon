@@ -46,7 +46,7 @@ pub fn home(releases: &[Release], fingerprint: &Fingerprint) -> String {
                 }
             }
             div .bento {
-                article .tile-wide {
+                article #speechDemo .tile-wide {
                     (viz::speech())
                     h2 { "On-device speech" }
                     p { "Canary 1B Flash or Cohere Transcribe runs locally through transcribe.cpp, so your audio never leaves the Mac." }
@@ -158,6 +158,7 @@ fn layout(path: &str, title: &str, fingerprint: &Fingerprint, content: Markup) -
                 link rel="canonical" href=(page_url);
                 link rel="icon" type="image/svg+xml" href=(fingerprint.url(LOGO_PATH));
                 link rel="stylesheet" href=(fingerprint.url(STYLESHEET_PATH));
+                script defer src=(fingerprint.url(crate::assets::SPEECH_SCRIPT_PATH)) {}
                 meta name="theme-color" content="#101229";
                 meta property="og:type" content="website";
                 meta property="og:site_name" content="diktafon";

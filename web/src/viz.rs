@@ -1,7 +1,4 @@
-//! Hand-drawn SVG illustrations for the home page's bento tiles. Each is
-//! decorative (`aria-hidden`); the motion lives in `style.css` under a
-//! `prefers-reduced-motion: no-preference` guard, so every rest state reads on
-//! its own.
+//! Decorative illustrations for the home page bento tiles.
 //!
 //! SVG shapes need an explicit empty body (`rect {}`, not `rect;`): maud only
 //! omits the closing tag for known HTML void elements, and an unclosed `<rect>`
@@ -9,36 +6,25 @@
 
 use maud::{Markup, html};
 
-const VIEW_WIDE: &str = "0 0 600 96";
 const VIEW_NARROW: &str = "0 0 280 72";
 const VIEW_SILENCE: &str = "0 0 280 110";
 const VIEW_STACK: &str = "0 0 280 152";
 
-/// Speech, on device: the compact pill shown while the daemon is transcribing.
-/// Its grille and capsule proportions follow the production overlay.
 pub fn speech() -> Markup {
     html! {
-        svg .viz .viz-speech viewBox=(VIEW_WIDE) aria-hidden="true" {
-            rect .pill x="82" y="12" width="436" height="72" rx="36" {}
-            @for col in 0..5usize {
-                @for row in 0..3usize {
-                    (grille_dot(col, row))
+        div .viz .viz-speech aria-hidden="true" {
+            div .speech-pill {
+                div .speech-wash {
+                    span {} span {} span {}
                 }
+                div .speech-dots {
+                    @for _ in 0..15 {
+                        span {}
+                    }
+                }
+                span .speech-label { "Transcribing" }
             }
-            text .status .status-transcribing x="300" y="57" { "Transcribing" }
-            text .status .status-polishing x="300" y="57" { "Polishing" }
         }
-    }
-}
-
-fn grille_dot(col: usize, row: usize) -> Markup {
-    let cx = 150.0 + col as f32 * 15.0;
-    let cy = 34.0 + row as f32 * 14.0;
-    let delay = col * 3 + (2 - row);
-    html! {
-        circle .dot
-            cx=(cx) cy=(cy) r="4.5"
-            style=(format!("--i:{delay}; --col:{col}")) {}
     }
 }
 
@@ -81,72 +67,53 @@ pub fn silence() -> Markup {
     }
 }
 
-/// Local history: the real pane's shape. A search well, a day label, and rows
-/// with a time, two wrapped lines, and a copy button that lights up in turn.
+/// Local history: the real pane's shape, with believable transcript snippets
+/// instead of placeholder skeleton lines.
 pub fn history() -> Markup {
-    let rows = [
-        (54.0_f32, (150.0_f32, 104.0_f32)),
-        (84.0, (128.0, 168.0)),
-        (114.0, (170.0, 96.0)),
-    ];
     html! {
         svg .viz .viz-history viewBox=(VIEW_STACK) aria-hidden="true" {
             rect .field x="8" y="6" width="264" height="22" rx="11" {}
             circle .lens cx="26" cy="17" r="5.5" {}
             line .handle x1="30" y1="21" x2="35" y2="26" {}
             rect .label x="8" y="38" width="46" height="8" rx="4" {}
-            @for (i, (y, (first, second))) in rows.iter().enumerate() {
-                (history_row(*y, *first, *second, i))
-            }
+            (history_row(54.0, "09:41", "Send the invoice", "tomorrow morning"))
+            (history_row(84.0, "09:18", "Call me after lunch", "about the new build"))
+            (history_row(114.0, "08:52", "Move the meeting to", "Thursday afternoon"))
         }
     }
 }
 
-fn history_row(y: f32, first: f32, second: f32, delay: usize) -> Markup {
+fn history_row(y: f32, time: &str, first: &str, second: &str) -> Markup {
     html! {
-        g .entry style=(format!("--i:{delay}")) {
+        g .entry {
             rect .card x="8" y=(y) width="264" height="26" rx="8" {}
-            rect .time x="20" y=(y + 9.0) width="28" height="7" rx="3.5" {}
-            rect .text x="58" y=(y + 6.0) width=(first) height="6" rx="3" {}
-            rect .text x="58" y=(y + 15.0) width=(second) height="6" rx="3" {}
+            text .time x="18" y=(y + 15.0) { (time) }
+            text .snippet x="58" y=(y + 11.0) { (first) }
+            text .snippet .secondary x="58" y=(y + 20.0) { (second) }
             rect .back x="236" y=(y + 7.0) width="10" height="10" rx="2" {}
             rect .front x="243" y=(y + 13.0) width="10" height="10" rx="2" {}
         }
     }
 }
 
-/// Unloads when idle: two real diktafon states connected by the lifecycle that
-/// matters to the user, loaded -> five minutes idle -> released.
+/// Unloads when idle: a simplified Activity Monitor row. The resident-memory
+/// figure and bar drop when the models unload, which is the whole point.
 pub fn idle() -> Markup {
     html! {
-        svg .viz .viz-idle viewBox=(VIEW_NARROW) aria-hidden="true" {
-            g .device .device-awake {
-                (device_mark(28.0, 22.0, false))
-            }
-            path .handoff d="M 112 43 C 126 34, 150 34, 166 43" {}
-            path .arrow d="M 158 38 L 168 43 L 158 48" {}
-            g .device .device-sleep {
-                (device_mark(178.0, 22.0, true))
-            }
-            text .device-label .awake-label x="68" y="79" { "loaded" }
-            text .device-label .sleep-label x="218" y="79" { "released" }
-            text .idle-label x="140" y="101" { "5 min idle" }
-        }
-    }
-}
-
-fn device_mark(x: f32, y: f32, asleep: bool) -> Markup {
-    let class = if asleep { "face asleep" } else { "face" };
-    html! {
-        rect class=(class) x=(x) y=(y) width="74" height="42" rx="12" {}
-        circle class=(class) cx=(x + 19.0) cy=(y + 21.0) r="11" {}
-        circle class=(if asleep { "hub asleep" } else { "hub" })
-            cx=(x + 19.0) cy=(y + 21.0) r="3" {}
-        @for row in 0..3 {
-            @for col in 0..3 {
-                circle class=(class) cx=(x + 45.0 + col as f32 * 9.0)
-                    cy=(y + 12.0 + row as f32 * 9.0) r="2.5" {}
-            }
+        svg .viz .viz-idle viewBox=(VIEW_STACK) aria-hidden="true" {
+            rect .monitor x="8" y="7" width="264" height="58" rx="9" {}
+            circle .monitor-light cx="20" cy="19" r="3" {}
+            text .monitor-title x="30" y="23" { "Activity Monitor" }
+            text .monitor-memory x="238" y="23" { "Memory" }
+            line .monitor-rule x1="8" y1="31" x2="272" y2="31" {}
+            rect .process-selected x="12" y="37" width="256" height="20" rx="5" {}
+            text .process-name x="22" y="51" { "diktafon" }
+            text .process-memory .memory-loaded x="256" y="51" { "353 MB" }
+            text .process-memory .memory-released x="256" y="51" { "24 MB" }
+            text .idle-note x="8" y="82" { "5 min idle" }
+            text .memory-caption x="8" y="132" { "Illustrative memory usage" }
+            rect .memory-track x="8" y="96" width="264" height="13" rx="6.5" {}
+            rect .memory-fill x="8" y="96" width="148" height="13" rx="6.5" {}
         }
     }
 }
