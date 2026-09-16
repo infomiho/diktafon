@@ -75,12 +75,12 @@ pub fn home(releases: &[Release], fingerprint: &Fingerprint) -> String {
                 article {
                     (viz::history())
                     h2 { "Local history" }
-                    p { "Every dictation is saved on your Mac, grouped by day and searchable." }
+                    p { "Every dictation stays on your Mac, searchable and grouped by day." }
                 }
                 article {
                     (viz::idle())
                     h2 { "Unloads when idle" }
-                    p { "The daemon releases the models after five minutes of inactivity, so memory drops between dictations." }
+                    p { "After five idle minutes, diktafon releases its models and gives memory back." }
                 }
             }
             p .built-with {

@@ -17,28 +17,28 @@ const VIEW_STACK: &str = "0 0 280 152";
 /// Speech, on device: the compact pill shown while the daemon is transcribing.
 /// Its grille and capsule proportions follow the production overlay.
 pub fn speech() -> Markup {
-    const LEVELS: [usize; 5] = [3, 0, 0, 0, 0];
     html! {
         svg .viz .viz-speech viewBox=(VIEW_WIDE) aria-hidden="true" {
             rect .pill x="82" y="12" width="436" height="72" rx="36" {}
             @for col in 0..5usize {
                 @for row in 0..3usize {
-                    (grille_dot(col, row, LEVELS[col]))
+                    (grille_dot(col, row))
                 }
             }
-            text .status x="300" y="57" { "Transcribing" }
+            text .status .status-transcribing x="300" y="57" { "Transcribing" }
+            text .status .status-polishing x="300" y="57" { "Polishing" }
         }
     }
 }
 
-fn grille_dot(col: usize, row: usize, level: usize) -> Markup {
-    let lit = (2 - row) < level;
+fn grille_dot(col: usize, row: usize) -> Markup {
     let cx = 150.0 + col as f32 * 15.0;
     let cy = 34.0 + row as f32 * 14.0;
     let delay = col * 3 + (2 - row);
     html! {
-        circle class=(if lit { "dot lit" } else { "dot" })
-                cx=(cx) cy=(cy) r="4.5" style=(format!("--i:{delay}")) {}
+        circle .dot
+            cx=(cx) cy=(cy) r="4.5"
+            style=(format!("--i:{delay}; --col:{col}")) {}
     }
 }
 
@@ -115,27 +115,38 @@ fn history_row(y: f32, first: f32, second: f32, delay: usize) -> Markup {
     }
 }
 
-/// Unloads when idle: the daemon's lifecycle rather than another content list.
-/// It shows the two model roles, the five-minute timeout, and the transition
-/// from loaded to unloaded on hover.
+/// Unloads when idle: two real diktafon states connected by the lifecycle that
+/// matters to the user, loaded -> five minutes idle -> released.
 pub fn idle() -> Markup {
     html! {
-        svg .viz .viz-idle viewBox=(VIEW_STACK) aria-hidden="true" {
-            circle .live cx="18" cy="17" r="5" {}
-            rect .running x="30" y="11" width="52" height="8" rx="4" {}
-            rect .loaded x="92" y="11" width="82" height="8" rx="4" {}
-            rect .model-tag x="8" y="38" width="116" height="24" rx="12" {}
-            rect .model-tag x="132" y="38" width="116" height="24" rx="12" {}
-            rect .tag-text x="22" y="47" width="55" height="6" rx="3" {}
-            rect .tag-text x="146" y="47" width="48" height="6" rx="3" {}
-            line .timeline x1="22" y1="100" x2="258" y2="100" {}
-            circle .state-active cx="22" cy="100" r="6" {}
-            circle .state-idle cx="140" cy="100" r="6" {}
-            circle .state-off cx="258" cy="100" r="6" {}
-            rect .state-label x="8" y="116" width="48" height="6" rx="3" {}
-            rect .state-label x="116" y="116" width="48" height="6" rx="3" {}
-            rect .state-label x="236" y="116" width="36" height="6" rx="3" {}
-            rect .footer x="8" y="140" width="122" height="6" rx="3" {}
+        svg .viz .viz-idle viewBox=(VIEW_NARROW) aria-hidden="true" {
+            g .device .device-awake {
+                (device_mark(28.0, 22.0, false))
+            }
+            path .handoff d="M 112 43 C 126 34, 150 34, 166 43" {}
+            path .arrow d="M 158 38 L 168 43 L 158 48" {}
+            g .device .device-sleep {
+                (device_mark(178.0, 22.0, true))
+            }
+            text .device-label .awake-label x="68" y="79" { "loaded" }
+            text .device-label .sleep-label x="218" y="79" { "released" }
+            text .idle-label x="140" y="101" { "5 min idle" }
+        }
+    }
+}
+
+fn device_mark(x: f32, y: f32, asleep: bool) -> Markup {
+    let class = if asleep { "face asleep" } else { "face" };
+    html! {
+        rect class=(class) x=(x) y=(y) width="74" height="42" rx="12" {}
+        circle class=(class) cx=(x + 19.0) cy=(y + 21.0) r="11" {}
+        circle class=(if asleep { "hub asleep" } else { "hub" })
+            cx=(x + 19.0) cy=(y + 21.0) r="3" {}
+        @for row in 0..3 {
+            @for col in 0..3 {
+                circle class=(class) cx=(x + 45.0 + col as f32 * 9.0)
+                    cy=(y + 12.0 + row as f32 * 9.0) r="2.5" {}
+            }
         }
     }
 }

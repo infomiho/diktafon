@@ -277,6 +277,11 @@ a {
   .bento {
     grid-template-columns: repeat(2, 1fr);
   }
+
+  .bento article:nth-child(4),
+  .bento article:nth-child(5) {
+    grid-column: span 2;
+  }
 }
 
 @media (max-width: 600px) {
@@ -285,6 +290,11 @@ a {
   }
 
   .bento .tile-wide {
+    grid-column: auto;
+  }
+
+  .bento article:nth-child(4),
+  .bento article:nth-child(5) {
     grid-column: auto;
   }
 }
@@ -312,7 +322,8 @@ a {
 }
 
 .viz-speech .dot {
-  opacity: 0.2;
+  opacity: 0.24;
+  fill: var(--viz-idle);
   transform-box: fill-box;
   transform-origin: center;
 }
@@ -324,16 +335,16 @@ a {
   filter: drop-shadow(0 8px 12px #00000033);
 }
 
-.viz-speech .dot.lit {
-  opacity: 0.85;
-  fill: var(--text-primary);
-}
-
 .viz-speech .status {
-  fill: var(--text-dim);
+  fill: var(--text-primary);
   font-family: var(--font-sans);
   font-size: 18px;
   font-weight: 500;
+}
+
+.viz-speech .status-transcribing,
+.viz-speech .status-polishing {
+  opacity: 0;
 }
 
 .viz-speech .aurora {
@@ -401,70 +412,104 @@ a {
   opacity: 0.6;
 }
 
-/* Idle: the daemon lifecycle from loaded to unloaded. */
-.viz-idle .running,
-.viz-idle .loaded,
-.viz-idle .tag-text,
-.viz-idle .state-label,
-.viz-idle .footer {
-  fill: var(--viz-idle);
-}
-
-.viz-idle .live {
-  fill: var(--signal-magenta);
-}
-
-.viz-idle .running,
-.viz-idle .loaded {
-  opacity: 0.65;
-}
-
-.viz-idle .footer {
-  opacity: 0.35;
-}
-
-.viz-idle .model-tag {
+/* Idle: the real mark moving from loaded to released. */
+.viz-idle .face {
   fill: var(--surface-raised);
+  stroke: var(--signal-magenta);
+  stroke-width: 1.5;
 }
 
-.viz-idle .timeline {
-  stroke: var(--hairline-strong);
-  stroke-width: 2;
+.viz-idle .face-sleep {
+  fill: var(--surface);
+  stroke: var(--viz-idle);
+  opacity: 0.55;
 }
 
-.viz-idle .live,
-.viz-idle .state-active {
+.viz-idle .hub {
   fill: var(--signal-magenta);
 }
 
-.viz-idle .state-idle,
-.viz-idle .state-off {
+.viz-idle .hub.asleep {
   fill: var(--viz-idle);
-  opacity: 0.55;
 }
 
-.viz-idle .state-label {
-  opacity: 0.55;
+.viz-idle .handoff,
+.viz-idle .arrow {
+  fill: none;
+  stroke: var(--viz-idle);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.viz-idle .device-label,
+.viz-idle .idle-label {
+  fill: var(--viz-idle);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-anchor: middle;
+}
+
+.viz-idle .idle-label {
+  fill: var(--text-primary);
+  font-size: 12px;
 }
 
 @media (prefers-reduced-motion: no-preference) {
+  @keyframes pill-phase {
+    0%, 34% {
+      fill: var(--signal-red);
+      opacity: 0.5;
+    }
+    35%, 59% {
+      fill: var(--text-primary);
+      opacity: 0.9;
+    }
+    60%, 84% {
+      fill: var(--signal-magenta);
+      opacity: 0.85;
+    }
+    85%, 100% {
+      fill: var(--text-primary);
+      opacity: 0.95;
+    }
+  }
+
+  @keyframes pill-dot-scan {
+    0%, 12% { transform: scale(0.9); }
+    18%, 35% { transform: scale(1.08); }
+    46%, 100% { transform: scale(0.9); }
+  }
+
+  @keyframes pill-transcribing {
+    0%, 34% { opacity: 0; }
+    35%, 59% { opacity: 1; }
+    60%, 100% { opacity: 0; }
+  }
+
+  @keyframes pill-polishing {
+    0%, 59% { opacity: 0; }
+    60%, 84% { opacity: 1; fill: var(--signal-magenta); }
+    85%, 100% { opacity: 0; }
+  }
+
   .viz-speech .dot {
-    transition: opacity 0.3s ease, fill 0.3s ease, transform 0.4s cubic-bezier(0.2, 0, 0, 1);
-    transition-delay: calc(var(--i, 0) * 26ms);
+    animation: pill-phase 9s linear infinite, pill-dot-scan 1.4s linear infinite;
+    animation-delay: calc(var(--col, 0) * 180ms - 240ms);
   }
 
-  .viz-speech .aurora {
-    transition: opacity 0.5s ease;
+  .viz-speech .status-transcribing {
+    animation: pill-transcribing 9s linear infinite;
   }
 
-  .bento article:hover .viz-speech .dot.lit {
+  .viz-speech .status-polishing {
+    animation: pill-polishing 9s linear infinite;
+  }
+
+  .bento article:hover .viz-speech .dot {
     transform: scale(1.12);
     fill: var(--signal-magenta);
     opacity: 1;
-  }
-
-  .bento article:hover .viz-speech .aurora {
-    opacity: 0.95;
   }
 
   .viz-cleanup .filler {
@@ -530,52 +575,35 @@ a {
     opacity: 0.9;
   }
 
-  .viz-idle .live,
-  .viz-idle .running,
-  .viz-idle .loaded,
-  .viz-idle .model-tag,
-  .viz-idle .tag-text,
-  .viz-idle .state-active,
-  .viz-idle .state-idle,
-  .viz-idle .state-off,
-  .viz-idle .state-label,
-  .viz-idle .footer {
-    transition: opacity 0.3s ease, fill 0.3s ease;
+  .viz-idle .device-awake,
+  .viz-idle .device-sleep,
+  .viz-idle .handoff,
+  .viz-idle .arrow,
+  .viz-idle .idle-label {
+    transition: opacity 0.45s ease, fill 0.45s ease, stroke 0.45s ease;
   }
 
-  .bento article:hover .viz-idle .live {
-    fill: var(--viz-idle);
-  }
-
-  .bento article:hover .viz-idle .running {
-    opacity: 0.35;
-  }
-
-  .bento article:hover .viz-idle .loaded {
-    opacity: 0.15;
-  }
-
-  .bento article:hover .viz-idle .model-tag,
-  .bento article:hover .viz-idle .tag-text {
-    opacity: 0.35;
-  }
-
-  .bento article:hover .viz-idle .state-active {
-    fill: var(--viz-idle);
+  .bento article:hover .viz-idle .device-awake {
     opacity: 0.45;
   }
 
-  .bento article:hover .viz-idle .state-idle {
-    opacity: 0.8;
-  }
-
-  .bento article:hover .viz-idle .state-off {
-    fill: var(--signal-magenta);
+  .bento article:hover .viz-idle .device-sleep {
     opacity: 1;
+    stroke: var(--signal-magenta);
   }
 
-  .bento article:hover .viz-idle .footer {
-    opacity: 0.65;
+  .bento article:hover .viz-idle .handoff,
+  .bento article:hover .viz-idle .arrow {
+    stroke: var(--signal-magenta);
+  }
+
+  .bento article:hover .viz-idle .idle-label {
+    fill: var(--signal-magenta);
+  }
+
+  /* Keep these old state selectors inert if a cached page contains them. */
+  .bento article:hover .viz-idle .live {
+    fill: var(--viz-idle);
   }
 }
 
