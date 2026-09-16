@@ -2,7 +2,7 @@ use maud::{DOCTYPE, Markup, PreEscaped, html};
 use pulldown_cmark::html as markdown_html;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag};
 
-use crate::assets::{Fingerprint, LOGO_PATH, OG_IMAGE_PATH, SCREENSHOT_PATH, STYLESHEET_PATH};
+use crate::assets::{Fingerprint, LOGO_PATH, OG_IMAGE_PATH, STYLESHEET_PATH};
 use crate::github::{REPOSITORY_URL, Release, latest_with_download};
 use crate::viz;
 
@@ -36,13 +36,6 @@ pub fn home(releases: &[Release], fingerprint: &Fingerprint) -> String {
                         span { "v" (release.version()) " · " }
                     }
                     span { "Signed and notarized" }
-                }
-            }
-            section .shot {
-                div .shot-frame {
-                    img .screenshot src=(fingerprint.url(SCREENSHOT_PATH))
-                        alt="diktafon's General settings"
-                        width="1440" height="1000";
                 }
             }
             div .bento {

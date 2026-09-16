@@ -10,7 +10,6 @@
   --hairline: #9b9dff22;
   --hairline-strong: #9b9dff38;
   /* Pure white, low opacity: a tinted outline reads as dirt on an image edge. */
-  --image-outline: #ffffff1a;
   --text-primary: #f1f2ff;
   --text-dim: #aaacd6;
   --text-faint: #7f84a2;
@@ -185,26 +184,6 @@ a {
   margin-block-start: 16px;
   font-size: 13px;
   color: var(--text-faint);
-}
-
-.shot {
-  max-width: var(--page-width);
-  margin-inline: auto;
-  padding-inline: 24px;
-  padding-block-end: clamp(56px, 9vw, 96px);
-}
-
-.shot-frame {
-  position: relative;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--image-outline);
-  overflow: hidden;
-  box-shadow: 0 24px 64px #00000080;
-}
-
-.screenshot {
-  width: 100%;
-  height: auto;
 }
 
 .bento {
