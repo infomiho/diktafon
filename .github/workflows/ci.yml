@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -21,3 +24,31 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test --locked
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --manifest-path web/Cargo.toml -- --check
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: web
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo build --locked --manifest-path web/Cargo.toml
+      - run: cargo clippy --all-targets --locked --manifest-path web/Cargo.toml -- -D warnings
+      - run: cargo test --locked --manifest-path web/Cargo.toml
+      - name: Assets stay in sync
+        run: |
+          cmp assets/diktafon-mark.svg web/static/diktafon-mark.svg
+          cmp assets/diktafon.webp web/static/diktafon.webp
+      - name: Docker smoke test
+        run: |
+          docker build -t diktafon-web:ci web/
+          docker run -d --name diktafon-web-ci -p 3000:3000 diktafon-web:ci
+          for _ in $(seq 1 30); do
+            if curl -fsS http://localhost:3000/healthz; then break; fi
+            sleep 1
+          done
+          curl -fsS http://localhost:3000/ >/dev/null
+          curl -fsS http://localhost:3000/releases >/dev/null
+          docker rm -f diktafon-web-ci

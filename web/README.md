@@ -1,0 +1,37 @@
+# diktafon-web
+
+Landing page and release notes for diktafon.
+
+A small server renders the pages once at boot from the GitHub releases API,
+keeps them in memory, and refreshes them every 30 minutes. HTML is served with
+a short cache lifetime, the embedded assets are fingerprinted so they can be
+cached for a year, and `/download` redirects to the latest DMG.
+
+## Run locally
+
+```sh
+cargo run
+```
+
+Serves on `http://localhost:3000`.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `3000` | Listen port |
+| `GITHUB_REPO` | `infomiho/diktafon` | Repository to read releases from |
+| `GITHUB_TOKEN` | unset | Raises the GitHub API rate limit |
+| `SITE_URL` | `https://diktafon.miho.dev` | Absolute URLs in meta tags |
+
+## Generated assets
+
+Keep `static/` in sync with its sources:
+
+- `static/diktafon-mark.svg` and `static/diktafon.webp` from
+  `./web/scripts/sync-app-assets.sh`
+- `static/og.png` from `./web/scripts/render-og.sh`. Set `CHROME` if Chrome is
+  not at the default macOS path.
+
+## Deploy
+
+Built from `web/Dockerfile` with `web/` as the build context. Coolify injects
+`PORT`.
