@@ -9,6 +9,8 @@
   --surface-sunken: #0b0d20;
   --hairline: #9b9dff22;
   --hairline-strong: #9b9dff38;
+  /* Pure white, low opacity: a tinted outline reads as dirt on an image edge. */
+  --image-outline: #ffffff1a;
   --text-primary: #f1f2ff;
   --text-dim: #aaacd6;
   --text-faint: #7f84a2;
@@ -189,7 +191,7 @@ a {
 .shot-frame {
   position: relative;
   border-radius: var(--radius-lg);
-  border: 1px solid var(--hairline);
+  border: 1px solid var(--image-outline);
   overflow: hidden;
   box-shadow: 0 24px 64px #00000080;
 }
@@ -199,15 +201,82 @@ a {
   height: auto;
 }
 
-.specs {
-  max-width: var(--measure);
+.bento {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  max-width: var(--page-width);
   margin-inline: auto;
   padding-inline: 24px;
-  padding-block-end: 16px;
-  text-align: center;
-  font-size: 15px;
+  padding-block-end: clamp(48px, 8vw, 72px);
+}
+
+.bento article {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-block: 24px;
+  padding-inline: 26px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  /* A hairline top highlight reads as a lit edge on the dark ground. */
+  box-shadow: inset 0 1px 0 #9b9dff12;
+}
+
+.bento .tile-wide {
+  grid-column: span 2;
+  background: linear-gradient(180deg, #1d2148 0%, var(--surface) 78%);
+}
+
+.bento h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.bento p {
+  margin: 0;
+  font-size: 14.5px;
   color: var(--text-dim);
   text-wrap: pretty;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  margin-block-start: auto;
+  padding: 0;
+  list-style: none;
+}
+
+.chips li {
+  padding-block: 5px;
+  padding-inline: 11px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+@media (max-width: 880px) {
+  .bento {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .bento {
+    grid-template-columns: 1fr;
+  }
+
+  .bento .tile-wide {
+    grid-column: auto;
+  }
 }
 
 .built-with {
@@ -412,7 +481,7 @@ a {
   }
 
   .button:active {
-    transform: scale(0.98);
+    transform: scale(0.96);
   }
 
   .footer a:hover {

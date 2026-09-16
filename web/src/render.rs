@@ -44,8 +44,34 @@ pub fn home(releases: &[Release], fingerprint: &Fingerprint) -> String {
                         width="1440" height="1000";
                 }
             }
-            p .specs {
-                "On-device speech with Canary 1B Flash or Cohere Transcribe, cleaned up by S1-mini. About 0.9 GB of RAM while transcribing, and the models unload when you stop."
+            div .bento {
+                article .tile-wide {
+                    h2 { "Speech, on device" }
+                    p { "Canary 1B Flash or Cohere Transcribe runs locally through transcribe.cpp. Your audio never leaves the Mac." }
+                    ul .chips {
+                        li { "Canary 1B Flash" }
+                        li { "Cohere Transcribe" }
+                    }
+                }
+                article {
+                    h2 { "An optional cleanup pass" }
+                    p { "S1-mini removes fillers and false starts and fixes punctuation, numbers, dates, and emails before pasting." }
+                    ul .chips {
+                        li { "S1-mini" }
+                    }
+                }
+                article {
+                    h2 { "Split at silence" }
+                    p { "A pause is a clean cut, so you can dictate without stopping and it still pastes as one block." }
+                }
+                article {
+                    h2 { "Local history" }
+                    p { "Every dictation is kept on your Mac, grouped by day and searchable." }
+                }
+                article {
+                    h2 { "Unloads when idle" }
+                    p { "The daemon frees the models after five minutes of inactivity, so memory drops back down between dictations." }
+                }
             }
             p .built-with {
                 "Built with Rust, GPUI, transcribe.cpp, and llama.cpp. Free and open source."
