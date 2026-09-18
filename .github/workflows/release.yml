@@ -65,7 +65,12 @@ jobs:
       - name: Update Homebrew tap
         env:
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
-        run: ./scripts/update-tap.sh "$GITHUB_REF_NAME"
+        run: |
+          if [ -z "$TAP_GITHUB_TOKEN" ]; then
+            echo "TAP_GITHUB_TOKEN is not configured, skipping the Homebrew tap update."
+            exit 0
+          fi
+          ./scripts/update-tap.sh "$GITHUB_REF_NAME"
       - name: Trigger site deploy
         continue-on-error: true
         env:
