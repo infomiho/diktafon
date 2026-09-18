@@ -133,6 +133,9 @@ fn signal_theme_config() -> gpui_component::ThemeConfig {
     colors.caret = color(TEXT_PRIMARY);
     colors.link = color(ACCENT);
     colors.switch = color(SWITCH_TRACK);
+    // The kit falls back to the window background for the thumb, which on
+    // this dark ground reads as a hole in the track.
+    colors.switch_thumb = color(TEXT_PRIMARY);
     colors.scrollbar_thumb = alpha(HAIRLINE, 0x50);
     colors.overlay = alpha(SURFACE_SUNKEN, 0x80);
     colors.danger = color(SIGNAL_RED);

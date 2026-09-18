@@ -207,7 +207,16 @@ fn main() -> Result<()> {
     }
 
     let levels: capture::LevelBars = Default::default();
-    let recorder = Recorder::new(ensure_vad_model()?, levels.clone())?;
+    let preferred_input = session_settings
+        .lock()
+        .unwrap()
+        .preferred_input()
+        .map(str::to_owned);
+    let recorder = Recorder::new(
+        ensure_vad_model()?,
+        levels.clone(),
+        preferred_input.as_deref(),
+    )?;
     println!("Mic: {}", recorder.describe());
 
     let manager =

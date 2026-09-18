@@ -121,6 +121,34 @@ const LANGUAGES: &[(&str, &str)] = &[
     ("vi", "Vietnamese"),
 ];
 
+/// The first dropdown row, standing for "no preference".
+const SYSTEM_DEFAULT_INPUT: &str = "System default";
+/// How often the open settings window re-enumerates microphones, so a
+/// device plugged in while the window is open shows up without a button.
+const MICROPHONE_RESCAN: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Dropdown rows for the microphone picker: the system default first, then
+/// every connected input, then the saved choice if it is not connected so
+/// the preference stays visible and selectable. Returns the device names
+/// parallel to the labels (empty for the default) and the selected row.
+fn microphone_options(
+    connected: &[String],
+    current: &str,
+) -> (Vec<String>, Vec<SharedString>, usize) {
+    let mut names = vec![String::new()];
+    let mut labels = vec![SharedString::from(SYSTEM_DEFAULT_INPUT)];
+    for name in connected {
+        names.push(name.clone());
+        labels.push(name.clone().into());
+    }
+    if !current.is_empty() && !connected.iter().any(|name| name == current) {
+        names.push(current.to_string());
+        labels.push(format!("{current} (not connected)").into());
+    }
+    let selected = names.iter().position(|name| name == current).unwrap_or(0);
+    (names, labels, selected)
+}
+
 const IDLE_OPTIONS: &[(u64, &str)] = &[
     (60, "After 1 minute"),
     (300, "After 5 minutes"),
@@ -282,6 +310,10 @@ pub struct SettingsWindow {
     idle_select: Entity<SelectState<SearchableVec<SharedString>>>,
     /// Seconds parallel to the idle dropdown items.
     idle_values: Vec<u64>,
+    microphone_select: Entity<SelectState<SearchableVec<SharedString>>>,
+    /// Device names parallel to the microphone dropdown; empty is the
+    /// system default.
+    microphone_names: Vec<String>,
     /// Loaded asynchronously: the SMAppService query is a blocking XPC call.
     autostart: bool,
     sound_cues: bool,
@@ -513,6 +545,33 @@ impl SettingsWindow {
             )
         });
 
+        let (microphone_names, microphone_items, microphone_index) =
+            microphone_options(&crate::capture::input_device_names(), &current.input_device);
+        let microphone_select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(microphone_items),
+                Some(IndexPath::new(microphone_index)),
+                window,
+                cx,
+            )
+        });
+        cx.spawn_in(window, async move |view, cx| {
+            loop {
+                cx.background_executor().timer(MICROPHONE_RESCAN).await;
+                let connected = cx
+                    .background_executor()
+                    .spawn(async { crate::capture::input_device_names() })
+                    .await;
+                let updated = view.update_in(cx, |view: &mut Self, window, cx| {
+                    view.refresh_microphones(&connected, window, cx);
+                });
+                if updated.is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
+
         cx.spawn(async move |view, cx| {
             let enabled = cx
                 .background_executor()
@@ -583,6 +642,15 @@ impl SettingsWindow {
             },
         )
         .detach();
+        cx.subscribe_in(
+            &microphone_select,
+            window,
+            |view, _, event: &SelectEvent<SearchableVec<SharedString>>, window, cx| {
+                let SelectEvent::Confirm(_) = event;
+                view.save(window, cx);
+            },
+        )
+        .detach();
         for select in [&transcription_select, &polishing_select] {
             cx.subscribe_in(
                 select,
@@ -621,6 +689,8 @@ impl SettingsWindow {
             apple_prompt_input,
             idle_select,
             idle_values,
+            microphone_select,
+            microphone_names,
             autostart: false,
             sound_cues: current.sound_cues,
             hotkey: current.hotkey.clone(),
@@ -669,6 +739,7 @@ impl SettingsWindow {
             sound_cues: self.sound_cues,
             hotkey: self.hotkey.clone(),
             hotkey_behavior: self.hotkey_behavior,
+            input_device: self.selected_microphone(cx),
             transcription_model: transcription_model.clone(),
             polishing_model,
         };
@@ -691,6 +762,37 @@ impl SettingsWindow {
         }
         *self.settings.lock().unwrap() = updated;
         cx.global::<crate::AppServices>().models.set(models);
+    }
+
+    /// The device name behind the dropdown's selection; empty for the
+    /// system default.
+    fn selected_microphone(&self, cx: &App) -> String {
+        self.microphone_select
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|index| self.microphone_names.get(index.row).cloned())
+            .unwrap_or_default()
+    }
+
+    /// Rebuild the microphone rows around the current choice when the set
+    /// of connected devices changed.
+    fn refresh_microphones(
+        &mut self,
+        connected: &[String],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.selected_microphone(cx);
+        let (names, items, index) = microphone_options(connected, &current);
+        if names == self.microphone_names {
+            return;
+        }
+        self.microphone_names = names;
+        self.microphone_select.update(cx, |select, cx| {
+            select.set_items(SearchableVec::new(items), window, cx);
+            select.set_selected_index(Some(IndexPath::new(index)), window, cx);
+        });
+        cx.notify();
     }
 
     /// Optimistic flip, reverted if the change fails; failure is the normal
@@ -785,7 +887,12 @@ impl SettingsWindow {
             .gap_6()
             .py_1()
             .child(
+                // The text column yields to the control: without a min width
+                // a long help line pushes the control off the pane instead of
+                // wrapping.
                 v_flex()
+                    .flex_1()
+                    .min_w_0()
                     .gap_1p5()
                     .child(Label::new(label).font_medium())
                     .when(!description.is_empty(), |el| {
@@ -796,13 +903,14 @@ impl SettingsWindow {
                         )
                     }),
             )
-            .child(control)
+            .child(div().flex_shrink_0().child(control))
     }
 
     /// The hotkey as keycap chips.
     fn keycaps(keys: Vec<String>) -> impl IntoElement {
         h_flex().gap_1p5().children(keys.into_iter().map(|key| {
             div()
+                .hover(|el| el.border_color(rgba(theme::HAIRLINE | 0x59)))
                 .h(px(28.))
                 .min_w(px(28.))
                 .px(px(10.))
@@ -820,23 +928,32 @@ impl SettingsWindow {
         }))
     }
 
+    /// The hotkey leads: it is what the app is about, and the behavior rows
+    /// under it are the first-visit explainer. Then the other input setting,
+    /// then the two switches.
     fn general_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_8()
+            .child(
+                v_flex()
+                    .gap(px(12.))
+                    .child(Self::control_row(
+                        "Hotkey",
+                        "Click the keys to record a new hotkey.",
+                        self.hotkey_control(cx),
+                        cx,
+                    ))
+                    .child(self.hotkey_behavior_options(cx)),
+            )
             .child(Self::control_row(
-                "Start at login",
-                "Open Diktafon when you sign in.",
-                Switch::new("autostart")
-                    .large()
-                    .checked(self.autostart)
-                    .on_click(
-                        cx.listener(|view, checked: &bool, _, cx| view.set_autostart(*checked, cx)),
-                    ),
+                "Microphone",
+                "Follows System Settings unless you pick one.",
+                Select::new(&self.microphone_select).large().w(px(220.)),
                 cx,
             ))
             .child(Self::control_row(
                 "Sound cues",
-                "Play a sound when recording starts, is canceled, or fails.",
+                "Play a sound when a dictation starts, is canceled, or fails.",
                 Switch::new("sound-cues")
                     .large()
                     .checked(self.sound_cues)
@@ -847,17 +964,17 @@ impl SettingsWindow {
                     })),
                 cx,
             ))
-            .child(
-                v_flex()
-                    .gap(px(12.))
-                    .child(Self::control_row(
-                        "Hotkey",
-                        "Click the keys to change.",
-                        self.hotkey_control(cx),
-                        cx,
-                    ))
-                    .child(self.hotkey_behavior_options(cx)),
-            )
+            .child(Self::control_row(
+                "Open at login",
+                "Open Diktafon when you log in.",
+                Switch::new("autostart")
+                    .large()
+                    .checked(self.autostart)
+                    .on_click(
+                        cx.listener(|view, checked: &bool, _, cx| view.set_autostart(*checked, cx)),
+                    ),
+                cx,
+            ))
     }
 
     /// The two ways the hotkey can drive a dictation, as radio rows that
@@ -906,7 +1023,7 @@ impl SettingsWindow {
                             v_flex()
                                 .child(
                                     div()
-                                        .text_size(px(14.))
+                                        .text_size(px(15.))
                                         .line_height(px(22.))
                                         .font_medium()
                                         .child(name),
@@ -973,8 +1090,8 @@ impl SettingsWindow {
         };
         keys.into_iter().map(move |key| {
             div()
-                .h(px(18.))
-                .min_w(px(18.))
+                .h(px(20.))
+                .min_w(px(20.))
                 .px(px(5.))
                 .flex()
                 .items_center()
@@ -983,7 +1100,7 @@ impl SettingsWindow {
                 .bg(background)
                 .border_1()
                 .border_color(rgba(theme::HAIRLINE | 0x22))
-                .text_size(px(11.))
+                .text_size(px(12.))
                 .font_medium()
                 .text_color(rgba(theme::TEXT_PRIMARY | 0xFF))
                 .child(key)
@@ -1450,7 +1567,7 @@ impl SettingsWindow {
                     field()
                         .label("Unload models when idle")
                         .description(
-                            "Free memory when Diktafon is idle. Models reload with the next dictation.",
+                            "Frees memory between dictations. The next one starts a moment slower while models reload.",
                         )
                         .child(Select::new(&self.idle_select).large()),
                 ),
@@ -1676,6 +1793,24 @@ impl Render for SettingsWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn microphone_rows_keep_a_disconnected_choice_selectable() {
+        let connected = vec!["MacBook Pro Microphone".to_string()];
+        let (names, labels, selected) = microphone_options(&connected, "");
+        assert_eq!(names, vec!["", "MacBook Pro Microphone"]);
+        assert_eq!(labels[0].as_ref(), SYSTEM_DEFAULT_INPUT);
+        assert_eq!(selected, 0);
+
+        let (names, labels, selected) = microphone_options(&connected, "AirPods");
+        assert_eq!(names[2], "AirPods");
+        assert_eq!(labels[2].as_ref(), "AirPods (not connected)");
+        assert_eq!(selected, 2);
+
+        let (_, labels, selected) = microphone_options(&connected, "MacBook Pro Microphone");
+        assert_eq!(labels.len(), 2);
+        assert_eq!(selected, 1);
+    }
 
     #[test]
     fn apple_intelligence_is_only_offered_when_available() {

@@ -125,9 +125,18 @@ impl Dictations {
         let pressed_at = Instant::now();
         // Before the recorder: the daemon may have to be spawned and load its
         // models, and that runs while the user is still speaking.
-        let config = self.settings.lock().unwrap().session();
+        let (config, preferred_input) = {
+            let settings = self.settings.lock().unwrap();
+            (
+                settings.session(),
+                settings.preferred_input().map(str::to_owned),
+            )
+        };
         let _ = self.daemon.chunk_tx.send(Msg::Start(config));
-        let session = match self.recorder.start(self.daemon.chunk_tx.clone()) {
+        let session = match self
+            .recorder
+            .start(self.daemon.chunk_tx.clone(), preferred_input.as_deref())
+        {
             Ok(session) => session,
             Err(e) => {
                 // The daemon is already holding the session started above;

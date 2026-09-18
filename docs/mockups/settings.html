@@ -19,6 +19,8 @@
     --on-accent: #F1F2FF;
     --ring-idle: #8E90BE;
     --switch-track: #5A6086;
+    --focus-ring: var(--accent);
+    --outline-hover: rgba(155, 157, 255, 0.35);
     --font-display: "Chakra Petch", sans-serif;
     --font-ui: system-ui, sans-serif;
     --font-mono: "Menlo", monospace;
@@ -88,12 +90,16 @@
   }
   .nav-item.active { background: var(--surface-raised); color: var(--on-surface); }
   .nav-item .icon { width: 16px; text-align: center; opacity: 0.8; }
+  /* Scrolls like the app's pane, so the mock window keeps its real height. */
   .pane {
     flex: 1;
     min-width: 0;
     padding: 32px;
     display: flex;
     flex-direction: column;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--surface-raised) transparent;
   }
   .pane h1 { font-family: var(--font-display); font-size: 24px; font-weight: 600; line-height: 1.2; letter-spacing: 0.01em; }
   .content { margin-top: 32px; display: flex; flex-direction: column; gap: 32px; }
@@ -164,15 +170,26 @@
     background: var(--surface);
     font-size: 15px;
   }
+  .select.compact { width: 220px; flex-shrink: 0; }
   .input .placeholder { color: var(--ring-idle); opacity: 0.6; }
   .select .chev { color: var(--on-surface-muted); }
 
-  .switch { width: 44px; height: 26px; border-radius: 13px; background: var(--switch-track); position: relative; flex-shrink: 0; }
-  .switch .thumb { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: var(--on-surface); opacity: 0.9; }
+  /* The kit's switch: a 36x20 track with a 16px thumb inset 2px, the same
+     for its Medium and Large sizes. */
+  .switch { width: 36px; height: 20px; border-radius: 10px; background: var(--switch-track); position: relative; flex-shrink: 0; }
+  .switch .thumb { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--on-surface); opacity: 0.9; }
   .switch.on { background: var(--accent); }
-  .switch.on .thumb { left: auto; right: 3px; opacity: 1; }
+  .switch.on .thumb { left: auto; right: 2px; opacity: 1; }
 
-  .keycaps { display: flex; gap: 6px; }
+  .keycaps { display: flex; gap: 6px; cursor: pointer; border-radius: 6px; }
+  .keycaps:hover .key, .keycaps.hover .key { border-color: var(--outline-hover); }
+  .keycaps:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+  .capturing {
+    height: 28px; padding: 0 10px; display: flex; align-items: center;
+    border: 1px dashed var(--outline-hover); border-radius: 6px;
+    font-size: 13px; color: var(--faint);
+    outline: 2px solid var(--focus-ring); outline-offset: 2px;
+  }
   .key {
     height: 28px;
     min-width: 28px;
@@ -213,13 +230,13 @@
   .radio::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--on-accent, #F1F2FF); transform: scale(0.25); opacity: 0; transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1), opacity 120ms ease; }
   .option.on .radio { border-color: var(--accent); background: var(--accent); }
   .option.on .radio::after { transform: scale(1); opacity: 1; }
-  .option .name { font-size: 14px; font-weight: 500; line-height: 22px; }
+  .option .name { font-size: 15px; font-weight: 500; line-height: 22px; }
   .option .desc { font-size: 13px; color: var(--on-surface-muted); margin-top: 2px; line-height: 20px; }
   .option .k {
     display: inline-flex; align-items: center; justify-content: center;
-    height: 18px; min-width: 18px; padding: 0 5px; margin: 0 1px;
+    height: 20px; min-width: 20px; padding: 0 5px; margin: 0 1px;
     border-radius: 4px; background: var(--surface-raised); border: 1px solid var(--outline);
-    font-size: 11px; line-height: 1; font-weight: 500; color: var(--on-surface);
+    font-size: 12px; line-height: 1; font-weight: 500; color: var(--on-surface);
     vertical-align: middle; position: relative; top: -1px;
   }
   .option.on .k { background: var(--background); }
@@ -284,31 +301,18 @@
       <div class="traffic"><span></span><span></span><span></span></div>
       <div class="brand-row"><img src="../../assets/diktafon-mark-flat.svg" width="32" height="18" alt=""><span>diktafon</span></div>
       <div class="nav-item active"><span class="icon">⚙</span>General</div>
-      <div class="nav-item"><span class="icon">Aa</span>Dictation</div>
+      <div class="nav-item"><span class="icon">◈</span>Models</div>
+      <div class="nav-item"><span class="icon">◷</span>History</div>
       <div class="nav-item"><span class="icon">▣</span>Advanced</div>
     </div>
     <div class="pane">
       <h1>General</h1>
       <div class="content">
-        <div class="control-row">
-          <div class="text">
-            <span class="field-label">Start at login</span>
-            <div class="help">Launch diktafon when you log in</div>
-          </div>
-          <div class="switch on"><div class="thumb"></div></div>
-        </div>
-        <div class="control-row">
-          <div class="text">
-            <span class="field-label">Sound cues</span>
-            <div class="help">A cue when the mic goes live, and on cancel or error</div>
-          </div>
-          <div class="switch on"><div class="thumb"></div></div>
-        </div>
         <div>
           <div class="control-row">
             <div class="text">
               <span class="field-label">Hotkey</span>
-              <div class="help">Click the keys to change.</div>
+              <div class="help">Click the keys to record a new hotkey.</div>
             </div>
             <div class="keycaps"><span class="key">⌥</span><span class="key">Space</span></div>
           </div>
@@ -329,34 +333,36 @@
             </div>
           </div>
         </div>
+        <div class="control-row">
+          <div class="text">
+            <span class="field-label">Microphone</span>
+            <div class="help">Follows System Settings unless you pick one.</div>
+          </div>
+          <div class="select compact"><span>System default</span><span class="chev">⌄</span></div>
+        </div>
+        <div class="control-row">
+          <div class="text">
+            <span class="field-label">Sound cues</span>
+            <div class="help">Play a sound when a dictation starts, is canceled, or fails.</div>
+          </div>
+          <div class="switch on"><div class="thumb"></div></div>
+        </div>
+        <div class="control-row">
+          <div class="text">
+            <span class="field-label">Open at login</span>
+            <div class="help">Open Diktafon when you log in.</div>
+          </div>
+          <div class="switch on"><div class="thumb"></div></div>
+        </div>
       </div>
     </div>
   </div>
 
-  <!-- Dictation -->
-  <div class="window">
-    <div class="sidebar">
-      <div class="traffic"><span></span><span></span><span></span></div>
-      <div class="brand-row"><img src="../../assets/diktafon-mark-flat.svg" width="32" height="18" alt=""><span>diktafon</span></div>
-      <div class="nav-item"><span class="icon">⚙</span>General</div>
-      <div class="nav-item active"><span class="icon">Aa</span>Dictation</div>
-      <div class="nav-item"><span class="icon">▣</span>Advanced</div>
-    </div>
-    <div class="pane">
-      <h1>Dictation</h1>
-      <div class="content">
-        <div class="field">
-          <div class="field-label">Post-processing prompt</div>
-          <div class="control textarea">[Styling: ...] [Structure: ...] [Context: ...]</div>
-          <div class="help">Shapes how your words are polished; applies to the next dictation</div>
-        </div>
-        <div class="field">
-          <div class="field-label">Language</div>
-          <div class="control select"><span>English (en)</span><span class="chev">⌄</span></div>
-          <div class="help">The language you dictate in</div>
-        </div>
-      </div>
-    </div>
+  <!-- Hotkey control states -->
+  <div class="specimen">
+    <div class="row"><span class="name">Keycaps at rest</span><div class="keycaps"><span class="key">⌥</span><span class="key">Space</span></div></div>
+    <div class="row"><span class="name">Hover</span><div class="keycaps hover"><span class="key">⌥</span><span class="key">Space</span></div></div>
+    <div class="row"><span class="name">Capturing</span><div class="capturing">Press new keys</div></div>
   </div>
 
   <!-- Models -->
@@ -365,8 +371,8 @@
       <div class="traffic"><span></span><span></span><span></span></div>
       <div class="brand-row"><img src="../../assets/diktafon-mark-flat.svg" width="32" height="18" alt=""><span>diktafon</span></div>
       <div class="nav-item"><span class="icon">⚙</span>General</div>
-      <div class="nav-item"><span class="icon">Aa</span>Dictation</div>
       <div class="nav-item active"><span class="icon">◈</span>Models</div>
+      <div class="nav-item"><span class="icon">◷</span>History</div>
       <div class="nav-item"><span class="icon">▣</span>Advanced</div>
     </div>
     <div class="pane">
@@ -403,7 +409,8 @@
       <div class="traffic"><span></span><span></span><span></span></div>
       <div class="brand-row"><img src="../../assets/diktafon-mark-flat.svg" width="32" height="18" alt=""><span>diktafon</span></div>
       <div class="nav-item"><span class="icon">⚙</span>General</div>
-      <div class="nav-item"><span class="icon">Aa</span>Dictation</div>
+      <div class="nav-item"><span class="icon">◈</span>Models</div>
+      <div class="nav-item"><span class="icon">◷</span>History</div>
       <div class="nav-item active"><span class="icon">▣</span>Advanced</div>
     </div>
     <div class="pane">
@@ -412,7 +419,7 @@
         <div class="field">
           <div class="field-label">Unload models when idle</div>
           <div class="control select"><span>After 1 minute</span><span class="chev">⌄</span></div>
-          <div class="help">Frees a few GB of RAM; models reload on the next dictation. Applies when the daemon restarts.</div>
+          <div class="help">Frees memory between dictations. The next one starts a moment slower while models reload.</div>
         </div>
         <div class="field">
           <div class="field-label">Daemon</div>
@@ -462,7 +469,7 @@
       <div class="traffic"><span></span><span></span><span></span></div>
       <div class="brand-row"><img src="../../assets/diktafon-mark-flat.svg" width="32" height="18" alt=""><span>diktafon</span></div>
       <div class="nav-item"><span class="icon">⚙</span>General</div>
-      <div class="nav-item"><span class="icon">Aa</span>Dictation</div>
+      <div class="nav-item"><span class="icon">◈</span>Models</div>
       <div class="nav-item active"><span class="icon">◷</span>History</div>
       <div class="nav-item"><span class="icon">▣</span>Advanced</div>
     </div>

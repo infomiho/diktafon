@@ -27,17 +27,62 @@ struct InputDevice {
     name: String,
 }
 
-fn default_input() -> Result<InputDevice> {
-    let device = cpal::default_host()
+fn device_name(device: &cpal::Device) -> Option<String> {
+    device
+        .description()
+        .ok()
+        .map(|description| description.name().to_owned())
+}
+
+/// Every input device the host offers right now, by name, for the settings
+/// dropdown.
+pub fn input_device_names() -> Vec<String> {
+    cpal::default_host()
+        .input_devices()
+        .map(|devices| devices.filter_map(|device| device_name(&device)).collect())
+        .unwrap_or_default()
+}
+
+fn default_input_name() -> Option<String> {
+    cpal::default_host()
         .default_input_device()
-        .context("no input device")?;
+        .and_then(|device| device_name(&device))
+}
+
+/// The device a preference resolves to: the named one while it is present,
+/// otherwise the system default (so an unplugged microphone degrades to
+/// whatever the system would use rather than to silence).
+fn resolve_input_name(
+    preferred: Option<&str>,
+    available: &[String],
+    default: Option<&str>,
+) -> Option<String> {
+    preferred
+        .filter(|name| available.iter().any(|candidate| candidate == name))
+        .or(default)
+        .map(str::to_owned)
+}
+
+fn open_input(preferred: Option<&str>) -> Result<InputDevice> {
+    let host = cpal::default_host();
+    let named = preferred.and_then(|wanted| {
+        host.input_devices()
+            .ok()?
+            .find(|device| device_name(device).as_deref() == Some(wanted))
+    });
+    if let Some(wanted) = preferred
+        && named.is_none()
+    {
+        eprintln!("microphone \"{wanted}\" is not connected; using the system default");
+    }
+    let device = match named {
+        Some(device) => device,
+        None => host.default_input_device().context("no input device")?,
+    };
     let config = device.default_input_config()?;
     let channels = config.channels() as usize;
     let rate = config.sample_rate();
-    let name = device
-        .description()
-        .map(|description| description.name().to_owned())
-        .unwrap_or_else(|_| "unknown".into());
+    let name = device_name(&device).unwrap_or_else(|| "unknown".into());
     Ok(InputDevice {
         device,
         config,
@@ -49,6 +94,8 @@ fn default_input() -> Result<InputDevice> {
 
 pub struct Recorder {
     input: InputDevice,
+    /// The microphone the user chose, or `None` for the system default.
+    preferred: Option<String>,
     vad_model: PathBuf,
     levels: LevelBars,
     /// Set from cpal's error callback: the device disconnected mid-session
@@ -83,9 +130,10 @@ impl FirstSampleSignal {
 }
 
 impl Recorder {
-    pub fn new(vad_model: PathBuf, levels: LevelBars) -> Result<Self> {
+    pub fn new(vad_model: PathBuf, levels: LevelBars, preferred: Option<&str>) -> Result<Self> {
         Ok(Self {
-            input: default_input()?,
+            input: open_input(preferred)?,
+            preferred: preferred.map(str::to_owned),
             vad_model,
             levels,
             stream_failed: Arc::new(AtomicBool::new(false)),
@@ -99,24 +147,23 @@ impl Recorder {
         )
     }
 
-    /// Reopen the input when the stream died or the system default moved
-    /// (e.g. AirPods connected); on failure keep the old device and let the
-    /// session surface the error.
+    /// Reopen the input when the stream died or the device the preference
+    /// resolves to moved (the system default changed, the chosen microphone
+    /// came or went); on failure keep the old device and let the session
+    /// surface the error.
     /// Returns whether the device was rebuilt.
     fn refresh_input_if_needed(&mut self) -> bool {
         let failed = self.stream_failed.swap(false, Ordering::Relaxed);
-        let default_name = cpal::default_host().default_input_device().and_then(|d| {
-            d.description()
-                .map(|description| description.name().to_owned())
-                .ok()
-        });
-        let default_changed = default_name
-            .as_ref()
-            .is_some_and(|name| *name != self.input.name);
-        if !(failed || default_changed) {
+        let wanted = resolve_input_name(
+            self.preferred.as_deref(),
+            &input_device_names(),
+            default_input_name().as_deref(),
+        );
+        let wanted_changed = wanted.is_some_and(|name| name != self.input.name);
+        if !(failed || wanted_changed) {
             return false;
         }
-        match default_input() {
+        match open_input(self.preferred.as_deref()) {
             Ok(input) => {
                 self.input = input;
                 println!("Mic: {}", self.describe());
@@ -138,7 +185,15 @@ impl Recorder {
         self.stream_failed.store(true, Ordering::Relaxed);
     }
 
-    pub fn start(&mut self, chunk_tx: mpsc::Sender<Msg>) -> Result<Session> {
+    /// Open a session on the preferred microphone (`None` for the system
+    /// default), reopening the device first if the preference or the
+    /// hardware changed since the last one.
+    pub fn start(
+        &mut self,
+        chunk_tx: mpsc::Sender<Msg>,
+        preferred: Option<&str>,
+    ) -> Result<Session> {
+        self.preferred = preferred.map(str::to_owned);
         let _ = self.refresh_input_if_needed();
         // Fresh VAD per session: Silero keeps LSTM state across frames, and
         // loading the 1.8MB model is fast enough to not delay recording.
@@ -539,6 +594,25 @@ impl StreamResampler {
 mod tests {
     use super::*;
     use transcribe_rs::vad::EnergyVad;
+
+    #[test]
+    fn a_preferred_microphone_is_used_only_while_connected() {
+        let available = vec!["MacBook Pro Microphone".to_string(), "AirPods".to_string()];
+        let default = Some("MacBook Pro Microphone");
+        assert_eq!(
+            resolve_input_name(Some("AirPods"), &available, default).as_deref(),
+            Some("AirPods")
+        );
+        assert_eq!(
+            resolve_input_name(Some("Studio Mic"), &available, default).as_deref(),
+            Some("MacBook Pro Microphone")
+        );
+        assert_eq!(
+            resolve_input_name(None, &available, default).as_deref(),
+            Some("MacBook Pro Microphone")
+        );
+        assert_eq!(resolve_input_name(Some("AirPods"), &[], None), None);
+    }
 
     /// Chunker driven by the RMS-based EnergyVad, so the smoothing and cut
     /// logic is testable without the Silero model file.

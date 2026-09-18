@@ -90,6 +90,10 @@ pub struct SessionSettings {
     /// Dictation chord in global-hotkey syntax, e.g. "alt+space".
     pub hotkey: String,
     pub hotkey_behavior: HotkeyBehavior,
+    /// Name of the microphone to record from; empty follows the system
+    /// default input. A named device that is not connected falls back to
+    /// the default until it returns.
+    pub input_device: String,
     pub transcription_model: String,
     pub polishing_model: String,
 }
@@ -104,6 +108,7 @@ impl Default for SessionSettings {
             sound_cues: true,
             hotkey: "alt+space".into(),
             hotkey_behavior: HotkeyBehavior::Hold,
+            input_device: String::new(),
             transcription_model: DEFAULT_TRANSCRIPTION_MODEL.into(),
             polishing_model: DEFAULT_POLISHING_MODEL.into(),
         }
@@ -115,6 +120,12 @@ fn settings_path() -> std::path::PathBuf {
 }
 
 impl SessionSettings {
+    /// The microphone to prefer, or `None` for the system default.
+    pub fn preferred_input(&self) -> Option<&str> {
+        let name = self.input_device.trim();
+        (!name.is_empty()).then_some(name)
+    }
+
     /// Missing or unparseable file falls back to the defaults. A hotkey
     /// string that does not parse is reset in place so every surface (keycaps,
     /// startup line) shows the chord that is actually registered.
@@ -248,6 +259,21 @@ mod tests {
         assert_eq!(settings.language, "de");
         assert_eq!(settings.apple_prompt, DEFAULT_APPLE_PROMPT);
         assert_eq!(settings.hotkey_behavior, HotkeyBehavior::Hold);
+        assert_eq!(settings.preferred_input(), None);
+    }
+
+    #[test]
+    fn a_blank_input_device_means_the_system_default() {
+        let settings = SessionSettings {
+            input_device: "  ".into(),
+            ..Default::default()
+        };
+        assert_eq!(settings.preferred_input(), None);
+        let settings = SessionSettings {
+            input_device: "AirPods Pro".into(),
+            ..Default::default()
+        };
+        assert_eq!(settings.preferred_input(), Some("AirPods Pro"));
     }
 
     #[test]
