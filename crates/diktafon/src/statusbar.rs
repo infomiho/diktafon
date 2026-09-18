@@ -20,6 +20,7 @@ use std::cell::{Cell, OnceCell};
 
 enum MenuAction {
     OpenSettings,
+    CheckForUpdates,
     Quit,
 }
 
@@ -27,6 +28,8 @@ struct ControllerIvars {
     actions: UnboundedSender<MenuAction>,
     status_item: OnceCell<Retained<NSStatusItem>>,
     phase: Cell<Phase>,
+    /// Whether this bundle updates itself; the check item only appears then.
+    updatable: bool,
 }
 
 define_class!(
@@ -51,6 +54,11 @@ define_class!(
             let _ = self.ivars().actions.unbounded_send(MenuAction::OpenSettings);
         }
 
+        #[unsafe(method(checkForUpdates:))]
+        fn check_for_updates(&self, _sender: &NSMenuItem) {
+            let _ = self.ivars().actions.unbounded_send(MenuAction::CheckForUpdates);
+        }
+
         #[unsafe(method(quit:))]
         fn quit(&self, _sender: &NSMenuItem) {
             let _ = self.ivars().actions.unbounded_send(MenuAction::Quit);
@@ -59,11 +67,16 @@ define_class!(
 );
 
 impl MenuController {
-    fn new(mtm: MainThreadMarker, actions: UnboundedSender<MenuAction>) -> Retained<Self> {
+    fn new(
+        mtm: MainThreadMarker,
+        actions: UnboundedSender<MenuAction>,
+        updatable: bool,
+    ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ControllerIvars {
             actions,
             status_item: OnceCell::new(),
             phase: Cell::new(Phase::Idle),
+            updatable,
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -88,6 +101,9 @@ impl MenuController {
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 
         self.add_action(menu, "Settings…", sel!(openSettings:));
+        if self.ivars().updatable {
+            self.add_action(menu, "Check for Updates…", sel!(checkForUpdates:));
+        }
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 
         self.add_action(menu, "Quit Diktafon", sel!(quit:));
@@ -280,10 +296,11 @@ pub fn install(
     cx: &mut App,
     dictation: &Entity<Dictation>,
     settings: std::sync::Arc<std::sync::Mutex<crate::config::SessionSettings>>,
+    updatable: bool,
 ) {
     let mtm = MainThreadMarker::new().expect("not on the main thread");
     let (actions_tx, mut actions_rx) = unbounded();
-    let controller = MenuController::new(mtm, actions_tx);
+    let controller = MenuController::new(mtm, actions_tx, updatable);
 
     let status_bar = NSStatusBar::systemStatusBar();
     let item = status_bar.statusItemWithLength(NSVariableStatusItemLength);
@@ -310,6 +327,9 @@ pub fn install(
                     cx.update(|cx| {
                         settings_window = crate::settings::open(settings_window, settings, cx);
                     });
+                }
+                MenuAction::CheckForUpdates => {
+                    cx.update(crate::updater::check_for_updates);
                 }
                 // Quit takes the daemon down too: with exit-on-idle there
                 // is nothing worth keeping warm after the client leaves.

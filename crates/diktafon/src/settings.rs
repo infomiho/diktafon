@@ -7,6 +7,7 @@
 use crate::config::SessionSettings;
 use crate::control_line;
 use crate::statusbar::DaemonStatus;
+use crate::updater::{self, UpdateCheck};
 use crate::{autostart, statusbar, theme};
 use chrono::{Datelike, Local, NaiveDate};
 use diktafon_protocol::HistoryEntry;
@@ -546,6 +547,12 @@ impl SettingsWindow {
             }
         })
         .detach();
+
+        // Sparkle reports its findings whenever a check finishes, including
+        // the automatic one at launch, so the Updates card re-renders on it.
+        if let Some(status) = updater::status(cx) {
+            cx.observe(&status, |_, _, cx| cx.notify()).detach();
+        }
 
         // Settings apply as they change, macOS-style; there is no Save button.
 
@@ -1173,6 +1180,79 @@ impl SettingsWindow {
         )
     }
 
+    /// The running version with the outcome of Sparkle's last check, a button
+    /// that opens Sparkle's window, and the automatic-check switch. A build
+    /// that does not update itself shows only the version.
+    fn updates_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let check = updater::status(cx).map(|status| status.read(cx).check.clone());
+        let (detail, emphasized) = match &check {
+            None => ("This build does not update itself.".to_string(), false),
+            Some(UpdateCheck::Unknown) => ("Not checked yet.".to_string(), false),
+            Some(UpdateCheck::UpToDate) => ("Up to date.".to_string(), false),
+            Some(UpdateCheck::Available(version)) => {
+                (format!("Diktafon {version} is ready to install."), true)
+            }
+            Some(UpdateCheck::Skipped(version)) => (format!("Version {version} skipped."), false),
+        };
+        let action = match &check {
+            Some(UpdateCheck::Available(_)) => "Install update",
+            _ => "Check for updates",
+        };
+        let detail_color = if emphasized {
+            cx.theme().foreground
+        } else {
+            cx.theme().muted_foreground
+        };
+        let version_row = h_flex()
+            .gap_6()
+            .items_center()
+            .justify_between()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        Label::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).font_medium(),
+                    )
+                    .child(Label::new(detail).text_sm().text_color(detail_color)),
+            )
+            .when(check.is_some(), |row| {
+                row.child(
+                    Button::new("check-for-updates")
+                        .label(action)
+                        .outline()
+                        .on_click(|_, _, cx| updater::check_for_updates(cx)),
+                )
+            });
+        v_flex()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(rgba(theme::SURFACE | 0xFF))
+            .p_4()
+            .gap_4()
+            .child(version_row)
+            .when_some(updater::automatic_checks(cx), |card, enabled| {
+                card.child(
+                    div()
+                        .pt_4()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                        .child(Self::control_row(
+                            "Check for updates automatically",
+                            "Once a day. You choose when to install.",
+                            Switch::new("automatic-updates")
+                                .large()
+                                .checked(enabled)
+                                .on_click(cx.listener(|_, checked: &bool, _, cx| {
+                                    updater::set_automatic_checks(*checked, cx);
+                                    cx.notify();
+                                })),
+                            cx,
+                        )),
+                )
+            })
+    }
+
     fn models_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let transcription_description = self
             .transcription_select
@@ -1238,6 +1318,7 @@ impl SettingsWindow {
                 ),
             )
             .child(Self::form().child(field().label("Daemon").child(self.daemon_card(cx))))
+            .child(Self::form().child(field().label("Updates").child(self.updates_card(cx))))
             .child(
                 h_flex().child(
                     Button::new("open-third-party-notices")

@@ -2,3 +2,5 @@
 /dist
 .playwright-mcp/
 .DS_Store
+docs/mockups/.shots/
+/.cache

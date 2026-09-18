@@ -18,6 +18,8 @@ To cut a release: bump the workspace version, commit, tag `vX.Y.Z`, push the tag
 
 `scripts/setup-release-signing.sh` stores the Developer ID certificate and the App Store Connect API key as repo secrets once. The workflow also calls the Coolify webhook (`COOLIFY_WEBHOOK`, `COOLIFY_TOKEN`) so the tag refreshes `diktafon.miho.dev`.
 
+The workflow also signs the DMG with the Sparkle key from the `SPARKLE_PRIVATE_KEY` secret and publishes `appcast.xml` as a release asset. Installed copies read `https://github.com/infomiho/diktafon/releases/latest/download/appcast.xml` and update themselves through the embedded Sparkle framework (`crates/diktafon/src/updater.rs`). `scripts/setup-sparkle-key.sh` creates the key, stores the secret, and writes the public key into `crates/diktafon/resources/Info.plist`. Back the private key up: without it no installed copy accepts an update. The tag message becomes the release notes shown in the update window. Debug builds, `bundle.sh` bundles, and ad-hoc packaging runs keep the updater inert.
+
 ## Web
 
 `web/` is a separate crate (its own workspace) that serves the landing page and release notes at `diktafon.miho.dev`. See `web/AGENTS.md`. Validate with `cargo fmt --manifest-path web/Cargo.toml -- --check`, `cargo clippy --manifest-path web/Cargo.toml --all-targets -- -D warnings`, and `cargo test --manifest-path web/Cargo.toml`.

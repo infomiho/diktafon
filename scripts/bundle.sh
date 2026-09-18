@@ -18,6 +18,9 @@ app=target/diktafon.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 cp crates/diktafon/resources/Info.plist "$app/Contents/Info.plist"
+# A local bundle has no Sparkle framework and nothing to update to; without
+# the feed the app leaves the updater inert.
+/usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$app/Contents/Info.plist"
 mkdir -p "$app/Contents/Resources"
 cp crates/diktafon/resources/diktafon.icns "$app/Contents/Resources/diktafon.icns"
 cp THIRD_PARTY_NOTICES.md "$app/Contents/Resources/THIRD_PARTY_NOTICES.md"

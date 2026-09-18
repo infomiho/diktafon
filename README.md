@@ -64,5 +64,8 @@ open target/diktafon.app
 ## Releases
 
 Version tags publish a signed and notarized DMG with a SHA-256 checksum on the
-[releases page](https://github.com/infomiho/diktafon/releases). Maintainers set
-up the signing secrets once with `scripts/setup-release-signing.sh`.
+[releases page](https://github.com/infomiho/diktafon/releases). Installed
+copies check that page for updates once a day through Sparkle and install them
+in place. Maintainers set up the signing secrets once with
+`scripts/setup-release-signing.sh` and the update key with
+`scripts/setup-sparkle-key.sh`.

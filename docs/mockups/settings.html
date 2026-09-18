@@ -222,6 +222,13 @@
   .card .residency { margin-left: auto; font-size: 13px; color: var(--on-surface-muted); }
   .card .row { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
   .card .row .label { font-size: 13px; color: var(--on-surface-muted); }
+  .card.updates { gap: 16px; }
+  .card.updates .control-row.divided { padding-top: 16px; border-top: 1px solid var(--outline); }
+  .button {
+    height: 32px; padding: 0 12px; display: flex; align-items: center; flex-shrink: 0;
+    border: 1px solid var(--outline); border-radius: 6px; background: var(--surface-raised);
+    font-size: 13px; font-weight: 500;
+  }
   .card .row .value {
     font-family: var(--font-mono);
     font-size: 13px;
@@ -367,6 +374,25 @@
             <div class="row">
               <span class="label">Polishing model</span>
               <span class="value">s1-mini-q4_k_m</span>
+            </div>
+          </div>
+        </div>
+        <div class="field">
+          <div class="field-label">Updates</div>
+          <div class="control card updates">
+            <div class="control-row">
+              <div class="text">
+                <span class="field-label">Version 0.1.2</span>
+                <div class="help">Up to date.</div>
+              </div>
+              <div class="button">Check for updates</div>
+            </div>
+            <div class="control-row divided">
+              <div class="text">
+                <span class="field-label">Check for updates automatically</span>
+                <div class="help">Once a day. You choose when to install.</div>
+              </div>
+              <div class="switch on"><div class="thumb"></div></div>
             </div>
           </div>
         </div>

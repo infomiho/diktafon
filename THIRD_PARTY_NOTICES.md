@@ -66,6 +66,23 @@ Copyright (c) 2023-2026 The ggml authors
 - Bindings: https://github.com/utilityai/llama-cpp-rs/tree/bed81ad4ab1a6c904b11d425608e50f976d8ea62
 - llama.cpp: https://github.com/ggml-org/llama.cpp/tree/5f55650a78f92aff4d48d671423e888fac0469ff
 
+## Sparkle
+
+Sparkle 2.9.6, the framework embedded in the app bundle for in-app updates, is licensed under the MIT License.
+
+Copyright (c) 2006-2013 Andy Matuschak.
+Copyright (c) 2009-2013 Elgato Systems GmbH.
+Copyright (c) 2011-2014 Kornel Lesiński.
+Copyright (c) 2015-2017 Mayur Pawashe.
+Copyright (c) 2014 C.W. Betts.
+Copyright (c) 2014 Petroules Corporation.
+Copyright (c) 2014 Big Nerd Ranch.
+All rights reserved.
+
+Sparkle bundles bsdiff 4.3 (Copyright 2003-2005 Colin Percival, BSD-2-Clause), sais-lite (Copyright (c) 2008-2010 Yuta Mori, MIT), ed25519 (Copyright (c) 2015 Orson Peters, zlib), and SUSignatureVerifier.m (Copyright (c) 2011 Mark Hamlin, BSD-2-Clause). Their full texts are in Sparkle's license file.
+
+- Source and license: https://github.com/sparkle-project/Sparkle/blob/2.9.6/LICENSE
+
 ## Apple Foundation Models
 
 Apple Intelligence uses Apple's system-provided Foundation Model. No Apple model weights or framework binaries are redistributed by diktafon, so there is no model redistribution notice. Use remains subject to the Apple Developer Program License Agreement.

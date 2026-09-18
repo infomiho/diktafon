@@ -18,6 +18,7 @@ mod stats;
 mod statusbar;
 mod theme;
 mod transport;
+mod updater;
 mod window_lifecycle;
 
 use anyhow::{Context, Result};
@@ -346,7 +347,8 @@ fn main() -> Result<()> {
             })
             .detach();
             pill::manage(cx, dictation.clone(), levels);
-            statusbar::install(cx, &dictation, session_settings.clone());
+            let updatable = updater::start(cx);
+            statusbar::install(cx, &dictation, session_settings.clone(), updatable);
             cx.set_global(AppServices {
                 dictation,
                 hotkey: HotkeyRebind {
