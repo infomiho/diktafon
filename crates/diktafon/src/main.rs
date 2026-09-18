@@ -23,6 +23,7 @@ mod window_lifecycle;
 
 use anyhow::{Context, Result};
 use capture::Recorder;
+use config::HotkeyBehavior;
 use dictation::{Dictation, PhaseEvent};
 use diktafon_protocol::{Msg, socket_path};
 use global_hotkey::hotkey::{Code, HotKey};
@@ -359,10 +360,21 @@ fn main() -> Result<()> {
                 },
                 models: model_selection,
             });
-            println!(
-                "Ready. Hold {} to dictate, release to paste.",
-                session_settings.lock().unwrap().hotkey
-            );
+            let settings = session_settings.lock().unwrap();
+            match settings.hotkey_behavior {
+                HotkeyBehavior::Hold => {
+                    println!(
+                        "Ready. Hold {} to dictate, release to paste.",
+                        settings.hotkey
+                    )
+                }
+                HotkeyBehavior::Toggle => {
+                    println!(
+                        "Ready. Press {} to dictate, press again to paste.",
+                        settings.hotkey
+                    )
+                }
+            }
         });
     Ok(())
 }
@@ -402,16 +414,57 @@ fn control_loop(
         if event.id != hotkeys.record.load(Ordering::Relaxed) {
             continue;
         }
-        match event.state {
-            HotKeyState::Pressed => dictations.press(),
-            HotKeyState::Released => dictations.release(),
+        match hotkey_action(dictations.hotkey_behavior(), event.state) {
+            Some(HotkeyAction::Press) => dictations.press(),
+            Some(HotkeyAction::Release) => dictations.release(),
+            Some(HotkeyAction::Toggle) => dictations.toggle(),
+            None => {}
         }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum HotkeyAction {
+    Press,
+    Release,
+    Toggle,
+}
+
+/// What a hotkey transition means under the configured behavior. Toggle
+/// mode acts on key-down only, so the release that follows every press is
+/// nothing to react to.
+fn hotkey_action(behavior: HotkeyBehavior, state: HotKeyState) -> Option<HotkeyAction> {
+    match (behavior, state) {
+        (HotkeyBehavior::Hold, HotKeyState::Pressed) => Some(HotkeyAction::Press),
+        (HotkeyBehavior::Hold, HotKeyState::Released) => Some(HotkeyAction::Release),
+        (HotkeyBehavior::Toggle, HotKeyState::Pressed) => Some(HotkeyAction::Toggle),
+        (HotkeyBehavior::Toggle, HotKeyState::Released) => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toggle_mode_ignores_key_release() {
+        assert_eq!(
+            hotkey_action(HotkeyBehavior::Hold, HotKeyState::Pressed),
+            Some(HotkeyAction::Press)
+        );
+        assert_eq!(
+            hotkey_action(HotkeyBehavior::Hold, HotKeyState::Released),
+            Some(HotkeyAction::Release)
+        );
+        assert_eq!(
+            hotkey_action(HotkeyBehavior::Toggle, HotKeyState::Pressed),
+            Some(HotkeyAction::Toggle)
+        );
+        assert_eq!(
+            hotkey_action(HotkeyBehavior::Toggle, HotKeyState::Released),
+            None
+        );
+    }
 
     #[test]
     fn vad_model_materializes_and_repairs() {

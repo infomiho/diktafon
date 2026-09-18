@@ -188,6 +188,43 @@
     font-weight: 500;
   }
 
+  /* Hotkey behavior: a grouped list of two radio rows. Each row names what
+     you do and what happens, so the choice explains itself. */
+  .options {
+    margin-top: 12px;
+    border: 1px solid var(--outline);
+    border-radius: 8px;
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .option {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 12px 14px;
+    transition: background-color 120ms ease;
+  }
+  .option + .option { border-top: 1px solid var(--outline); }
+  .option:hover { background: color-mix(in srgb, var(--surface-raised) 60%, transparent); }
+  .option.on { background: var(--surface-raised); }
+  .radio {
+    width: 16px; height: 16px; border-radius: 50%; flex-shrink: 0; margin-top: 3px;
+    border: 1.5px solid var(--ring-idle); display: grid; place-items: center;
+    transition: border-color 120ms ease, background-color 120ms ease;
+  }
+  .radio::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--on-accent, #F1F2FF); transform: scale(0.25); opacity: 0; transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1), opacity 120ms ease; }
+  .option.on .radio { border-color: var(--accent); background: var(--accent); }
+  .option.on .radio::after { transform: scale(1); opacity: 1; }
+  .option .name { font-size: 14px; font-weight: 500; line-height: 22px; }
+  .option .desc { font-size: 13px; color: var(--on-surface-muted); margin-top: 2px; line-height: 20px; }
+  .option .k {
+    display: inline-flex; align-items: center; justify-content: center;
+    height: 18px; min-width: 18px; padding: 0 5px; margin: 0 1px;
+    border-radius: 4px; background: var(--surface-raised); border: 1px solid var(--outline);
+    font-size: 11px; line-height: 1; font-weight: 500; color: var(--on-surface);
+    vertical-align: middle; position: relative; top: -1px;
+  }
+  .option.on .k { background: var(--background); }
+  .option .k.sym { padding-bottom: 1px; }
+
   /* A pane subsection as a bordered card whose first row is the section
      name in eyebrow style (small uppercase, muted): the size/case/color step
      between the pane title and the field labels. */
@@ -267,12 +304,30 @@
           </div>
           <div class="switch on"><div class="thumb"></div></div>
         </div>
-        <div class="control-row">
-          <div class="text">
-            <span class="field-label">Hotkey</span>
-            <div class="help">Hold to dictate, release to paste. Click to change.</div>
+        <div>
+          <div class="control-row">
+            <div class="text">
+              <span class="field-label">Hotkey</span>
+              <div class="help">Click the keys to change.</div>
+            </div>
+            <div class="keycaps"><span class="key">⌥</span><span class="key">Space</span></div>
           </div>
-          <div class="keycaps"><span class="key">⌥</span><span class="key">Space</span></div>
+          <div class="options" role="radiogroup" aria-label="Hotkey behavior">
+            <div class="option on" role="radio" aria-checked="true">
+              <div class="radio"></div>
+              <div>
+                <div class="name">Hold to talk</div>
+                <div class="desc">Hold <span class="k sym">⌥</span><span class="k">Space</span> while you speak. Release to paste.</div>
+              </div>
+            </div>
+            <div class="option" role="radio" aria-checked="false">
+              <div class="radio"></div>
+              <div>
+                <div class="name">Press to toggle</div>
+                <div class="desc">Press <span class="k sym">⌥</span><span class="k">Space</span> to start. Press again to paste.</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

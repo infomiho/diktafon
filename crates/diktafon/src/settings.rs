@@ -4,7 +4,7 @@
 //! prompt and language apply to the next dictation, the idle-unload time
 //! when the daemon restarts.
 
-use crate::config::SessionSettings;
+use crate::config::{HotkeyBehavior, SessionSettings};
 use crate::control_line;
 use crate::statusbar::DaemonStatus;
 use crate::updater::{self, UpdateCheck};
@@ -285,8 +285,9 @@ pub struct SettingsWindow {
     /// Loaded asynchronously: the SMAppService query is a blocking XPC call.
     autostart: bool,
     sound_cues: bool,
-    /// The push-to-talk chord, in global-hotkey syntax.
+    /// The dictation chord, in global-hotkey syntax.
     hotkey: String,
+    hotkey_behavior: HotkeyBehavior,
     /// True while the hotkey control waits for the user to press a new chord.
     capturing_hotkey: bool,
     hotkey_focus: gpui::FocusHandle,
@@ -623,6 +624,7 @@ impl SettingsWindow {
             autostart: false,
             sound_cues: current.sound_cues,
             hotkey: current.hotkey.clone(),
+            hotkey_behavior: current.hotkey_behavior,
             capturing_hotkey: false,
             hotkey_focus,
             daemon_status,
@@ -666,6 +668,7 @@ impl SettingsWindow {
             idle_unload_secs,
             sound_cues: self.sound_cues,
             hotkey: self.hotkey.clone(),
+            hotkey_behavior: self.hotkey_behavior,
             transcription_model: transcription_model.clone(),
             polishing_model,
         };
@@ -844,12 +847,147 @@ impl SettingsWindow {
                     })),
                 cx,
             ))
-            .child(Self::control_row(
-                "Hotkey",
-                "Hold to record. Release to paste.",
-                self.hotkey_control(cx),
-                cx,
+            .child(
+                v_flex()
+                    .gap(px(12.))
+                    .child(Self::control_row(
+                        "Hotkey",
+                        "Click the keys to change.",
+                        self.hotkey_control(cx),
+                        cx,
+                    ))
+                    .child(self.hotkey_behavior_options(cx)),
+            )
+    }
+
+    /// The two ways the hotkey can drive a dictation, as radio rows that
+    /// name the gesture and its result with the current chord inline, so the
+    /// choice explains itself (docs/mockups/settings.html).
+    fn hotkey_behavior_options(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let caps = Self::hotkey_caps(&self.hotkey);
+        let options = [
+            (
+                HotkeyBehavior::Hold,
+                "Hold to talk",
+                "Hold",
+                "while you speak. Release to paste.",
+            ),
+            (
+                HotkeyBehavior::Toggle,
+                "Press to toggle",
+                "Press",
+                "to start. Press again to paste.",
+            ),
+        ];
+        v_flex()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(rgba(theme::SURFACE | 0xFF))
+            .overflow_hidden()
+            .children(options.into_iter().enumerate().map(
+                |(index, (behavior, name, verb, rest))| {
+                    let selected = self.hotkey_behavior == behavior;
+                    h_flex()
+                        .id(("hotkey-behavior", index))
+                        .items_start()
+                        .gap_3()
+                        .px(px(14.))
+                        .py(px(12.))
+                        .when(index > 0, |row| {
+                            row.border_t_1().border_color(cx.theme().border)
+                        })
+                        .when(selected, |row| row.bg(rgba(theme::SURFACE_RAISED | 0xFF)))
+                        .when(!selected, |row| {
+                            row.hover(|row| row.bg(rgba(theme::SURFACE_RAISED | 0x99)))
+                        })
+                        .child(Self::radio(selected))
+                        .child(
+                            v_flex()
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(22.))
+                                        .font_medium()
+                                        .child(name),
+                                )
+                                .child(
+                                    h_flex()
+                                        .mt(px(2.))
+                                        .flex_wrap()
+                                        .items_center()
+                                        .gap(px(5.))
+                                        .line_height(px(20.))
+                                        .text_size(px(13.))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(verb)
+                                        .children(Self::mini_keycaps(caps.clone(), selected))
+                                        .child(rest),
+                                ),
+                        )
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            if view.hotkey_behavior != behavior {
+                                view.hotkey_behavior = behavior;
+                                view.save(window, cx);
+                                cx.notify();
+                            }
+                        }))
+                },
             ))
+    }
+
+    /// A radio indicator: an outlined ring, filled with the accent and a
+    /// white dot when selected.
+    fn radio(selected: bool) -> impl IntoElement {
+        div()
+            .size(px(16.))
+            .mt(px(3.))
+            .flex_shrink_0()
+            .rounded_full()
+            .border_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(selected, |el| {
+                el.border_color(rgba(theme::ACCENT | 0xFF))
+                    .bg(rgba(theme::ACCENT | 0xFF))
+                    .child(
+                        div()
+                            .size(px(6.))
+                            .rounded_full()
+                            .bg(rgba(theme::TEXT_PRIMARY | 0xFF)),
+                    )
+            })
+            .when(!selected, |el| {
+                el.border_color(rgba(theme::RING_IDLE | 0xFF))
+            })
+    }
+
+    /// Keycaps sized for inline use in a description line. On a raised row
+    /// they sit on the window background so they still read as keys.
+    fn mini_keycaps(keys: Vec<String>, on_raised: bool) -> impl Iterator<Item = impl IntoElement> {
+        let background = if on_raised {
+            rgba(theme::BACKGROUND | 0xFF)
+        } else {
+            rgba(theme::SURFACE_RAISED | 0xFF)
+        };
+        keys.into_iter().map(move |key| {
+            div()
+                .h(px(18.))
+                .min_w(px(18.))
+                .px(px(5.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.))
+                .bg(background)
+                .border_1()
+                .border_color(rgba(theme::HAIRLINE | 0x22))
+                .text_size(px(11.))
+                .font_medium()
+                .text_color(rgba(theme::TEXT_PRIMARY | 0xFF))
+                .child(key)
+        })
     }
 
     /// One keycap label per chord token: modifier symbols, title-cased keys.

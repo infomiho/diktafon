@@ -5,7 +5,7 @@
 //! decided here, so the lifecycle can be read in one place.
 
 use crate::capture::{Recorder, Session};
-use crate::config::SessionSettings;
+use crate::config::{HotkeyBehavior, SessionSettings};
 use crate::dictation::PhaseEvent;
 use crate::transport::DaemonClient;
 use crate::{paste, sounds, stats};
@@ -195,6 +195,20 @@ impl Dictations {
         // An empty transcript ends like a cancel: the pill plays its quiet
         // ending, keeping the success bloom to mean words actually landed.
         self.ended(error, outcome == Outcome::Empty);
+    }
+
+    /// One key-down in toggle mode: start a dictation, or stop and paste the
+    /// one in flight.
+    pub fn toggle(&mut self) {
+        if self.live.is_some() {
+            self.release();
+        } else {
+            self.press();
+        }
+    }
+
+    pub fn hotkey_behavior(&self) -> HotkeyBehavior {
+        self.settings.lock().unwrap().hotkey_behavior
     }
 
     /// Discard the dictation in flight. Does nothing when there is none.

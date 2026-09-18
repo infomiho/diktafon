@@ -62,6 +62,17 @@ pub fn parse_hotkey(s: &str) -> Option<HotKey> {
     Some(hotkey)
 }
 
+/// How the hotkey starts and stops a dictation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HotkeyBehavior {
+    /// Hold the chord while speaking; releasing it pastes.
+    #[default]
+    Hold,
+    /// Press once to start, press again to paste; releases are ignored.
+    Toggle,
+}
+
 /// The user-editable subset, persisted as `config.json` in the data dir and
 /// edited live from the settings window; the compile-time [`CONFIG`] provides
 /// the defaults.
@@ -76,8 +87,9 @@ pub struct SessionSettings {
     pub idle_unload_secs: u64,
     /// Audible cues: mic live, cancel, error.
     pub sound_cues: bool,
-    /// Push-to-talk chord in global-hotkey syntax, e.g. "alt+space".
+    /// Dictation chord in global-hotkey syntax, e.g. "alt+space".
     pub hotkey: String,
+    pub hotkey_behavior: HotkeyBehavior,
     pub transcription_model: String,
     pub polishing_model: String,
 }
@@ -91,6 +103,7 @@ impl Default for SessionSettings {
             idle_unload_secs: 300,
             sound_cues: true,
             hotkey: "alt+space".into(),
+            hotkey_behavior: HotkeyBehavior::Hold,
             transcription_model: DEFAULT_TRANSCRIPTION_MODEL.into(),
             polishing_model: DEFAULT_POLISHING_MODEL.into(),
         }
@@ -234,6 +247,16 @@ mod tests {
         assert_eq!(settings.polishing_model, DEFAULT_POLISHING_MODEL);
         assert_eq!(settings.language, "de");
         assert_eq!(settings.apple_prompt, DEFAULT_APPLE_PROMPT);
+        assert_eq!(settings.hotkey_behavior, HotkeyBehavior::Hold);
+    }
+
+    #[test]
+    fn hotkey_behavior_round_trips_as_a_lowercase_word() {
+        let settings: SessionSettings =
+            serde_json::from_str(r#"{"hotkey_behavior":"toggle"}"#).unwrap();
+        assert_eq!(settings.hotkey_behavior, HotkeyBehavior::Toggle);
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains(r#""hotkey_behavior":"toggle""#));
     }
 
     #[test]
