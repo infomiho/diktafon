@@ -14,6 +14,8 @@ fn main() {
     println!("cargo:rerun-if-changed=swift/apple_intelligence.swift");
     println!("cargo:rerun-if-changed=swift/apple_intelligence_stub.swift");
     println!("cargo:rerun-if-changed=swift/apple_intelligence_bridge.h");
+    // Which bridge gets compiled depends on the selected developer directory.
+    println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;

@@ -12,6 +12,13 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
+# The Apple Intelligence bridge only compiles against full Xcode; with
+# xcode-select pointing at the Command Line Tools the build silently falls
+# back to the stub. Point the build at Xcode when it is installed.
+if [ -z "${DEVELOPER_DIR:-}" ] && [ -d /Applications/Xcode.app/Contents/Developer ]; then
+  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+fi
+
 cargo build --release -p diktafon -p diktafond
 
 app=target/diktafon.app

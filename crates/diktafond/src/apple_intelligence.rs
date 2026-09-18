@@ -27,6 +27,9 @@ pub enum Availability {
     DeviceNotEligible,
     NotEnabled,
     ModelNotReady,
+    /// The stub bridge: this binary was built without the Foundation
+    /// Models framework (Command Line Tools instead of full Xcode).
+    NotInThisBuild,
     Unavailable,
 }
 
@@ -38,6 +41,7 @@ impl Availability {
             -2 => Self::DeviceNotEligible,
             -3 => Self::NotEnabled,
             -4 => Self::ModelNotReady,
+            -5 => Self::NotInThisBuild,
             _ => Self::Unavailable,
         }
     }
@@ -49,6 +53,7 @@ impl Availability {
             Self::DeviceNotEligible => "This device is not eligible",
             Self::NotEnabled => "Apple Intelligence is not enabled",
             Self::ModelNotReady => "System model is not ready",
+            Self::NotInThisBuild => "Not included in this build",
             Self::Unavailable => "Unavailable",
         }
     }
@@ -140,6 +145,7 @@ mod tests {
         assert_eq!(Availability::from_code(-2), Availability::DeviceNotEligible);
         assert_eq!(Availability::from_code(-3), Availability::NotEnabled);
         assert_eq!(Availability::from_code(-4), Availability::ModelNotReady);
+        assert_eq!(Availability::from_code(-5), Availability::NotInThisBuild);
     }
 
     #[test]

@@ -4,7 +4,7 @@ public typealias ResponsePointer = UnsafeMutablePointer<AppleIntelligenceRespons
 
 @_cdecl("apple_intelligence_availability")
 public func appleIntelligenceAvailability() -> Int32 {
-    -1
+    -5
 }
 
 @_cdecl("apple_intelligence_polish")
