@@ -62,6 +62,10 @@ jobs:
         run: |
           notes=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")
           gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "$GITHUB_REF_NAME" --notes "$notes" --generate-notes
+      - name: Update Homebrew tap
+        env:
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: ./scripts/update-tap.sh "$GITHUB_REF_NAME"
       - name: Trigger site deploy
         continue-on-error: true
         env:

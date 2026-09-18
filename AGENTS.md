@@ -18,6 +18,8 @@ To cut a release: bump the workspace version, commit, tag `vX.Y.Z`, push the tag
 
 `scripts/setup-release-signing.sh` stores the Developer ID certificate and the App Store Connect API key as repo secrets once. The workflow also calls the Coolify webhook (`COOLIFY_WEBHOOK`, `COOLIFY_TOKEN`) so the tag refreshes `diktafon.miho.dev`.
 
+After publishing, the workflow runs `scripts/update-tap.sh`, which rewrites the version and sha256 of `Casks/diktafon.rb` in `infomiho/homebrew-tap` (a local checkout lives at `~/dev/homebrew-tap`) so `brew install --cask infomiho/tap/diktafon` serves the new build. It pushes with the `TAP_GITHUB_TOKEN` secret: a fine-grained personal access token with Contents read and write on that one repo, stored once with `gh secret set TAP_GITHUB_TOKEN`.
+
 The workflow also signs the DMG with the Sparkle key from the `SPARKLE_PRIVATE_KEY` secret and publishes `appcast.xml` as a release asset. Installed copies read `https://github.com/infomiho/diktafon/releases/latest/download/appcast.xml` and update themselves through the embedded Sparkle framework (`crates/diktafon/src/updater.rs`). `scripts/setup-sparkle-key.sh` creates the key, stores the secret, and writes the public key into `crates/diktafon/resources/Info.plist`. Back the private key up: without it no installed copy accepts an update. The tag message becomes the release notes shown in the update window. Debug builds, `bundle.sh` bundles, and ad-hoc packaging runs keep the updater inert.
 
 ## Web

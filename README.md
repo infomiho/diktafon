@@ -32,9 +32,14 @@ and the cleanup pass runs through llama.cpp.
 
 ## Install
 
-1. Download the latest DMG from [Releases](https://github.com/infomiho/diktafon/releases/latest).
-2. Open the DMG and drag diktafon into Applications.
-3. Launch diktafon and grant Microphone access, plus Accessibility for the paste.
+```sh
+brew install --cask infomiho/tap/diktafon
+```
+
+Or download the latest DMG from [Releases](https://github.com/infomiho/diktafon/releases/latest)
+and drag diktafon into Applications.
+
+Launch diktafon and grant Microphone access, plus Accessibility for the paste.
 
 Release downloads are signed with Developer ID and notarized by Apple.
 

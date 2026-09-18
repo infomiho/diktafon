@@ -31,6 +31,9 @@ pub fn home(releases: &[Release], fingerprint: &Fingerprint) -> String {
                         span { "Download for macOS" }
                     }
                 }
+                p .install {
+                    "or " code { "brew install --cask infomiho/tap/diktafon" }
+                }
                 p .meta {
                     @if let Some(release) = latest {
                         span { "v" (release.version()) " · " }

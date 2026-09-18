@@ -180,6 +180,23 @@ a {
   flex: none;
 }
 
+.install {
+  margin-block-start: 18px;
+  font-size: 14px;
+  color: var(--text-faint);
+}
+
+.install code {
+  padding-block: 5px;
+  padding-inline: 10px;
+  border-radius: 8px;
+  background: var(--surface-raised);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-dim);
+  user-select: all;
+}
+
 .meta {
   margin-block-start: 16px;
   font-size: 13px;
