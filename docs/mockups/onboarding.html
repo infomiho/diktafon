@@ -1,0 +1,197 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Diktafon onboarding</title>
+<style>
+  @font-face { font-family: "Chakra Petch"; src: url("../../crates/diktafon/assets/fonts/ChakraPetch-SemiBold.ttf"); font-weight: 600; }
+  :root {
+    --background: #101229;
+    --surface: #171934;
+    --surface-raised: #242849;
+    --surface-sunken: #0B0D20;
+    --on-surface: #F1F2FF;
+    --on-surface-muted: #AAACD6;
+    --faint: #7F84A2;
+    --muted: var(--on-surface-muted);
+    --outline: rgba(155, 157, 255, 0.13);
+    --accent: #9843C0;
+    --on-accent: #F1F2FF;
+    --ring-idle: #8E90BE;
+    --switch-track: #5A6086;
+    --status-live: #CE5CFF;
+    --status-ok: #34D399;
+    --raised-hover: #2B2F51;
+    --accent-hover: #A853D1;
+    --signal-red: #FF3B4D;
+    --focus-ring: var(--accent);
+    --outline-hover: rgba(155, 157, 255, 0.35);
+    --font-display: "Chakra Petch", sans-serif;
+    --font-ui: system-ui, sans-serif;
+    --font-mono: "Menlo", monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #000; display: flex; flex-direction: column; align-items: center;
+    gap: 40px; padding: 48px 0; font-family: var(--font-ui);
+    color: var(--on-surface); font-size: 15px; line-height: 1.5;
+  }
+  .caption { width: 520px; font-size: 13px; color: var(--faint); margin-bottom: -28px; }
+  .caption b { color: var(--on-surface-muted); font-weight: 500; }
+  /* A window of its own: on first run there is nothing behind it, and it
+     closes like any window. */
+  .panel {
+    position: relative; width: 520px; padding: 48px 32px 32px; border-radius: 8px;
+    background: var(--background); border: 1px solid var(--outline);
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  .traffic { position: absolute; top: 16px; left: 16px; display: flex; gap: 8px; }
+  .traffic span { width: 12px; height: 12px; border-radius: 50%; background: #43465e; }
+  .traffic span:first-child { background: #ff5f57; }
+  .mark { width: 64px; height: 36px; margin-bottom: 8px; }
+  .panel h1 { font-family: var(--font-display); font-size: 24px; font-weight: 600; line-height: 1.2; }
+  .panel p { font-size: 15px; color: var(--on-surface-muted); max-width: 46ch; }
+  /* The action owns the width: it is the only thing to press. */
+  .panel .button.primary { width: 100%; justify-content: center; margin-top: 8px; }
+  .steps { display: flex; gap: 8px; align-items: center; justify-content: center; margin-top: 4px; }
+  /* Accent belongs to the action, not to a progress read-out. */
+  .step { width: 8px; height: 8px; border-radius: 50%; background: var(--ring-idle); opacity: 0.4; }
+  .step.on { opacity: 1; background: var(--on-surface); }
+  .k {
+    display: inline-flex; align-items: center; justify-content: center;
+    height: 20px; min-width: 20px; padding: 0 5px; margin: 0 1px;
+    border-radius: 4px; background: var(--surface-raised); border: 1px solid var(--outline);
+    font-size: 12px; line-height: 1; font-weight: 500; color: var(--on-surface); vertical-align: middle;
+  }
+  .k.sym { padding-bottom: 1px; }
+  /* Permissions: one grouped list. The dot leads the name, the state opens
+     the description, and the action is the only thing on the right. */
+  .perm-list { border: 1px solid var(--outline); border-radius: 8px; overflow: hidden; }
+  .perm { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 12px 16px; }
+  .perm + .perm { border-top: 1px solid var(--outline); }
+  .perm-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .perm-name { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 500; }
+  /* State badge: a pill in the state's semantic color, green/grey/red. */
+  .badge { display: inline-flex; align-items: center; gap: 8px; height: 24px; padding: 0 8px; border-radius: 12px; font-size: 13px; font-weight: 500; color: var(--on-surface-muted); background: var(--surface-raised); border: 1px solid var(--outline); }
+  .badge .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .badge.granted .dot { background: var(--status-ok); }
+  .badge.pending .dot { background: var(--ring-idle); }
+  .badge.missing .dot { background: var(--signal-red); }
+  .perm .help { margin: 0; font-size: 13px; color: var(--on-surface-muted); }
+  .sheet .button { border-color: var(--outline-hover); }
+  .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .close {
+    width: 28px; height: 28px; margin-right: -6px; border-radius: 6px; flex-shrink: 0;
+    display: grid; place-items: center; color: var(--faint); cursor: pointer;
+    transition: background-color 120ms ease, color 120ms ease;
+  }
+  .close:hover { background: var(--surface-raised); color: var(--on-surface); }
+
+  .window { position: relative; }
+  .scrim {
+    position: absolute; inset: 0; background: rgba(11, 13, 32, 0.5);
+    display: flex; align-items: center; justify-content: center;
+    animation: scrim-in 160ms ease-out both;
+  }
+  .sheet {
+    width: 600px; padding: 24px; border-radius: 8px;
+    background: var(--surface); border: 1px solid var(--outline);
+    display: flex; flex-direction: column; gap: 16px;
+    animation: sheet-in 150ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  }
+  .sheet-title { font-family: var(--font-display); font-size: 24px; font-weight: 600; line-height: 1.2; letter-spacing: 0.01em; }
+  .button.primary { background: var(--accent); border-color: transparent; color: var(--on-accent); }
+  @keyframes scrim-in { from { opacity: 0; } }
+  @keyframes sheet-in { from { opacity: 0; transform: scale(0.97); } }
+  @media (prefers-reduced-motion: reduce) { .sheet { animation: scrim-in 160ms ease-out both; } }
+
+  .button {
+    height: 40px; padding: 0 16px; display: flex; align-items: center; flex-shrink: 0;
+    border: 1px solid var(--outline); border-radius: 6px; background: var(--surface-raised);
+    font-size: 15px; font-weight: 500; cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease, transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  .button:hover { background: var(--raised-hover); border-color: var(--outline-hover); }
+  .button:active { transform: scale(0.97); }
+  .button.primary:hover { background: var(--accent-hover); border-color: transparent; }
+</style>
+</head>
+<body>
+
+  <div class="caption"><b>1.</b> The only screen with the mark.</div>
+  <div class="panel">
+    <div class="traffic"><span></span><span></span><span></span></div>
+      <img class="mark" src="../../assets/diktafon-mark-flat.svg" width="64" height="36" alt="">
+      <h1>Welcome to diktafon</h1>
+      <p>Diktafon needs two permissions from macOS. Dictation runs on this Mac and nothing is uploaded.</p>
+      <div class="button primary">Get started</div>
+    <div class="steps"><span class="step on"></span><span class="step"></span><span class="step"></span></div>
+  </div>
+
+  <div class="caption"><b>2.</b> No mark from here on; the title carries the screen.</div>
+  <div class="panel">
+    <div class="traffic"><span></span><span></span><span></span></div>
+      <h1>Allow the microphone</h1>
+      <p>Diktafon uses the microphone to record your dictation.</p>
+      <div class="perm-list">
+        <div class="perm">
+          <div class="perm-text">
+            <div class="perm-name">Microphone<span class="badge pending"><span class="dot"></span>Not asked</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="button primary">Allow microphone</div>
+    <div class="steps"><span class="step"></span><span class="step on"></span><span class="step"></span></div>
+  </div>
+
+  <div class="caption"><b>2, granted.</b></div>
+  <div class="panel">
+    <div class="traffic"><span></span><span></span><span></span></div>
+      <h1>Allow the microphone</h1>
+      <p>Diktafon uses the microphone to record your dictation.</p>
+      <div class="perm-list">
+        <div class="perm">
+          <div class="perm-text">
+            <div class="perm-name">Microphone<span class="badge granted"><span class="dot"></span>Granted</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="button primary">Continue</div>
+    <div class="steps"><span class="step"></span><span class="step on"></span><span class="step"></span></div>
+  </div>
+
+  <div class="caption"><b>3.</b> macOS keeps this one behind a switch.</div>
+  <div class="panel">
+    <div class="traffic"><span></span><span></span><span></span></div>
+      <h1>Allow Accessibility</h1>
+      <p>Diktafon uses Accessibility to paste text into other apps.</p>
+      <div class="perm-list">
+        <div class="perm">
+          <div class="perm-text">
+            <div class="perm-name">Accessibility<span class="badge missing"><span class="dot"></span>Not granted</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="button primary">Open System Settings</div>
+    <div class="steps"><span class="step"></span><span class="step"></span><span class="step on"></span></div>
+  </div>
+
+  <div class="caption"><b>3, granted.</b> The last screen starts the app.</div>
+  <div class="panel">
+    <div class="traffic"><span></span><span></span><span></span></div>
+      <h1>Allow Accessibility</h1>
+      <p>Diktafon uses Accessibility to paste text into other apps.</p>
+      <div class="perm-list">
+        <div class="perm">
+          <div class="perm-text">
+            <div class="perm-name">Accessibility<span class="badge granted"><span class="dot"></span>Granted</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="button primary">Start dictating</div>
+    <div class="steps"><span class="step"></span><span class="step"></span><span class="step on"></span></div>
+  </div>
+
+</body>
+</html>

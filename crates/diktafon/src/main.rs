@@ -186,6 +186,14 @@ fn main() -> Result<()> {
     {
         loaded_settings.save()?;
     }
+    // Before the daemon or the recorder exist: opening the input device with
+    // an undecided microphone grant is what makes macOS deny it without ever
+    // asking, and from then on nothing can prompt.
+    let microphone = permissions::ensure_microphone_access();
+    if microphone != permissions::MicrophoneAccess::Granted {
+        eprintln!("microphone access is {microphone:?}; dictation will hear nothing");
+    }
+
     let session_settings = Arc::new(std::sync::Mutex::new(loaded_settings));
     let (phase_tx, phase_rx) = futures::channel::mpsc::unbounded::<PhaseEvent>();
     let daemon = DaemonClient::spawn(

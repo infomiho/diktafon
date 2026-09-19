@@ -68,15 +68,39 @@ impl Status {
     }
 }
 
+/// Settles the microphone grant before anything opens the device. Touching
+/// the microphone while macOS has no decision on file makes it record a
+/// denial silently, and every later request then returns that denial
+/// without ever showing a prompt; the app looks like it simply never asked.
+/// Blocks on the user's answer, because the whole point is to have one
+/// before the first capture.
+pub fn ensure_microphone_access() -> MicrophoneAccess {
+    let status = microphone();
+    if status != MicrophoneAccess::NotAsked {
+        return status;
+    }
+    let (answered, answer) = std::sync::mpsc::channel();
+    let media = unsafe { AVMediaTypeAudio }.expect("AVMediaTypeAudio missing");
+    let handler = block2::RcBlock::new(move |granted: objc2::runtime::Bool| {
+        let _ = answered.send(granted.as_bool());
+    });
+    unsafe { AVCaptureDevice::requestAccessForMediaType_completionHandler(media, &handler) };
+    // A person has to read a system prompt, so the wait is generous; giving
+    // up only means carrying on without an answer.
+    match answer.recv_timeout(std::time::Duration::from_secs(120)) {
+        Ok(true) => MicrophoneAccess::Granted,
+        Ok(false) => MicrophoneAccess::Denied,
+        Err(_) => microphone(),
+    }
+}
+
 /// Raises the system microphone prompt the first time, and otherwise only
 /// reports. Launching must never open System Settings by itself: that threw
 /// the user into a window they never asked for, on every launch. The
 /// Permissions UI owns everything past the first ask.
 pub fn check_at_launch() -> Status {
     let status = Status::read();
-    if status.microphone == MicrophoneAccess::NotAsked {
-        request_microphone();
-    } else if status.microphone == MicrophoneAccess::Denied {
+    if status.microphone == MicrophoneAccess::Denied {
         eprintln!("microphone access is denied; grant it in Settings > Advanced > Permissions");
     }
     if !status.accessibility {
