@@ -102,10 +102,6 @@ const DAEMON_POLL: std::time::Duration = std::time::Duration::from_millis(750);
 /// How often the Advanced pane re-reads the macOS grants, so a switch
 /// flipped in System Settings shows up while the sheet is open.
 const PERMISSIONS_POLL: std::time::Duration = std::time::Duration::from_secs(1);
-/// One control height for the whole window: the kit's Large inputs and
-/// selects are 40px, but its Large button keeps the 32px Medium height, so
-/// the button gets the height explicitly to stay coherent.
-const CONTROL_HEIGHT: gpui::Pixels = px(40.);
 /// ISO 639-1 codes the language dropdown offers; a configured code outside
 /// this list is appended so it stays selectable.
 const LANGUAGES: &[(&str, &str)] = &[
@@ -890,7 +886,7 @@ impl SettingsWindow {
         let theme = cx.theme();
         h_flex()
             .id(entry.title())
-            .h(CONTROL_HEIGHT)
+            .h(theme::CONTROL_HEIGHT)
             .px_3()
             .gap_3()
             .rounded_lg()
@@ -1610,7 +1606,7 @@ impl SettingsWindow {
                     Button::new("check-for-updates")
                         .label(action)
                         .outline()
-                        .h(CONTROL_HEIGHT)
+                        .h(theme::CONTROL_HEIGHT)
                         .on_click(|_, _, cx| updater::check_for_updates(cx)),
                 )
             });
@@ -1704,7 +1700,7 @@ impl SettingsWindow {
                 Button::new("review-permissions")
                     .label("Review…")
                     .outline()
-                    .h(CONTROL_HEIGHT)
+                    .h(theme::CONTROL_HEIGHT)
                     .on_click(cx.listener(|view, _, window, cx| {
                         view.permissions_sheet_open = true;
                         view.permissions_focus.focus(window, cx);

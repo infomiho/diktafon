@@ -363,7 +363,7 @@ impl Render for Onboarding {
                         Button::new("onboarding-action")
                             .label(action_label(self.step, self.status))
                             .primary()
-                            .h(px(40.))
+                            .h(theme::CONTROL_HEIGHT)
                             .w_full()
                             .on_click(cx.listener(|view, _, window, cx| view.act(window, cx))),
                     )

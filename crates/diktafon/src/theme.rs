@@ -56,6 +56,11 @@ const RAISED_ACTIVE: u32 = 0x1D213F00;
 /// window ground at track size, so it gets its own clearly lighter step.
 const SWITCH_TRACK: u32 = 0x5A608600;
 
+/// One height for every control in every window. The kit's Large inputs and
+/// selects are 40px, but its Large button keeps the 32px Medium height, so
+/// buttons take this explicitly to stay coherent.
+pub const CONTROL_HEIGHT: gpui::Pixels = gpui::px(40.);
+
 /// The display face for titles, embedded via [`install_fonts`] so the
 /// bundle needs no installed fonts. Body text is the system font; Menlo
 /// (always present on macOS) covers mono readouts.

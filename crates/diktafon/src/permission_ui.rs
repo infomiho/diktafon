@@ -8,18 +8,15 @@ use gpui_component::button::Button;
 use gpui_component::label::Label;
 use gpui_component::{ActiveTheme, StyledExt, h_flex, v_flex};
 
-/// One height for every control in a window; mirrors settings.
-const CONTROL_HEIGHT: gpui::Pixels = px(40.);
-
 /// One permission as the UI shows it.
 pub struct PermissionRow {
     id: &'static str,
     name: &'static str,
-    purpose: &'static str,
+    /// Absent on a compact row, whose screen has already explained itself.
+    purpose: Option<&'static str>,
     state: &'static str,
     dot: Dot,
     action: Option<(&'static str, Action)>,
-    style: RowStyle,
 }
 
 #[derive(Clone, Copy)]
@@ -62,6 +59,10 @@ impl RowStyle {
     fn full(self) -> bool {
         self == RowStyle::Full
     }
+
+    fn purpose(self, text: &'static str) -> Option<&'static str> {
+        self.full().then_some(text)
+    }
 }
 
 pub fn microphone_row(status: permissions::Status, style: RowStyle) -> PermissionRow {
@@ -81,11 +82,10 @@ pub fn microphone_row(status: permissions::Status, style: RowStyle) -> Permissio
     PermissionRow {
         id: "permission-microphone",
         name: "Microphone",
-        purpose: "Records your voice while you dictate.",
+        purpose: style.purpose("Records your voice while you dictate."),
         state,
         dot,
         action: action.filter(|_| style.full()),
-        style,
     }
 }
 
@@ -93,7 +93,7 @@ pub fn accessibility_row(status: permissions::Status, style: RowStyle) -> Permis
     PermissionRow {
         id: "permission-accessibility",
         name: "Accessibility",
-        purpose: "Pastes the text where you are typing.",
+        purpose: style.purpose("Pastes the text where you are typing."),
         state: if status.accessibility {
             "Granted"
         } else {
@@ -106,7 +106,6 @@ pub fn accessibility_row(status: permissions::Status, style: RowStyle) -> Permis
         },
         action: (!status.accessibility && style.full())
             .then_some(("Request access", Action::RequestAccessibility)),
-        style,
     }
 }
 
@@ -175,9 +174,9 @@ fn permission_row(row: PermissionRow, divided: bool, cx: &App) -> impl IntoEleme
                         .child(Label::new(row.name).font_medium())
                         .child(badge),
                 )
-                .when(row.style.full(), |text| {
+                .when_some(row.purpose, |text, purpose| {
                     text.child(
-                        Label::new(row.purpose)
+                        Label::new(purpose)
                             .text_sm()
                             .text_color(cx.theme().muted_foreground),
                     )
@@ -189,7 +188,7 @@ fn permission_row(row: PermissionRow, divided: bool, cx: &App) -> impl IntoEleme
                     Button::new(row.id)
                         .label(label)
                         .outline()
-                        .h(CONTROL_HEIGHT)
+                        .h(theme::CONTROL_HEIGHT)
                         .on_click(move |_, _, _| action.run()),
                 ),
             )
