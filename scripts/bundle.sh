@@ -25,6 +25,13 @@ app=target/diktafon.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 cp crates/diktafon/resources/Info.plist "$app/Contents/Info.plist"
+# macOS files a permission against the bundle id AND the code signature. A
+# local build is signed with a development certificate, the released app with
+# Developer ID, so sharing one bundle id means one of them always reads its
+# own grant as denied. Local builds get their own id and name instead.
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.infomiho.diktafon.dev" "$app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleName diktafon (dev)" "$app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName diktafon (dev)" "$app/Contents/Info.plist"
 mkdir -p "$app/Contents/Resources"
 cp crates/diktafon/resources/diktafon.icns "$app/Contents/Resources/diktafon.icns"
 cp THIRD_PARTY_NOTICES.md "$app/Contents/Resources/THIRD_PARTY_NOTICES.md"

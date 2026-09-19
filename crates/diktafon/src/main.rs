@@ -320,7 +320,7 @@ fn main() -> Result<()> {
                 gpui::KeyBinding::new("cmd-q", Quit, None),
                 gpui::KeyBinding::new("cmd-w", CloseWindow, None),
             ]);
-            permissions::check_at_launch(|| cx.activate(true));
+            let _launch_permissions = permissions::check_at_launch();
             let dictation = Dictation::spawn(cx, phase_rx);
             let escape_manager = manager.clone();
             // The Carbon hotkey manager lives on this thread; register Escape

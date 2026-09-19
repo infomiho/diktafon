@@ -68,31 +68,21 @@ impl Status {
     }
 }
 
-/// `activate` brings the app forward before a prompt is raised: diktafon
-/// launches as a background agent with no window, and a TCC prompt from one
-/// can open behind whatever the user is looking at, which reads as no
-/// prompt at all.
-pub fn check_at_launch(activate: impl FnOnce()) {
-    let microphone = microphone();
-    if microphone != MicrophoneAccess::Granted || !accessibility_granted() {
-        activate();
+/// Raises the system microphone prompt the first time, and otherwise only
+/// reports. Launching must never open System Settings by itself: that threw
+/// the user into a window they never asked for, on every launch. The
+/// Permissions UI owns everything past the first ask.
+pub fn check_at_launch() -> Status {
+    let status = Status::read();
+    if status.microphone == MicrophoneAccess::NotAsked {
+        request_microphone();
+    } else if status.microphone == MicrophoneAccess::Denied {
+        eprintln!("microphone access is denied; grant it in Settings > Advanced > Permissions");
     }
-    match microphone {
-        MicrophoneAccess::NotAsked => request_microphone(),
-        MicrophoneAccess::Denied => {
-            eprintln!(
-                "microphone access is denied; enable it in System Settings > Privacy & Security > Microphone"
-            );
-            open_privacy_pane_from_bundle(PrivacyPane::Microphone);
-        }
-        MicrophoneAccess::Granted => {}
+    if !status.accessibility {
+        eprintln!("Accessibility permission missing; dictated text cannot be pasted");
     }
-    if !accessibility_granted() {
-        eprintln!(
-            "Accessibility permission missing; grant it in System Settings > Privacy & Security > Accessibility so dictated text can be pasted"
-        );
-        open_privacy_pane_from_bundle(PrivacyPane::Accessibility);
-    }
+    status
 }
 
 pub fn microphone() -> MicrophoneAccess {
@@ -167,16 +157,6 @@ pub fn open_privacy_pane(pane: PrivacyPane) {
             pane.anchor()
         ))
         .spawn();
-}
-
-/// Only from the app bundle: that is where first-run happens, and terminal
-/// dev runs should not have System Settings popping up on every start.
-fn open_privacy_pane_from_bundle(pane: PrivacyPane) {
-    let in_bundle = std::env::current_exe()
-        .is_ok_and(|exe| exe.to_string_lossy().contains(".app/Contents/MacOS"));
-    if in_bundle {
-        open_privacy_pane(pane);
-    }
 }
 
 #[cfg(test)]
