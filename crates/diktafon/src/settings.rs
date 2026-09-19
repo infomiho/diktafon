@@ -6,15 +6,16 @@
 
 use crate::config::{HotkeyBehavior, SessionSettings};
 use crate::control_line;
+use crate::permissions::{self, MicrophoneAccess, PrivacyPane};
 use crate::statusbar::DaemonStatus;
 use crate::updater::{self, UpdateCheck};
 use crate::{autostart, statusbar, theme};
 use chrono::{Datelike, Local, NaiveDate};
 use diktafon_protocol::HistoryEntry;
 use gpui::{
-    App, AppContext, Bounds, ClipboardItem, Context, Div, Entity, ParentElement, Render,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, div, point,
-    prelude::*, px, relative, rems, rgba, size,
+    Animation, AnimationExt, App, AppContext, Bounds, ClipboardItem, Context, Div, Entity,
+    ParentElement, Render, SharedString, TitlebarOptions, Window, WindowBounds, WindowHandle,
+    WindowOptions, div, point, prelude::*, px, relative, rems, rgba, size,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::form::{Form, field, v_form};
@@ -98,6 +99,9 @@ fn open_third_party_notices() -> std::io::Result<()> {
 const WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(720.), px(500.));
 /// How often the open settings window re-reads the daemon's status file.
 const DAEMON_POLL: std::time::Duration = std::time::Duration::from_millis(750);
+/// How often the Advanced pane re-reads the macOS grants, so a switch
+/// flipped in System Settings shows up while the sheet is open.
+const PERMISSIONS_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 /// One control height for the whole window: the kit's Large inputs and
 /// selects are 40px, but its Large button keeps the 32px Medium height, so
 /// the button gets the height explicitly to stay coherent.
@@ -147,6 +151,41 @@ fn microphone_options(
     }
     let selected = names.iter().position(|name| name == current).unwrap_or(0);
     (names, labels, selected)
+}
+
+/// One permission as the sheet shows it.
+struct PermissionRow {
+    id: &'static str,
+    name: &'static str,
+    purpose: &'static str,
+    state: &'static str,
+    dot: Dot,
+    action: Option<(&'static str, Action)>,
+}
+
+#[derive(Clone, Copy)]
+enum Dot {
+    Granted,
+    Pending,
+    Missing,
+}
+
+/// What a permission row's button does.
+#[derive(Clone, Copy)]
+enum Action {
+    RequestMicrophone,
+    OpenMicrophonePane,
+    RequestAccessibility,
+}
+
+impl Action {
+    fn run(self) {
+        match self {
+            Action::RequestMicrophone => permissions::request_microphone(),
+            Action::OpenMicrophonePane => permissions::open_privacy_pane(PrivacyPane::Microphone),
+            Action::RequestAccessibility => permissions::request_accessibility(),
+        }
+    }
 }
 
 const IDLE_OPTIONS: &[(u64, &str)] = &[
@@ -325,6 +364,12 @@ pub struct SettingsWindow {
     hotkey_focus: gpui::FocusHandle,
     /// Cached at open: reading it does file IO and must not run per render.
     daemon_status: DaemonStatus,
+    /// Polled while the Advanced pane shows; the sheet reads it per render.
+    permissions: permissions::Status,
+    permissions_sheet_open: bool,
+    /// Focused while the sheet is open, so Escape reaches it and closing
+    /// hands focus back to the pane.
+    permissions_focus: gpui::FocusHandle,
     /// Reloaded when the History section is entered.
     history: History,
     /// The design's search well; drives the history filter.
@@ -427,6 +472,7 @@ impl SettingsWindow {
 
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
+        let permissions_focus = cx.focus_handle();
 
         let hotkey_focus = cx.focus_handle();
         cx.on_focus_out(&hotkey_focus, window, |view, _, _, cx| {
@@ -614,6 +660,33 @@ impl SettingsWindow {
         })
         .detach();
 
+        cx.spawn_in(window, async move |view, cx| {
+            loop {
+                cx.background_executor().timer(PERMISSIONS_POLL).await;
+                let showing =
+                    view.read_with(cx, |view: &Self, _| view.section == Section::Advanced);
+                match showing {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(_) => return,
+                }
+                let status = cx
+                    .background_executor()
+                    .spawn(async { permissions::Status::read() })
+                    .await;
+                let updated = view.update(cx, |view: &mut Self, cx| {
+                    if view.permissions != status {
+                        view.permissions = status;
+                        cx.notify();
+                    }
+                });
+                if updated.is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
+
         // Sparkle reports its findings whenever a check finishes, including
         // the automatic one at launch, so the Updates card re-renders on it.
         if let Some(status) = updater::status(cx) {
@@ -704,6 +777,9 @@ impl SettingsWindow {
             capturing_hotkey: false,
             hotkey_focus,
             daemon_status,
+            permissions: permissions::Status::read(),
+            permissions_sheet_open: false,
+            permissions_focus: permissions_focus.clone(),
             history,
             history_search,
             focus_handle,
@@ -883,10 +959,11 @@ impl SettingsWindow {
     /// the right; the layout for switches and static values.
     fn control_row(
         label: &'static str,
-        description: &'static str,
+        description: impl Into<SharedString>,
         control: impl IntoElement,
         cx: &App,
     ) -> impl IntoElement {
+        let description: SharedString = description.into();
         h_flex()
             .justify_between()
             .items_center()
@@ -1441,6 +1518,199 @@ impl SettingsWindow {
         )
     }
 
+    fn close_permissions_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.permissions_sheet_open = false;
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
+    /// The Permissions sheet: a backdrop over the whole window with a
+    /// centered card holding both grants, their state, and the one action
+    /// that fixes each. It reads the polled status, so it updates live.
+    fn permissions_sheet(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let card = v_flex()
+            .id("permissions-sheet")
+            // Clicks on the card stay on the card; only the backdrop closes.
+            .occlude()
+            .track_focus(&self.permissions_focus)
+            .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    view.close_permissions_sheet(window, cx);
+                }
+            }))
+            .w(px(600.))
+            .p_6()
+            .gap_4()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(rgba(theme::SURFACE | 0xFF))
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .font_family(theme::FONT_DISPLAY)
+                            .text_2xl()
+                            .font_semibold()
+                            .child("Permissions"),
+                    )
+                    .child(
+                        // A 28px square target; the kit's small ghost button
+                        // is only as big as its glyph.
+                        div()
+                            .id("close-permissions")
+                            .size(px(28.))
+                            .mr(px(-6.))
+                            .rounded_md()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(rgba(theme::TEXT_FAINT | 0xFF))
+                            .hover(|el| {
+                                el.bg(rgba(theme::SURFACE_RAISED | 0xFF))
+                                    .text_color(rgba(theme::TEXT_PRIMARY | 0xFF))
+                            })
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.close_permissions_sheet(window, cx)
+                            }))
+                            .child(Icon::new(IconName::WindowClose).size_4()),
+                    ),
+            )
+            .child(Self::permission_list(self.permissions, cx));
+        let backdrop = div()
+            .id("permissions-backdrop")
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(cx.theme().overlay)
+            .on_click(cx.listener(|view, _, window, cx| view.close_permissions_sheet(window, cx)))
+            .child(card);
+        if cx.reduce_motion() {
+            backdrop.into_any_element()
+        } else {
+            backdrop
+                .with_animation(
+                    "permissions-sheet-in",
+                    Animation::new(std::time::Duration::from_millis(150))
+                        .with_easing(gpui::ease_out_quint()),
+                    |layer, delta| layer.opacity(delta),
+                )
+                .into_any_element()
+        }
+    }
+
+    fn permission_list(status: permissions::Status, cx: &App) -> impl IntoElement {
+        let (state, dot, action) = match status.microphone {
+            MicrophoneAccess::Granted => ("Granted", Dot::Granted, None),
+            MicrophoneAccess::NotAsked => (
+                "Not asked",
+                Dot::Pending,
+                Some(("Request access", Action::RequestMicrophone)),
+            ),
+            MicrophoneAccess::Denied => (
+                "Denied",
+                Dot::Missing,
+                Some(("Open System Settings", Action::OpenMicrophonePane)),
+            ),
+        };
+        let microphone = PermissionRow {
+            id: "permission-microphone",
+            name: "Microphone",
+            purpose: "Records your voice while you dictate.",
+            state,
+            dot,
+            action,
+        };
+        let accessibility = PermissionRow {
+            id: "permission-accessibility",
+            name: "Accessibility",
+            purpose: "Pastes the text where you are typing.",
+            state: if status.accessibility {
+                "Granted"
+            } else {
+                "Not granted"
+            },
+            dot: if status.accessibility {
+                Dot::Granted
+            } else {
+                Dot::Missing
+            },
+            action: (!status.accessibility)
+                .then_some(("Request access", Action::RequestAccessibility)),
+        };
+        v_flex()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().border)
+            .overflow_hidden()
+            .child(Self::permission_row(microphone, false, cx))
+            .child(Self::permission_row(accessibility, true, cx))
+    }
+
+    fn permission_row(row: PermissionRow, divided: bool, cx: &App) -> impl IntoElement {
+        let color = match row.dot {
+            Dot::Granted => theme::SIGNAL_GREEN,
+            Dot::Pending => theme::RING_IDLE,
+            Dot::Missing => theme::SIGNAL_RED,
+        };
+        let badge = h_flex()
+            .h(px(24.))
+            .px_2()
+            .gap_2()
+            .items_center()
+            .rounded_full()
+            .bg(rgba(theme::SURFACE_RAISED | 0xFF))
+            .border_1()
+            .border_color(cx.theme().border)
+            .text_sm()
+            .font_medium()
+            .text_color(cx.theme().muted_foreground)
+            .child(div().size(px(8.)).rounded_full().bg(rgba(color | 0xFF)))
+            .child(row.state);
+        h_flex()
+            .items_center()
+            .justify_between()
+            .gap_6()
+            .px_4()
+            .py_3()
+            .when(divided, |el| {
+                el.border_t_1().border_color(cx.theme().border)
+            })
+            .child(
+                v_flex()
+                    .gap_1()
+                    .min_w_0()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(Label::new(row.name).font_medium())
+                            .child(badge),
+                    )
+                    .child(
+                        Label::new(row.purpose)
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground),
+                    ),
+            )
+            .when_some(row.action, |el, (label, action)| {
+                el.child(
+                    div().flex_shrink_0().child(
+                        Button::new(row.id)
+                            .label(label)
+                            .outline()
+                            .h(CONTROL_HEIGHT)
+                            .on_click(move |_, _, _| action.run()),
+                    ),
+                )
+            })
+    }
+
     /// The running version with the outcome of Sparkle's last check, a button
     /// that opens Sparkle's window, and the automatic-check switch. A build
     /// that does not update itself shows only the version.
@@ -1481,6 +1751,7 @@ impl SettingsWindow {
                     Button::new("check-for-updates")
                         .label(action)
                         .outline()
+                        .h(CONTROL_HEIGHT)
                         .on_click(|_, _, cx| updater::check_for_updates(cx)),
                 )
             });
@@ -1568,6 +1839,20 @@ impl SettingsWindow {
     fn advanced_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_8()
+            .child(Self::control_row(
+                "Permissions",
+                self.permissions.summary(),
+                Button::new("review-permissions")
+                    .label("Review…")
+                    .outline()
+                    .h(CONTROL_HEIGHT)
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        view.permissions_sheet_open = true;
+                        view.permissions_focus.focus(window, cx);
+                        cx.notify();
+                    })),
+                cx,
+            ))
             .child(
                 Self::form().child(
                     field()
@@ -1759,6 +2044,7 @@ impl Render for SettingsWindow {
 
         h_flex()
             .size_full()
+            .relative()
             .track_focus(&self.focus_handle)
             .bg(cx.theme().background)
             .on_action(cx.listener(|view, _: &crate::CloseWindow, window, cx| {
@@ -1793,6 +2079,9 @@ impl Render for SettingsWindow {
                             .child(pane),
                     ),
             )
+            .when(self.permissions_sheet_open, |el| {
+                el.child(self.permissions_sheet(cx))
+            })
     }
 }
 

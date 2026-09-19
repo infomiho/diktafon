@@ -7,6 +7,7 @@
 use crate::capture::{Recorder, Session};
 use crate::config::{HotkeyBehavior, SessionSettings};
 use crate::dictation::PhaseEvent;
+use crate::permissions;
 use crate::transport::DaemonClient;
 use crate::{paste, sounds, stats};
 use diktafon_protocol::Msg;
@@ -26,6 +27,9 @@ enum Outcome {
     Pasted,
     /// Nothing to paste: silence, or too little speech to transcribe.
     Empty,
+    /// The input delivered only digital silence: no permission, or a
+    /// device that is muted or gone.
+    NoAudio,
     PasteFailed,
     TranscriptionFailed,
 }
@@ -35,9 +39,21 @@ impl Outcome {
         match self {
             Outcome::Pasted => "pasted",
             Outcome::Empty => "empty",
+            Outcome::NoAudio => "no_audio",
             Outcome::PasteFailed | Outcome::TranscriptionFailed => "error",
         }
     }
+}
+
+/// Whether a dictation that produced nothing should be reported as a
+/// failure. Digital silence plus a missing grant is the case worth naming:
+/// with the grant in hand a device can idle at exact zeros for its own
+/// reasons, and a quiet ending beats crying wolf on every empty take.
+fn missing_microphone_access(
+    heard: bool,
+    microphone: crate::permissions::MicrophoneAccess,
+) -> bool {
+    !heard && microphone != crate::permissions::MicrophoneAccess::Granted
 }
 
 /// What the daemon's answer means for the user: the text to surface, and how
@@ -179,7 +195,7 @@ impl Dictations {
         // slow mics don't eat first words. A queued release is handled next.
         if !session.wait_until_live(MIC_READY_TIMEOUT) {
             eprintln!("microphone produced no samples; is another app holding it?");
-            session.stop();
+            let _ = session.stop();
             // Before the blocking finish() below: on a cold daemon that call
             // can sit for up to FINISH_TIMEOUT, and the cue is the only
             // feedback the user gets in the meantime.
@@ -208,15 +224,25 @@ impl Dictations {
             return;
         };
         let stopped_at = Instant::now();
-        live.session.stop();
+        let captured = live.session.stop();
         self.emit(PhaseEvent::RecordingStopped);
 
-        let (error, outcome) = classify(self.daemon.finish(), |text| {
+        let (mut error, mut outcome) = classify(self.daemon.finish(), |text| {
             let failure = self.paste(text);
             println!("stop-to-paste: {:.2?}", stopped_at.elapsed());
             failure
         });
-        if outcome == Outcome::TranscriptionFailed {
+        if outcome == Outcome::Empty
+            && missing_microphone_access(captured.heard_audio, permissions::microphone())
+        {
+            eprintln!(
+                "the microphone delivered only silence and access is not granted; \
+                 grant it in Settings > Advanced > Permissions"
+            );
+            error = Some("Microphone access needed".to_string());
+            outcome = Outcome::NoAudio;
+        }
+        if matches!(outcome, Outcome::TranscriptionFailed | Outcome::NoAudio) {
             self.play(sounds::Cue::Error);
         }
 
@@ -296,6 +322,17 @@ mod tests {
     fn outcome_labels_match_the_timings_format() {
         assert_eq!(Outcome::Pasted.label(), "pasted");
         assert_eq!(Outcome::Empty.label(), "empty");
+        assert_eq!(Outcome::NoAudio.label(), "no_audio");
+    }
+
+    #[test]
+    fn silence_is_only_an_error_without_the_grant() {
+        use permissions::MicrophoneAccess::*;
+        assert!(missing_microphone_access(false, NotAsked));
+        assert!(missing_microphone_access(false, Denied));
+        // Granted plus silence is an ordinary empty take, not an alarm.
+        assert!(!missing_microphone_access(false, Granted));
+        assert!(!missing_microphone_access(true, Denied));
         assert_eq!(Outcome::PasteFailed.label(), "error");
         assert_eq!(Outcome::TranscriptionFailed.label(), "error");
     }

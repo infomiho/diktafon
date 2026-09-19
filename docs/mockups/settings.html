@@ -19,6 +19,11 @@
     --on-accent: #F1F2FF;
     --ring-idle: #8E90BE;
     --switch-track: #5A6086;
+    --status-live: #CE5CFF;
+    --status-ok: #34D399;
+    --raised-hover: #2B2F51;
+    --accent-hover: #A853D1;
+    --signal-red: #FF3B4D;
     --focus-ring: var(--accent);
     --outline-hover: rgba(155, 157, 255, 0.35);
     --font-display: "Chakra Petch", sans-serif;
@@ -242,6 +247,47 @@
   .option.on .k { background: var(--background); }
   .option .k.sym { padding-bottom: 1px; }
 
+  /* Permissions: one grouped list. The dot leads the name, the state opens
+     the description, and the action is the only thing on the right. */
+  .perm-list { border: 1px solid var(--outline); border-radius: 8px; overflow: hidden; }
+  .perm { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 12px 16px; }
+  .perm + .perm { border-top: 1px solid var(--outline); }
+  .perm-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .perm-name { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 500; }
+  /* State badge: a pill in the state's semantic color, green/grey/red. */
+  .badge { display: inline-flex; align-items: center; gap: 8px; height: 24px; padding: 0 8px; border-radius: 12px; font-size: 13px; font-weight: 500; color: var(--on-surface-muted); background: var(--surface-raised); border: 1px solid var(--outline); }
+  .badge .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .badge.granted .dot { background: var(--status-ok); }
+  .badge.pending .dot { background: var(--ring-idle); }
+  .badge.missing .dot { background: var(--signal-red); }
+  .perm .help { margin: 0; font-size: 13px; color: var(--on-surface-muted); }
+  .sheet .button { border-color: var(--outline-hover); }
+  .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .close {
+    width: 28px; height: 28px; margin-right: -6px; border-radius: 6px; flex-shrink: 0;
+    display: grid; place-items: center; color: var(--faint); cursor: pointer;
+    transition: background-color 120ms ease, color 120ms ease;
+  }
+  .close:hover { background: var(--surface-raised); color: var(--on-surface); }
+
+  .window { position: relative; }
+  .scrim {
+    position: absolute; inset: 0; background: rgba(11, 13, 32, 0.5);
+    display: flex; align-items: center; justify-content: center;
+    animation: scrim-in 160ms ease-out both;
+  }
+  .sheet {
+    width: 600px; padding: 24px; border-radius: 8px;
+    background: var(--surface); border: 1px solid var(--outline);
+    display: flex; flex-direction: column; gap: 16px;
+    animation: sheet-in 150ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  }
+  .sheet-title { font-family: var(--font-display); font-size: 24px; font-weight: 600; line-height: 1.2; letter-spacing: 0.01em; }
+  .button.primary { background: var(--accent); border-color: transparent; color: var(--on-accent); }
+  @keyframes scrim-in { from { opacity: 0; } }
+  @keyframes sheet-in { from { opacity: 0; transform: scale(0.97); } }
+  @media (prefers-reduced-motion: reduce) { .sheet { animation: scrim-in 160ms ease-out both; } }
+
   /* A pane subsection as a bordered card whose first row is the section
      name in eyebrow style (small uppercase, muted): the size/case/color step
      between the pane title and the field labels. */
@@ -270,7 +316,7 @@
     gap: 8px;
   }
   .card .status-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-  .card .dot { width: 8px; height: 8px; border-radius: 50%; background: #CE5CFF; }
+  .card .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status-live); }
   .card .dot.off { background: var(--ring-idle); opacity: 0.5; }
   .card .status-word { font-weight: 500; font-size: 15px; }
   .card .residency { margin-left: auto; font-size: 13px; color: var(--on-surface-muted); }
@@ -279,10 +325,14 @@
   .card.updates { gap: 16px; }
   .card.updates .control-row.divided { padding-top: 16px; border-top: 1px solid var(--outline); }
   .button {
-    height: 32px; padding: 0 12px; display: flex; align-items: center; flex-shrink: 0;
+    height: 40px; padding: 0 16px; display: flex; align-items: center; flex-shrink: 0;
     border: 1px solid var(--outline); border-radius: 6px; background: var(--surface-raised);
-    font-size: 13px; font-weight: 500;
+    font-size: 15px; font-weight: 500; cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease, transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
   }
+  .button:hover { background: var(--raised-hover); border-color: var(--outline-hover); }
+  .button:active { transform: scale(0.97); }
+  .button.primary:hover { background: var(--accent-hover); border-color: transparent; }
   .card .row .value {
     font-family: var(--font-mono);
     font-size: 13px;
@@ -365,6 +415,33 @@
     <div class="row"><span class="name">Capturing</span><div class="capturing">Press new keys</div></div>
   </div>
 
+  <!-- Permission row states -->
+  <div class="specimen">
+    <div class="perm-list">
+            <div class="perm">
+              <div class="perm-text">
+                <div class="perm-name">Microphone<span class="badge granted"><span class="dot"></span>Granted</span></div>
+                <div class="help">Records your voice while you dictate.</div>
+              </div>
+              
+            </div>
+            <div class="perm">
+              <div class="perm-text">
+                <div class="perm-name">Microphone<span class="badge pending"><span class="dot"></span>Not asked</span></div>
+                <div class="help">Records your voice while you dictate.</div>
+              </div>
+              <div class="button">Request access</div>
+            </div>
+            <div class="perm">
+              <div class="perm-text">
+                <div class="perm-name">Microphone<span class="badge missing"><span class="dot"></span>Denied</span></div>
+                <div class="help">Records your voice while you dictate.</div>
+              </div>
+              <div class="button">Open System Settings</div>
+            </div>
+    </div>
+  </div>
+
   <!-- Models -->
   <div class="window">
     <div class="sidebar">
@@ -416,6 +493,13 @@
     <div class="pane">
       <h1>Advanced</h1>
       <div class="content">
+        <div class="control-row">
+          <div class="text">
+            <span class="field-label">Permissions</span>
+            <div class="help">Microphone not requested. Accessibility not granted.</div>
+          </div>
+          <div class="button">Review…</div>
+        </div>
         <div class="field">
           <div class="field-label">Unload models when idle</div>
           <div class="control select"><span>After 1 minute</span><span class="chev">⌄</span></div>
@@ -462,6 +546,96 @@
     </div>
   </div>
 
+
+  <!-- Advanced, Permissions sheet open -->
+  <div class="window">
+    <div class="sidebar">
+      <div class="traffic"><span></span><span></span><span></span></div>
+      <div class="brand-row"><img src="../../assets/diktafon-mark-flat.svg" width="32" height="18" alt=""><span>diktafon</span></div>
+      <div class="nav-item"><span class="icon">⚙</span>General</div>
+      <div class="nav-item"><span class="icon">◈</span>Models</div>
+      <div class="nav-item"><span class="icon">◷</span>History</div>
+      <div class="nav-item active"><span class="icon">▣</span>Advanced</div>
+    </div>
+    <div class="pane">
+      <h1>Advanced</h1>
+      <div class="content">
+        <div class="control-row">
+          <div class="text">
+            <span class="field-label">Permissions</span>
+            <div class="help">Microphone not requested. Accessibility not granted.</div>
+          </div>
+          <div class="button">Review…</div>
+        </div>
+        <div class="field">
+          <div class="field-label">Unload models when idle</div>
+          <div class="control select"><span>After 1 minute</span><span class="chev">⌄</span></div>
+          <div class="help">Frees memory between dictations. The next one starts a moment slower while models reload.</div>
+        </div>
+        <div class="field">
+          <div class="field-label">Daemon</div>
+          <div class="control card">
+            <div class="status-row">
+              <span class="dot"></span>
+              <span class="status-word">Running</span>
+              <span class="residency">Models idle</span>
+            </div>
+            <div class="row">
+              <span class="label">Transcription model</span>
+              <span class="value">cohere-transcribe-int8</span>
+            </div>
+            <div class="row">
+              <span class="label">Polishing model</span>
+              <span class="value">s1-mini-q4_k_m</span>
+            </div>
+          </div>
+        </div>
+        <div class="field">
+          <div class="field-label">Updates</div>
+          <div class="control card updates">
+            <div class="control-row">
+              <div class="text">
+                <span class="field-label">Version 0.1.2</span>
+                <div class="help">Up to date.</div>
+              </div>
+              <div class="button">Check for updates</div>
+            </div>
+            <div class="control-row divided">
+              <div class="text">
+                <span class="field-label">Check for updates automatically</span>
+                <div class="help">Once a day. You choose when to install.</div>
+              </div>
+              <div class="switch on"><div class="thumb"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+      <div class="scrim">
+        <div class="sheet">
+          <div class="sheet-head">
+            <div class="sheet-title">Permissions</div>
+            <div class="close" role="button" aria-label="Close"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></div>
+          </div>
+          <div class="perm-list">
+            <div class="perm">
+              <div class="perm-text">
+                <div class="perm-name">Microphone<span class="badge pending"><span class="dot"></span>Not asked</span></div>
+                <div class="help">Records your voice while you dictate.</div>
+              </div>
+              <div class="button">Request access</div>
+            </div>
+            <div class="perm">
+              <div class="perm-text">
+                <div class="perm-name">Accessibility<span class="badge missing"><span class="dot"></span>Not granted</span></div>
+                <div class="help">Pastes the text where you are typing.</div>
+              </div>
+              <div class="button">Request access</div>
+            </div>
+          </div>
+        </div>
+      </div>
+  </div>
 
   <!-- History -->
   <div class="window">

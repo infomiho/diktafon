@@ -18,6 +18,7 @@ colors:
   signal-white: "#FFFFFF"      # transcribing; doubles as success/completion
   signal-magenta: "#CE5CFF"    # polishing; the accent is this hue deepened
   ring-idle: "#8E90BE"         # the meter at rest; muted, never glows
+  signal-green: "#34D399"      # permission status dots only; see color roles
   aurora-ember: "#FF5A36"      # recording wash companion; doubles as warning
   aurora-rose: "#E0459E"       # recording wash companion
 typography:
@@ -147,9 +148,14 @@ Chrome, text, and containers never glow.
   never from drop shadows.
 - The phase language is fixed: red = recording, white = transcribing,
   magenta = polishing. Status colors derive from it: danger is signal red,
-  warning is aurora ember, success/completion is white (Signal has no green;
-  a paste completes with a white bloom, and any future "saved / done" state
-  is white, not green).
+  warning is aurora ember, success/completion is white: a paste completes
+  with a white bloom, and any "saved / done" state is white.
+- One exception, and only this one: **permission status dots** use
+  signal green for granted, ring idle for not asked, signal red for denied.
+  A permission is a macOS fact, not a diktafon phase, and every other app on
+  the system reports it in green; borrowing the phase white here would read
+  as "transcribing". The green is confined to an 8px dot inside a neutral
+  badge whose text stays muted, so it never becomes a second accent.
 - Magenta is the single interactive accent: primary buttons, focus rings,
   selection, links. It is the polishing hue deepened for large fills
   (white text passes AA on it); both mean "diktafon is acting". The vivid

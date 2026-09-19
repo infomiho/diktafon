@@ -34,6 +34,9 @@ pub const SIGNAL_RED: u32 = 0xFF3B4D00;
 pub const SIGNAL_WHITE: u32 = 0xFFFFFF00;
 /// Polishing signal.
 pub const SIGNAL_MAGENTA: u32 = 0xCE5CFF00;
+/// Semantic "granted" for permission badges; the Signal palette has no
+/// other green.
+pub const SIGNAL_GREEN: u32 = 0x34D39900;
 /// The meter at rest; muted, never glows.
 pub const RING_IDLE: u32 = 0x8E90BE00;
 /// Aurora wash companions to SIGNAL_RED: a warm ember and a red-magenta

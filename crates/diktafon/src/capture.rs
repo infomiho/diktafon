@@ -103,10 +103,20 @@ pub struct Recorder {
     stream_failed: Arc<AtomicBool>,
 }
 
+/// What a finished capture session observed.
+pub struct Captured {
+    /// Whether the input delivered anything but digital silence. A denied
+    /// or muted device yields perfect zeros, which is otherwise
+    /// indistinguishable from the user saying nothing.
+    pub heard_audio: bool,
+}
+
 pub struct Session {
     stream: cpal::Stream,
     stop: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
+    /// Set by the monitor once any sample is not exactly zero.
+    heard: Arc<AtomicBool>,
     monitor: JoinHandle<()>,
     live_rx: mpsc::Receiver<()>,
 }
@@ -218,11 +228,13 @@ impl Recorder {
 
         let stop = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::new(AtomicBool::new(false));
+        let heard = Arc::new(AtomicBool::new(false));
         *self.levels.lock().unwrap() = [0.0; LEVEL_BAR_COUNT];
         let monitor = thread::spawn({
             let buffer = buffer.clone();
             let stop = stop.clone();
             let cancelled = cancelled.clone();
+            let heard = heard.clone();
             let levels = self.levels.clone();
             move || {
                 let mut meter = LevelMeter::new();
@@ -231,6 +243,9 @@ impl Recorder {
                     thread::sleep(MONITOR_TICK);
                     let done = stop.load(Ordering::Acquire);
                     let fresh = resampler.drain(&buffer.lock().unwrap());
+                    if !heard.load(Ordering::Relaxed) && fresh.iter().any(|sample| *sample != 0.0) {
+                        heard.store(true, Ordering::Relaxed);
+                    }
                     meter.push(&fresh);
                     *levels.lock().unwrap() = meter.compute();
                     frame_tail.extend(fresh);
@@ -264,6 +279,7 @@ impl Recorder {
             stream,
             stop,
             cancelled,
+            heard,
             monitor,
             live_rx,
         })
@@ -349,7 +365,8 @@ impl Session {
         self.live_rx.recv_timeout(timeout).is_ok()
     }
 
-    pub fn stop(self) {
+    /// Ends the session and reports what it observed.
+    pub fn stop(self) -> Captured {
         // Drop first: while the device is running it keeps pushing samples the
         // monitor's last drain would never see, losing up to a tick of the
         // final word.
@@ -358,12 +375,17 @@ impl Session {
         // `cancelled` store made by `cancel()` before this.
         self.stop.store(true, Ordering::Release);
         self.monitor.join().ok();
+        Captured {
+            // Relaxed is enough: the join above establishes happens-before
+            // with every store the monitor made.
+            heard_audio: self.heard.load(Ordering::Relaxed),
+        }
     }
 
     /// End the session discarding everything captured; no result will follow.
     pub fn cancel(self) {
         self.cancelled.store(true, Ordering::Relaxed);
-        self.stop();
+        let _ = self.stop();
     }
 }
 
