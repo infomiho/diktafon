@@ -42,6 +42,10 @@ pub struct Status {
 }
 
 impl Status {
+    pub fn all_granted(&self) -> bool {
+        self.microphone == MicrophoneAccess::Granted && self.accessibility
+    }
+
     pub fn read() -> Self {
         Self {
             microphone: microphone(),
@@ -68,37 +72,11 @@ impl Status {
     }
 }
 
-/// Settles the microphone grant before anything opens the device. Touching
-/// the microphone while macOS has no decision on file makes it record a
-/// denial silently, and every later request then returns that denial
-/// without ever showing a prompt; the app looks like it simply never asked.
-/// Blocks on the user's answer, because the whole point is to have one
-/// before the first capture.
-pub fn ensure_microphone_access() -> MicrophoneAccess {
-    let status = microphone();
-    if status != MicrophoneAccess::NotAsked {
-        return status;
-    }
-    let (answered, answer) = std::sync::mpsc::channel();
-    let media = unsafe { AVMediaTypeAudio }.expect("AVMediaTypeAudio missing");
-    let handler = block2::RcBlock::new(move |granted: objc2::runtime::Bool| {
-        let _ = answered.send(granted.as_bool());
-    });
-    unsafe { AVCaptureDevice::requestAccessForMediaType_completionHandler(media, &handler) };
-    // A person has to read a system prompt, so the wait is generous; giving
-    // up only means carrying on without an answer.
-    match answer.recv_timeout(std::time::Duration::from_secs(120)) {
-        Ok(true) => MicrophoneAccess::Granted,
-        Ok(false) => MicrophoneAccess::Denied,
-        Err(_) => microphone(),
-    }
-}
-
-/// Raises the system microphone prompt the first time, and otherwise only
-/// reports. Launching must never open System Settings by itself: that threw
-/// the user into a window they never asked for, on every launch. The
-/// Permissions UI owns everything past the first ask.
-pub fn check_at_launch() -> Status {
+/// Reports what is missing at launch and does nothing about it. Asking is
+/// the onboarding window's job, or a single fire-and-forget request from
+/// `main`; opening System Settings from here threw the user into a window
+/// they never asked for, on every launch.
+pub fn check_at_launch() {
     let status = Status::read();
     if status.microphone == MicrophoneAccess::Denied {
         eprintln!("microphone access is denied; grant it in Settings > Advanced > Permissions");
@@ -106,7 +84,6 @@ pub fn check_at_launch() -> Status {
     if !status.accessibility {
         eprintln!("Accessibility permission missing; dictated text cannot be pasted");
     }
-    status
 }
 
 pub fn microphone() -> MicrophoneAccess {

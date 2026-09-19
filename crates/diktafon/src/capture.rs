@@ -93,7 +93,10 @@ fn open_input(preferred: Option<&str>) -> Result<InputDevice> {
 }
 
 pub struct Recorder {
-    input: InputDevice,
+    /// Opened on the first dictation, never at startup: touching the
+    /// microphone before macOS has a decision on file makes it record a
+    /// denial without ever prompting.
+    input: Option<InputDevice>,
     /// The microphone the user chose, or `None` for the system default.
     preferred: Option<String>,
     vad_model: PathBuf,
@@ -140,29 +143,29 @@ impl FirstSampleSignal {
 }
 
 impl Recorder {
-    pub fn new(vad_model: PathBuf, levels: LevelBars, preferred: Option<&str>) -> Result<Self> {
-        Ok(Self {
-            input: open_input(preferred)?,
+    pub fn new(vad_model: PathBuf, levels: LevelBars, preferred: Option<&str>) -> Self {
+        Self {
+            input: None,
             preferred: preferred.map(str::to_owned),
             vad_model,
             levels,
             stream_failed: Arc::new(AtomicBool::new(false)),
-        })
+        }
     }
 
-    pub fn describe(&self) -> String {
-        format!(
-            "{} ({} Hz, {} ch)",
-            self.input.name, self.input.rate, self.input.channels
-        )
+    fn describe(input: &InputDevice) -> String {
+        format!("{} ({} Hz, {} ch)", input.name, input.rate, input.channels)
     }
 
-    /// Reopen the input when the stream died or the device the preference
-    /// resolves to moved (the system default changed, the chosen microphone
-    /// came or went); on failure keep the old device and let the session
-    /// surface the error.
-    /// Returns whether the device was rebuilt.
-    fn refresh_input_if_needed(&mut self) -> bool {
+    /// Open the microphone, or reopen it when the stream died or the
+    /// preference now resolves to a different device (the system default
+    /// moved, the chosen one came or went). A failure with a device already
+    /// in hand keeps it and lets the session surface the error.
+    ///
+    /// Returns whether a fresh handle was installed. The caller cannot infer
+    /// that from the device name: AirPods reconnect under the name they left
+    /// under, which is the case this exists for.
+    fn ensure_input(&mut self) -> Result<bool> {
         let failed = self.stream_failed.swap(false, Ordering::Relaxed);
         // Enumerating every device is only needed to see whether the chosen
         // one is present; the default alone is a cheaper query and the
@@ -175,24 +178,32 @@ impl Recorder {
                 default_input_name().as_deref(),
             ),
         };
-        let wanted_changed = wanted.is_some_and(|name| name != self.input.name);
-        if !(failed || wanted_changed) {
-            return false;
+        let stale = match &self.input {
+            None => true,
+            Some(input) => failed || wanted.is_some_and(|name| name != input.name),
+        };
+        if !stale {
+            return Ok(false);
         }
         match open_input(self.preferred.as_deref()) {
             Ok(input) => {
-                self.input = input;
-                println!("Mic: {}", self.describe());
-                true
+                println!("Mic: {}", Self::describe(&input));
+                self.input = Some(input);
+                Ok(true)
             }
-            Err(e) => {
+            Err(e) if self.input.is_some() => {
                 // Keep the retry armed: with the flag consumed and the name
                 // unchanged, nothing else would ever trigger another rebuild.
                 self.stream_failed.store(true, Ordering::Relaxed);
                 eprintln!("reopening the microphone failed: {e:#}");
-                false
+                Ok(false)
             }
+            Err(e) => Err(e),
         }
+    }
+
+    fn input(&self) -> Result<&InputDevice> {
+        self.input.as_ref().context("the microphone is not open")
     }
 
     /// Mark the current device suspect so the next session rebuilds it; used
@@ -210,13 +221,13 @@ impl Recorder {
         preferred: Option<&str>,
     ) -> Result<Session> {
         self.preferred = preferred.map(str::to_owned);
-        let _ = self.refresh_input_if_needed();
+        let _ = self.ensure_input()?;
         // Fresh VAD per session: Silero keeps LSTM state across frames, and
         // loading the 1.8MB model is fast enough to not delay recording.
         let silero = SileroVad::new(&self.vad_model, CONFIG.speech_threshold)
             .with_context(|| format!("loading VAD model {}", self.vad_model.display()))?;
         let mut chunker = VadChunker::new(Box::new(silero));
-        let mut resampler = StreamResampler::new(self.input.rate, TARGET_RATE);
+        let mut resampler = StreamResampler::new(self.input()?.rate, TARGET_RATE);
 
         let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
         let (live_tx, live_rx) = mpsc::channel();
@@ -288,7 +299,7 @@ impl Recorder {
     /// Start the input stream, rebuilding the device once if it has gone
     /// stale. A device that disconnects and reconnects (AirPods) comes back
     /// under the same name, so the default-name check in
-    /// [`Self::refresh_input_if_needed`] cannot see it; only the failure can,
+    /// [`Self::ensure_input`] cannot see it; only the failure can,
     /// and without this the stale handle would fail every session until the
     /// app restarts.
     fn open_stream(
@@ -301,7 +312,7 @@ impl Recorder {
             Err(stale) => {
                 eprintln!("microphone unavailable ({stale:#}); reopening it");
                 self.stream_failed.store(true, Ordering::Relaxed);
-                if !self.refresh_input_if_needed() {
+                if !self.ensure_input()? {
                     // Nothing was rebuilt, so a second attempt would use the
                     // same handle that just failed.
                     return Err(stale);
@@ -331,10 +342,11 @@ impl Recorder {
             eprintln!("stream error: {e}");
             failed.store(true, Ordering::Relaxed);
         };
-        let stream_config: cpal::StreamConfig = self.input.config.clone().into();
-        let channels = self.input.channels;
-        let stream = match self.input.config.sample_format() {
-            cpal::SampleFormat::F32 => self.input.device.build_input_stream(
+        let input = self.input()?;
+        let stream_config: cpal::StreamConfig = input.config.clone().into();
+        let channels = input.channels;
+        let stream = match input.config.sample_format() {
+            cpal::SampleFormat::F32 => input.device.build_input_stream(
                 &stream_config,
                 move |data: &[f32], _| {
                     live.fire();
@@ -343,7 +355,7 @@ impl Recorder {
                 err_fn,
                 None,
             )?,
-            cpal::SampleFormat::I16 => self.input.device.build_input_stream(
+            cpal::SampleFormat::I16 => input.device.build_input_stream(
                 &stream_config,
                 move |data: &[i16], _| {
                     live.fire();

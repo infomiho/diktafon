@@ -8,7 +8,9 @@ mod daemon_process;
 mod dictation;
 mod keymap;
 mod mark;
+mod onboarding;
 mod paste;
+mod permission_ui;
 mod permissions;
 mod pill;
 mod session;
@@ -186,12 +188,14 @@ fn main() -> Result<()> {
     {
         loaded_settings.save()?;
     }
-    // Before the daemon or the recorder exist: opening the input device with
-    // an undecided microphone grant is what makes macOS deny it without ever
-    // asking, and from then on nothing can prompt.
-    let microphone = permissions::ensure_microphone_access();
-    if microphone != permissions::MicrophoneAccess::Granted {
-        eprintln!("microphone access is {microphone:?}; dictation will hear nothing");
+    // Onboarding does the asking when it runs. Otherwise nothing else will,
+    // so the grant is settled here: the first thing to open the input device
+    // with an undecided grant makes macOS deny it without ever prompting.
+    let onboarding_needed = onboarding::needed(&loaded_settings, permissions::Status::read());
+    if !onboarding_needed && permissions::microphone() == permissions::MicrophoneAccess::NotAsked {
+        // Asked, never waited on: the session refuses to record until macOS
+        // has an answer, so a prompt left unanswered costs nothing.
+        permissions::request_microphone();
     }
 
     let session_settings = Arc::new(std::sync::Mutex::new(loaded_settings));
@@ -220,12 +224,12 @@ fn main() -> Result<()> {
         .unwrap()
         .preferred_input()
         .map(str::to_owned);
+    // The device itself opens on the first dictation, not here.
     let recorder = Recorder::new(
         ensure_vad_model()?,
         levels.clone(),
         preferred_input.as_deref(),
-    )?;
-    println!("Mic: {}", recorder.describe());
+    );
 
     let manager =
         std::rc::Rc::new(GlobalHotKeyManager::new().context("registering global hotkey manager")?);
@@ -328,7 +332,10 @@ fn main() -> Result<()> {
                 gpui::KeyBinding::new("cmd-q", Quit, None),
                 gpui::KeyBinding::new("cmd-w", CloseWindow, None),
             ]);
-            let _launch_permissions = permissions::check_at_launch();
+            permissions::check_at_launch();
+            if onboarding_needed {
+                onboarding::open(session_settings.clone(), cx);
+            }
             let dictation = Dictation::spawn(cx, phase_rx);
             let escape_manager = manager.clone();
             // The Carbon hotkey manager lives on this thread; register Escape

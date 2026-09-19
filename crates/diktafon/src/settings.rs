@@ -6,7 +6,7 @@
 
 use crate::config::{HotkeyBehavior, SessionSettings};
 use crate::control_line;
-use crate::permissions::{self, MicrophoneAccess, PrivacyPane};
+use crate::permissions;
 use crate::statusbar::DaemonStatus;
 use crate::updater::{self, UpdateCheck};
 use crate::{autostart, statusbar, theme};
@@ -151,41 +151,6 @@ fn microphone_options(
     }
     let selected = names.iter().position(|name| name == current).unwrap_or(0);
     (names, labels, selected)
-}
-
-/// One permission as the sheet shows it.
-struct PermissionRow {
-    id: &'static str,
-    name: &'static str,
-    purpose: &'static str,
-    state: &'static str,
-    dot: Dot,
-    action: Option<(&'static str, Action)>,
-}
-
-#[derive(Clone, Copy)]
-enum Dot {
-    Granted,
-    Pending,
-    Missing,
-}
-
-/// What a permission row's button does.
-#[derive(Clone, Copy)]
-enum Action {
-    RequestMicrophone,
-    OpenMicrophonePane,
-    RequestAccessibility,
-}
-
-impl Action {
-    fn run(self) {
-        match self {
-            Action::RequestMicrophone => permissions::request_microphone(),
-            Action::OpenMicrophonePane => permissions::open_privacy_pane(PrivacyPane::Microphone),
-            Action::RequestAccessibility => permissions::request_accessibility(),
-        }
-    }
 }
 
 const IDLE_OPTIONS: &[(u64, &str)] = &[
@@ -425,7 +390,7 @@ pub fn open(
 /// The window content is Signal-dark regardless of system appearance (see
 /// theme::apply_settings_theme), so the native titlebar must match or it
 /// renders as a light strip over the dark pane.
-fn force_dark_titlebar(window: &Window) {
+pub fn force_dark_titlebar(window: &Window) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     let Ok(handle) = HasWindowHandle::window_handle(window) else {
         return;
@@ -823,6 +788,7 @@ impl SettingsWindow {
             hotkey_behavior: self.hotkey_behavior,
             input_device: self.selected_microphone(cx),
             transcription_model: transcription_model.clone(),
+            onboarded: self.settings.lock().unwrap().onboarded,
             polishing_model,
         };
         let models = updated.models();
@@ -1579,7 +1545,7 @@ impl SettingsWindow {
                             .child(Icon::new(IconName::WindowClose).size_4()),
                     ),
             )
-            .child(Self::permission_list(self.permissions, cx));
+            .child(crate::permission_ui::permission_list(self.permissions, cx));
         let backdrop = div()
             .id("permissions-backdrop")
             .absolute()
@@ -1602,113 +1568,6 @@ impl SettingsWindow {
                 )
                 .into_any_element()
         }
-    }
-
-    fn permission_list(status: permissions::Status, cx: &App) -> impl IntoElement {
-        let (state, dot, action) = match status.microphone {
-            MicrophoneAccess::Granted => ("Granted", Dot::Granted, None),
-            MicrophoneAccess::NotAsked => (
-                "Not asked",
-                Dot::Pending,
-                Some(("Request access", Action::RequestMicrophone)),
-            ),
-            MicrophoneAccess::Denied => (
-                "Denied",
-                Dot::Missing,
-                Some(("Open System Settings", Action::OpenMicrophonePane)),
-            ),
-        };
-        let microphone = PermissionRow {
-            id: "permission-microphone",
-            name: "Microphone",
-            purpose: "Records your voice while you dictate.",
-            state,
-            dot,
-            action,
-        };
-        let accessibility = PermissionRow {
-            id: "permission-accessibility",
-            name: "Accessibility",
-            purpose: "Pastes the text where you are typing.",
-            state: if status.accessibility {
-                "Granted"
-            } else {
-                "Not granted"
-            },
-            dot: if status.accessibility {
-                Dot::Granted
-            } else {
-                Dot::Missing
-            },
-            action: (!status.accessibility)
-                .then_some(("Request access", Action::RequestAccessibility)),
-        };
-        v_flex()
-            .rounded_lg()
-            .border_1()
-            .border_color(cx.theme().border)
-            .overflow_hidden()
-            .child(Self::permission_row(microphone, false, cx))
-            .child(Self::permission_row(accessibility, true, cx))
-    }
-
-    fn permission_row(row: PermissionRow, divided: bool, cx: &App) -> impl IntoElement {
-        let color = match row.dot {
-            Dot::Granted => theme::SIGNAL_GREEN,
-            Dot::Pending => theme::RING_IDLE,
-            Dot::Missing => theme::SIGNAL_RED,
-        };
-        let badge = h_flex()
-            .h(px(24.))
-            .px_2()
-            .gap_2()
-            .items_center()
-            .rounded_full()
-            .bg(rgba(theme::SURFACE_RAISED | 0xFF))
-            .border_1()
-            .border_color(cx.theme().border)
-            .text_sm()
-            .font_medium()
-            .text_color(cx.theme().muted_foreground)
-            .child(div().size(px(8.)).rounded_full().bg(rgba(color | 0xFF)))
-            .child(row.state);
-        h_flex()
-            .items_center()
-            .justify_between()
-            .gap_6()
-            .px_4()
-            .py_3()
-            .when(divided, |el| {
-                el.border_t_1().border_color(cx.theme().border)
-            })
-            .child(
-                v_flex()
-                    .gap_1()
-                    .min_w_0()
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .gap_2()
-                            .child(Label::new(row.name).font_medium())
-                            .child(badge),
-                    )
-                    .child(
-                        Label::new(row.purpose)
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground),
-                    ),
-            )
-            .when_some(row.action, |el, (label, action)| {
-                el.child(
-                    div().flex_shrink_0().child(
-                        Button::new(row.id)
-                            .label(label)
-                            .outline()
-                            .h(CONTROL_HEIGHT)
-                            .on_click(move |_, _, _| action.run()),
-                    ),
-                )
-            })
     }
 
     /// The running version with the outcome of Sparkle's last check, a button

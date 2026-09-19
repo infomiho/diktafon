@@ -96,6 +96,10 @@ pub struct SessionSettings {
     pub input_device: String,
     pub transcription_model: String,
     pub polishing_model: String,
+    /// Set once the onboarding window has been seen, so it never returns.
+    /// Absent in configs written before onboarding existed, which is what
+    /// lets an existing install with broken permissions still get it once.
+    pub onboarded: bool,
 }
 
 impl Default for SessionSettings {
@@ -111,6 +115,7 @@ impl Default for SessionSettings {
             input_device: String::new(),
             transcription_model: DEFAULT_TRANSCRIPTION_MODEL.into(),
             polishing_model: DEFAULT_POLISHING_MODEL.into(),
+            onboarded: false,
         }
     }
 }

@@ -164,6 +164,17 @@ impl Dictations {
         if self.live.is_some() {
             return;
         }
+        if permissions::microphone() == permissions::MicrophoneAccess::NotAsked {
+            // Opening the device now would make macOS record a denial with no
+            // prompt, and nothing could ask afterwards.
+            eprintln!("microphone access has not been granted yet");
+            self.play(sounds::Cue::Error);
+            // The pill only opens on an armed session, so an error reported
+            // before arming is one the user never sees.
+            self.emit(PhaseEvent::RecordingArmed);
+            self.ended(Some("Microphone access needed".into()), false);
+            return;
+        }
         let pressed_at = Instant::now();
         // Before the recorder: the daemon may have to be spawned and load its
         // models, and that runs while the user is still speaking.
@@ -186,6 +197,7 @@ impl Dictations {
                 let _ = self.daemon.chunk_tx.send(Msg::Cancel);
                 eprintln!("failed to start recording: {e:#}");
                 self.play(sounds::Cue::Error);
+                self.emit(PhaseEvent::RecordingArmed);
                 self.ended(Some("Microphone unavailable".into()), false);
                 return;
             }
