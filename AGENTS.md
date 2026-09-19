@@ -14,7 +14,7 @@ Local-only macOS dictation: hold Option+Space, speak, release; transcribed (Cohe
 
 Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds `diktafon.app`, signs and notarizes a DMG, and runs `gh release create` for that tag. Do NOT create the GitHub release manually (`gh release create` or the web UI) after pushing a tag; the release already exists by the time CI finishes publishing, so the workflow fails with "a release with the same tag name already exists".
 
-To cut a release: bump the workspace version, commit, tag `vX.Y.Z`, push the tag, and let CI publish. Versions must be plain `MAJOR.MINOR.PATCH`: `scripts/package-app.sh` derives the bundle's numeric `CFBundleVersion` from it and refuses suffixes.
+To cut a release: bump the workspace version, commit, tag `vX.Y.Z` with an annotated tag whose message is the release notes, push the tag, and let CI publish. The message is markdown in the same shape as cadence's: a first line `diktafon X.Y.Z`, then one bullet per user-facing change with a bold lead-in sentence (`- **Press to toggle.** Settings > General lets…`). It becomes the GitHub release body (CI appends the compare link) and the notes Sparkle shows in its update window. Versions must be plain `MAJOR.MINOR.PATCH`: `scripts/package-app.sh` derives the bundle's numeric `CFBundleVersion` from it and refuses suffixes.
 
 `scripts/setup-release-signing.sh` stores the Developer ID certificate and the App Store Connect API key as repo secrets once. The workflow also calls the Coolify webhook (`COOLIFY_WEBHOOK`, `COOLIFY_TOKEN`) so the tag refreshes `diktafon.miho.dev`.
 
