@@ -333,8 +333,10 @@ fn main() -> Result<()> {
                 gpui::KeyBinding::new("cmd-w", CloseWindow, None),
             ]);
             permissions::check_at_launch();
-            if onboarding_needed {
-                onboarding::open(session_settings.clone(), cx);
+            // Onboarding is the only thing that asks when it runs, so if
+            // the window never opens something still has to.
+            if onboarding_needed && !onboarding::open(session_settings.clone(), cx) {
+                permissions::request_microphone();
             }
             let dictation = Dictation::spawn(cx, phase_rx);
             let escape_manager = manager.clone();

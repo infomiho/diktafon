@@ -172,7 +172,7 @@ impl Dictations {
             // The pill only opens on an armed session, so an error reported
             // before arming is one the user never sees.
             self.emit(PhaseEvent::RecordingArmed);
-            self.ended(Some("Microphone access needed".into()), false);
+            self.ended(Some("Allow the microphone in Settings".into()), false);
             return;
         }
         let pressed_at = Instant::now();

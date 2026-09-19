@@ -70,9 +70,12 @@ impl Step {
     fn height(self) -> gpui::Pixels {
         match self {
             // Mark, title, two lines of body.
-            Step::Welcome => px(324.),
-            // Title, one line of body, a status row.
-            Step::Microphone | Step::Accessibility => px(348.),
+            Step::Welcome => px(330.),
+            // Title, one line of body, a status row. The body is laid out
+            // wider here than in the mock, so it wraps no later than the
+            // mock's 307px panel; the few pixels of slack land between the
+            // text and the action, never under the dots.
+            Step::Microphone | Step::Accessibility => px(315.),
         }
     }
 
@@ -83,6 +86,19 @@ impl Step {
             Step::Accessibility => None,
         }
     }
+}
+
+/// The next step worth showing. Anything already granted is walked past:
+/// the common way back into this flow is an install that kept one
+/// permission and lost the other, and a screen about a grant the user
+/// already has reads as the app not knowing its own state. The last step
+/// always shows, so the flow ends on a visible result.
+fn next_visible(step: Step, status: permissions::Status) -> Option<Step> {
+    let mut step = step.next()?;
+    while step.next().is_some() && step.satisfied(status) {
+        step = step.next()?;
+    }
+    Some(step)
 }
 
 /// Whether a grant landing should move the flow along without a press. The
@@ -132,7 +148,8 @@ pub struct Onboarding {
 
 /// Open the window. Shown at most once per install, so there is nothing to
 /// reopen and no handle worth keeping.
-pub fn open(settings: Arc<Mutex<SessionSettings>>, cx: &mut App) {
+#[must_use = "when the window cannot open, something else has to ask"]
+pub fn open(settings: Arc<Mutex<SessionSettings>>, cx: &mut App) -> bool {
     let bounds = Bounds::centered(None, size(WINDOW_WIDTH, Step::Welcome.height()), cx);
     let opened = cx.open_window(
         WindowOptions {
@@ -155,9 +172,10 @@ pub fn open(settings: Arc<Mutex<SessionSettings>>, cx: &mut App) {
     );
     if let Err(e) = opened {
         eprintln!("opening the onboarding window failed: {e:#}");
-        return;
+        return false;
     }
     cx.activate(true);
+    true
 }
 
 impl Onboarding {
@@ -204,7 +222,11 @@ impl Onboarding {
 
     fn remember(settings: &Arc<Mutex<SessionSettings>>) {
         let saved = {
-            let mut settings = settings.lock().unwrap();
+            // Teardown is the worst place to panic, and a stale flag is a
+            // far smaller problem than losing the window's exit.
+            let mut settings = settings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if settings.onboarded {
                 return;
             }
@@ -237,13 +259,11 @@ impl Onboarding {
     }
 
     fn advance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.step.next() {
-            Some(step) => self.step = step,
-            None => {
-                window.remove_window();
-                return;
-            }
-        }
+        let Some(step) = next_visible(self.step, self.status) else {
+            window.remove_window();
+            return;
+        };
+        self.step = step;
         window.resize(size(WINDOW_WIDTH, self.step.height()));
         cx.notify();
     }
@@ -404,6 +424,24 @@ mod tests {
         assert!(!advances_itself(Step::Welcome, all));
         // The last screen stays up so the user sees that it worked.
         assert!(!advances_itself(Step::Accessibility, all));
+    }
+
+    #[test]
+    fn a_granted_step_is_not_shown_on_the_way_past() {
+        let mic_only = status(MicrophoneAccess::Granted, false);
+        // The microphone is already in hand, so the flow opens on the one
+        // that is missing.
+        assert_eq!(
+            next_visible(Step::Welcome, mic_only),
+            Some(Step::Accessibility)
+        );
+        // Nothing granted: every screen earns its place.
+        let blank = status(MicrophoneAccess::NotAsked, false);
+        assert_eq!(next_visible(Step::Welcome, blank), Some(Step::Microphone));
+        // The last screen shows even when satisfied, and then the flow ends.
+        let all = status(MicrophoneAccess::Granted, true);
+        assert_eq!(next_visible(Step::Welcome, all), Some(Step::Accessibility));
+        assert_eq!(next_visible(Step::Accessibility, all), None);
     }
 
     #[test]
