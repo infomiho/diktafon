@@ -17,21 +17,33 @@ gh auth status >/dev/null 2>&1 || { echo "Run 'gh auth login' first." >&2; exit 
 repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 tools="$(./scripts/fetch-sparkle.sh)/bin"
 
+# Every installed copy trusts only the key whose public half is in the
+# plist. Generating a fresh one on another Mac would rotate it silently and
+# orphan them all, so an existing, different key stops here.
+committed=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" "$plist" 2>/dev/null || true)
+"$tools/generate_keys" >/dev/null
+public_key=$("$tools/generate_keys" -p)
+test -n "$public_key"
+if [ -n "$committed" ] && [ "$committed" != "$public_key" ] && [ "${1:-}" != "--rotate" ]; then
+  echo "This Mac's Sparkle key differs from the one in $plist." >&2
+  echo "Import the original key into this keychain, or pass --rotate to replace it and orphan every installed copy." >&2
+  exit 1
+fi
+
 printf 'Path to write the private key backup (outside the repository): '
 read -r backup
 case "$backup" in
   "~") backup="$HOME" ;;
   "~/"*) backup="$HOME/${backup#"~/"}" ;;
+  /*) ;;
+  *) backup="$PWD/$backup" ;;
 esac
 case "$backup" in
-  "$PWD"/* | ./* | "") echo "Choose a path outside the repository." >&2; exit 1 ;;
+  "$PWD" | "$PWD"/* | "") echo "Choose a path outside the repository." >&2; exit 1 ;;
 esac
 mkdir -p "$(dirname "$backup")"
 
-"$tools/generate_keys" >/dev/null
 "$tools/generate_keys" -x "$backup"
-public_key=$("$tools/generate_keys" -p)
-test -n "$public_key"
 
 gh secret set SPARKLE_PRIVATE_KEY --repo "$repo" <"$backup"
 /usr/libexec/PlistBuddy -c "Delete :SUPublicEDKey" "$plist" 2>/dev/null || true

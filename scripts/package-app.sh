@@ -40,6 +40,7 @@ build_number=$(printf '%s\n' "$version" | awk -F. 'NF == 3 { print $1 * 1000000 
 test -n "$build_number"
 
 sparkle_framework_source="$(./scripts/fetch-sparkle.sh)/Sparkle.framework"
+feed_url="https://github.com/infomiho/diktafon/releases/latest/download/appcast.xml"
 
 identity=${DIKTAFON_CODESIGN_IDENTITY:--}
 sign() {
@@ -63,10 +64,10 @@ cp -R licenses "$contents/Resources/licenses"
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" "$contents/Info.plist"
-if [ "$identity" = "-" ]; then
-  # An ad-hoc bundle is a local build with nothing to update to, and the app
-  # leaves Sparkle alone when the feed is missing.
-  /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$contents/Info.plist"
+if [ "$identity" != "-" ]; then
+  # Only a Developer ID build can be replaced by a release, so only it gets
+  # the feed; every other bundle leaves Sparkle inert for lack of one.
+  /usr/libexec/PlistBuddy -c "Add :SUFeedURL string $feed_url" "$contents/Info.plist"
 fi
 
 # diktafon is not sandboxed, so Sparkle's XPC services never run. They go,
@@ -76,7 +77,7 @@ sparkle_framework="$contents/Frameworks/Sparkle.framework"
 mkdir -p "$contents/Frameworks"
 cp -R "$sparkle_framework_source" "$sparkle_framework"
 for extra in XPCServices Headers PrivateHeaders Modules; do
-  rm -rf "$sparkle_framework/$extra" "$sparkle_framework/Versions/B/$extra"
+  rm -rf "${sparkle_framework:?}/$extra" "${sparkle_framework:?}/Versions/B/$extra"
 done
 
 # Copied resources can carry Finder info that codesign rejects as detritus.

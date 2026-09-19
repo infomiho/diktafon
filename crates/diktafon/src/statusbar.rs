@@ -296,11 +296,10 @@ pub fn install(
     cx: &mut App,
     dictation: &Entity<Dictation>,
     settings: std::sync::Arc<std::sync::Mutex<crate::config::SessionSettings>>,
-    updatable: bool,
 ) {
     let mtm = MainThreadMarker::new().expect("not on the main thread");
     let (actions_tx, mut actions_rx) = unbounded();
-    let controller = MenuController::new(mtm, actions_tx, updatable);
+    let controller = MenuController::new(mtm, actions_tx, crate::updater::active(cx));
 
     let status_bar = NSStatusBar::systemStatusBar();
     let item = status_bar.statusItemWithLength(NSVariableStatusItemLength);

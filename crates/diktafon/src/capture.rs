@@ -154,11 +154,17 @@ impl Recorder {
     /// Returns whether the device was rebuilt.
     fn refresh_input_if_needed(&mut self) -> bool {
         let failed = self.stream_failed.swap(false, Ordering::Relaxed);
-        let wanted = resolve_input_name(
-            self.preferred.as_deref(),
-            &input_device_names(),
-            default_input_name().as_deref(),
-        );
+        // Enumerating every device is only needed to see whether the chosen
+        // one is present; the default alone is a cheaper query and the
+        // common case, and this runs on the press-to-record path.
+        let wanted = match self.preferred.as_deref() {
+            None => default_input_name(),
+            preferred => resolve_input_name(
+                preferred,
+                &input_device_names(),
+                default_input_name().as_deref(),
+            ),
+        };
         let wanted_changed = wanted.is_some_and(|name| name != self.input.name);
         if !(failed || wanted_changed) {
             return false;

@@ -74,6 +74,9 @@ struct Live {
     session: Session,
     pressed_at: Instant,
     mic_ready_ms: u64,
+    /// The behavior the session started under; a mode switch in Settings
+    /// mid-dictation must not strand a held key or swallow a press.
+    behavior: HotkeyBehavior,
 }
 
 pub struct Dictations {
@@ -116,9 +119,32 @@ impl Dictations {
         }
     }
 
+    /// The hotkey went down. Hold mode starts a dictation; toggle mode
+    /// starts one, or stops and pastes the one in flight.
+    pub fn key_down(&mut self) {
+        let behavior = self.settings.lock().unwrap().hotkey_behavior;
+        match (behavior, self.live.is_some()) {
+            (HotkeyBehavior::Toggle, true) => self.release(),
+            (_, true) => {}
+            (_, false) => self.press(behavior),
+        }
+    }
+
+    /// The hotkey came up. Only a session started in hold mode ends here;
+    /// toggle mode waits for the next press.
+    pub fn key_up(&mut self) {
+        if self
+            .live
+            .as_ref()
+            .is_some_and(|live| live.behavior == HotkeyBehavior::Hold)
+        {
+            self.release();
+        }
+    }
+
     /// Arm the microphone and start streaming. Ignored while a dictation is
     /// already in flight, so a repeated key-down cannot open a second one.
-    pub fn press(&mut self) {
+    fn press(&mut self, behavior: HotkeyBehavior) {
         if self.live.is_some() {
             return;
         }
@@ -171,12 +197,13 @@ impl Dictations {
             session,
             pressed_at,
             mic_ready_ms: pressed_at.elapsed().as_millis() as u64,
+            behavior,
         });
         self.emit(PhaseEvent::RecordingStarted);
     }
 
     /// Stop recording, wait for the transcript, and paste it.
-    pub fn release(&mut self) {
+    fn release(&mut self) {
         let Some(live) = self.live.take() else {
             return;
         };
@@ -204,20 +231,6 @@ impl Dictations {
         // An empty transcript ends like a cancel: the pill plays its quiet
         // ending, keeping the success bloom to mean words actually landed.
         self.ended(error, outcome == Outcome::Empty);
-    }
-
-    /// One key-down in toggle mode: start a dictation, or stop and paste the
-    /// one in flight.
-    pub fn toggle(&mut self) {
-        if self.live.is_some() {
-            self.release();
-        } else {
-            self.press();
-        }
-    }
-
-    pub fn hotkey_behavior(&self) -> HotkeyBehavior {
-        self.settings.lock().unwrap().hotkey_behavior
     }
 
     /// Discard the dictation in flight. Does nothing when there is none.

@@ -357,8 +357,8 @@ fn main() -> Result<()> {
             })
             .detach();
             pill::manage(cx, dictation.clone(), levels);
-            let updatable = updater::start(cx);
-            statusbar::install(cx, &dictation, session_settings.clone(), updatable);
+            updater::start(cx);
+            statusbar::install(cx, &dictation, session_settings.clone());
             cx.set_global(AppServices {
                 dictation,
                 hotkey: HotkeyRebind {
@@ -423,57 +423,16 @@ fn control_loop(
         if event.id != hotkeys.record.load(Ordering::Relaxed) {
             continue;
         }
-        match hotkey_action(dictations.hotkey_behavior(), event.state) {
-            Some(HotkeyAction::Press) => dictations.press(),
-            Some(HotkeyAction::Release) => dictations.release(),
-            Some(HotkeyAction::Toggle) => dictations.toggle(),
-            None => {}
+        match event.state {
+            HotKeyState::Pressed => dictations.key_down(),
+            HotKeyState::Released => dictations.key_up(),
         }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum HotkeyAction {
-    Press,
-    Release,
-    Toggle,
-}
-
-/// What a hotkey transition means under the configured behavior. Toggle
-/// mode acts on key-down only, so the release that follows every press is
-/// nothing to react to.
-fn hotkey_action(behavior: HotkeyBehavior, state: HotKeyState) -> Option<HotkeyAction> {
-    match (behavior, state) {
-        (HotkeyBehavior::Hold, HotKeyState::Pressed) => Some(HotkeyAction::Press),
-        (HotkeyBehavior::Hold, HotKeyState::Released) => Some(HotkeyAction::Release),
-        (HotkeyBehavior::Toggle, HotKeyState::Pressed) => Some(HotkeyAction::Toggle),
-        (HotkeyBehavior::Toggle, HotKeyState::Released) => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn toggle_mode_ignores_key_release() {
-        assert_eq!(
-            hotkey_action(HotkeyBehavior::Hold, HotKeyState::Pressed),
-            Some(HotkeyAction::Press)
-        );
-        assert_eq!(
-            hotkey_action(HotkeyBehavior::Hold, HotKeyState::Released),
-            Some(HotkeyAction::Release)
-        );
-        assert_eq!(
-            hotkey_action(HotkeyBehavior::Toggle, HotKeyState::Pressed),
-            Some(HotkeyAction::Toggle)
-        );
-        assert_eq!(
-            hotkey_action(HotkeyBehavior::Toggle, HotKeyState::Released),
-            None
-        );
-    }
 
     #[test]
     fn vad_model_materializes_and_repairs() {

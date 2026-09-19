@@ -62,10 +62,18 @@ jobs:
         run: |
           notes=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")
           gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "$GITHUB_REF_NAME" --notes "$notes" --generate-notes
+      # Everything after the release exists must not turn the run red: the
+      # tag cannot be re-run once the release is published.
       - name: Update Homebrew tap
+        continue-on-error: true
         env:
           TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
-        run: ./scripts/update-tap.sh "$GITHUB_REF_NAME"
+        run: |
+          if [ -z "$TAP_DEPLOY_KEY" ]; then
+            echo "TAP_DEPLOY_KEY is not configured, skipping the Homebrew tap update."
+            exit 0
+          fi
+          ./scripts/update-tap.sh "$GITHUB_REF_NAME"
       - name: Trigger site deploy
         continue-on-error: true
         env:

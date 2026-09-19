@@ -13,6 +13,17 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 cd "$script_dir/.."
 tools="$(./scripts/fetch-sparkle.sh)/bin"
 
+# The secret must be the private half of the public key every installed
+# copy carries, or the feed signs fine and every install rejects it. The
+# exported key is the 32-byte Ed25519 seed; wrap it as PKCS#8 and derive.
+committed=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" crates/diktafon/resources/Info.plist)
+derived=$({ printf '302e020100300506032b657004220420' | xxd -r -p; printf '%s' "$SPARKLE_PRIVATE_KEY" | base64 -d; } |
+  openssl pkey -inform DER -pubout -outform DER | tail -c 32 | base64)
+if [ "$derived" != "$committed" ]; then
+  echo "SPARKLE_PRIVATE_KEY does not match SUPublicEDKey in Info.plist; installed copies would reject this feed." >&2
+  exit 1
+fi
+
 notes=$(git tag -l --format='%(contents)' "$tag")
 trap 'rm -f "$archives"/*.md' EXIT
 for image in "$archives"/*.dmg; do

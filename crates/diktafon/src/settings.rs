@@ -558,6 +558,12 @@ impl SettingsWindow {
         cx.spawn_in(window, async move |view, cx| {
             loop {
                 cx.background_executor().timer(MICROPHONE_RESCAN).await;
+                let showing = view.read_with(cx, |view: &Self, _| view.section == Section::General);
+                match showing {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(_) => return,
+                }
                 let connected = cx
                     .background_executor()
                     .spawn(async { crate::capture::input_device_names() })
@@ -1439,7 +1445,7 @@ impl SettingsWindow {
     /// that opens Sparkle's window, and the automatic-check switch. A build
     /// that does not update itself shows only the version.
     fn updates_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let check = updater::status(cx).map(|status| status.read(cx).check.clone());
+        let check = updater::status(cx).map(|status| status.read(cx).clone());
         let (detail, emphasized) = match &check {
             None => ("This build does not update itself.".to_string(), false),
             Some(UpdateCheck::Unknown) => ("Not checked yet.".to_string(), false),
