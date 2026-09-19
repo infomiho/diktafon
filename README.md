@@ -63,7 +63,7 @@ Microphone and Accessibility permissions to the app itself:
 
 ```sh
 ./scripts/bundle.sh
-open target/diktafon.app
+open target/diktafon-dev.app
 ```
 
 ## Releases

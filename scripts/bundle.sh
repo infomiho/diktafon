@@ -21,7 +21,7 @@ fi
 
 cargo build --release -p diktafon -p diktafond
 
-app=target/diktafon.app
+app="target/diktafon-dev.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 cp crates/diktafon/resources/Info.plist "$app/Contents/Info.plist"
@@ -30,8 +30,11 @@ cp crates/diktafon/resources/Info.plist "$app/Contents/Info.plist"
 # Developer ID, so sharing one bundle id means one of them always reads its
 # own grant as denied. Local builds get their own id and name instead.
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.infomiho.diktafon.dev" "$app/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleName diktafon (dev)" "$app/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName diktafon (dev)" "$app/Contents/Info.plist"
+# System Settings labels a privacy row from the bundle's name on disk, so the
+# bundle is named diktafon-dev.app too; otherwise both builds show as
+# "diktafon" and you cannot tell which row is which.
+/usr/libexec/PlistBuddy -c "Set :CFBundleName diktafon-dev" "$app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName diktafon-dev" "$app/Contents/Info.plist"
 mkdir -p "$app/Contents/Resources"
 cp crates/diktafon/resources/diktafon.icns "$app/Contents/Resources/diktafon.icns"
 cp THIRD_PARTY_NOTICES.md "$app/Contents/Resources/THIRD_PARTY_NOTICES.md"
@@ -56,5 +59,5 @@ test -f "$app/Contents/Resources/THIRD_PARTY_NOTICES.md"
 test -f "$app/Contents/Resources/licenses/Apache-2.0.txt"
 
 echo "Built $app"
-echo "Launch with: open $app  (permissions attach to the app; no console output)"
+echo "Launch with: open "$app"  (permissions attach to the app; no console output)"
 echo "For console output run it from a terminal instead; permissions then attach to that terminal."
