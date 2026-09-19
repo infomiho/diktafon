@@ -51,6 +51,19 @@ sign() {
   fi
 }
 
+# The hardened runtime denies the microphone outright, with no prompt and no
+# row in System Settings, unless the signature carries the audio-input
+# exception. Only the app itself records, so only it gets the entitlements.
+sign_app() {
+  if [ "$identity" = "-" ]; then
+    codesign --force --sign - "$@"
+  else
+    codesign --force --timestamp --options runtime \
+      --entitlements crates/diktafon/resources/entitlements.plist \
+      --sign "$identity" "$@"
+  fi
+}
+
 app="$target_directory/$profile/diktafon.app"
 contents="$app/Contents"
 rm -rf "$app"
@@ -89,7 +102,7 @@ sign "$sparkle_framework/Versions/B/Autoupdate"
 sign "$sparkle_framework/Versions/B/Updater.app"
 sign "$sparkle_framework"
 sign "$contents/MacOS/diktafond"
-sign "$app"
+sign_app "$app"
 codesign --verify --deep --strict "$app"
 
 architecture=$(uname -m)
