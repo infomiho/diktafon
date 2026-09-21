@@ -105,6 +105,22 @@ sign "$contents/MacOS/diktafond"
 sign_app "$app"
 codesign --verify --deep --strict "$app"
 
+# A bundle that lost the microphone entitlement still builds, signs, and
+# notarizes cleanly; it just can never record, with no prompt and no row in
+# System Settings to explain why. Every shipped release before 0.3.1 was
+# built that way, so the signature is checked here rather than trusted.
+if [ "$identity" != "-" ]; then
+  codesign -d --entitlements :- "$app" 2>/dev/null |
+    grep -q "com.apple.security.device.audio-input" || {
+    echo "Signed app carries no microphone entitlement; it could never record." >&2
+    exit 1
+  }
+  codesign -d --verbose=4 "$app" 2>&1 | grep -q "flags=.*runtime" || {
+    echo "Signed app is not using the hardened runtime." >&2
+    exit 1
+  }
+fi
+
 architecture=$(uname -m)
 image="dist/diktafon-$version-macOS-$architecture.dmg"
 staging=$(mktemp -d)
