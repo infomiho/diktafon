@@ -55,6 +55,8 @@ arboard = "3"
 core-graphics = "0.24"
 anyhow.workspace = true
 diktafon-protocol.workspace = true
+objc2-core-audio = "0.3.2"
+objc2-core-audio-types = "0.3.2"
 
 [dev-dependencies]
 env_logger = "0.11"

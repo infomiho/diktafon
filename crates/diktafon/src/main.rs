@@ -8,6 +8,7 @@ mod daemon_process;
 mod dictation;
 mod keymap;
 mod mark;
+mod muting;
 mod onboarding;
 mod paste;
 mod permission_ui;

@@ -9,7 +9,7 @@ use crate::config::{HotkeyBehavior, SessionSettings};
 use crate::dictation::PhaseEvent;
 use crate::permissions;
 use crate::transport::DaemonClient;
-use crate::{paste, sounds, stats};
+use crate::{muting, paste, sounds, stats};
 use diktafon_protocol::Msg;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -93,6 +93,9 @@ struct Live {
     /// The behavior the session started under; a mode switch in Settings
     /// mid-dictation must not strand a held key or swallow a press.
     behavior: HotkeyBehavior,
+    /// Playback muted for this dictation; dropping it restores. Taking it
+    /// early in an end path lets the session's own cues play unmuted.
+    muted: Option<muting::Muted>,
 }
 
 pub struct Dictations {
@@ -219,24 +222,38 @@ impl Dictations {
             self.ended(Some("Microphone unavailable".into()), false);
             return;
         }
-        self.play(sounds::Cue::Start);
+        // Muting playback is this session's start signal: the recorded cue
+        // would play straight into the device we just silenced, so it only
+        // sounds when there was nothing to mute.
+        let mut muted = None;
+        if self.settings.lock().unwrap().mute_while_recording {
+            muted = muting::Muted::engage();
+        }
+        if muted.is_none() {
+            self.play(sounds::Cue::Start);
+        }
         println!("recording...");
         self.live = Some(Live {
             session,
             pressed_at,
             mic_ready_ms: pressed_at.elapsed().as_millis() as u64,
             behavior,
+            muted,
         });
         self.emit(PhaseEvent::RecordingStarted);
     }
 
     /// Stop recording, wait for the transcript, and paste it.
     fn release(&mut self) {
-        let Some(live) = self.live.take() else {
+        let Some(mut live) = self.live.take() else {
             return;
         };
         let stopped_at = Instant::now();
         let captured = live.session.stop();
+        // Playback back the moment capture ends, not when the transcript
+        // lands; dropping the guard writes the saved state back. Stopping
+        // first keeps the returning audio out of the recording tail.
+        drop(live.muted.take());
         self.emit(PhaseEvent::RecordingStopped);
 
         let (mut error, mut outcome) = classify(self.daemon.finish(), |text| {
@@ -273,9 +290,12 @@ impl Dictations {
 
     /// Discard the dictation in flight. Does nothing when there is none.
     pub fn cancel(&mut self) {
-        let Some(live) = self.live.take() else {
+        let Some(mut live) = self.live.take() else {
             return;
         };
+        // Restore before the cancel cue: it must not play into the muted
+        // device.
+        drop(live.muted.take());
         live.session.cancel();
         self.play(sounds::Cue::Cancel);
         println!("cancelled");

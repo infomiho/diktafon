@@ -87,6 +87,9 @@ pub struct SessionSettings {
     pub idle_unload_secs: u64,
     /// Audible cues: mic live, cancel, error.
     pub sound_cues: bool,
+    /// Mute the system's playback while the microphone is live, so music
+    /// or call audio does not fight the dictation; restored on session end.
+    pub mute_while_recording: bool,
     /// Dictation chord in global-hotkey syntax, e.g. "alt+space".
     pub hotkey: String,
     pub hotkey_behavior: HotkeyBehavior,
@@ -110,6 +113,7 @@ impl Default for SessionSettings {
             apple_prompt: DEFAULT_APPLE_PROMPT.into(),
             idle_unload_secs: 300,
             sound_cues: true,
+            mute_while_recording: false,
             hotkey: "alt+space".into(),
             hotkey_behavior: HotkeyBehavior::Hold,
             input_device: String::new(),
@@ -241,6 +245,14 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(settings.hotkey().id(), CONFIG.hotkey().id());
+    }
+
+    #[test]
+    fn mute_while_recording_is_opt_in() {
+        assert!(!SessionSettings::default().mute_while_recording);
+        let settings: SessionSettings =
+            serde_json::from_str(r#"{"mute_while_recording":true}"#).unwrap();
+        assert!(settings.mute_while_recording);
     }
 
     #[test]

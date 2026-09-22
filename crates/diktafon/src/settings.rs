@@ -317,6 +317,7 @@ pub struct SettingsWindow {
     /// Loaded asynchronously: the SMAppService query is a blocking XPC call.
     autostart: bool,
     sound_cues: bool,
+    mute_while_recording: bool,
     /// The dictation chord, in global-hotkey syntax.
     hotkey: String,
     hotkey_behavior: HotkeyBehavior,
@@ -733,6 +734,7 @@ impl SettingsWindow {
             microphone_names,
             autostart: false,
             sound_cues: current.sound_cues,
+            mute_while_recording: current.mute_while_recording,
             hotkey: current.hotkey.clone(),
             hotkey_behavior: current.hotkey_behavior,
             capturing_hotkey: false,
@@ -780,6 +782,7 @@ impl SettingsWindow {
             apple_prompt: self.apple_prompt_input.read(cx).value().to_string(),
             idle_unload_secs,
             sound_cues: self.sound_cues,
+            mute_while_recording: self.mute_while_recording,
             hotkey: self.hotkey.clone(),
             hotkey_behavior: self.hotkey_behavior,
             input_device: self.selected_microphone(cx),
@@ -1004,6 +1007,19 @@ impl SettingsWindow {
                     .checked(self.sound_cues)
                     .on_click(cx.listener(|view, checked: &bool, window, cx| {
                         view.sound_cues = *checked;
+                        view.save(window, cx);
+                        cx.notify();
+                    })),
+                cx,
+            ))
+            .child(Self::control_row(
+                "Mute while recording",
+                "Silence playback until the dictation ends. Replaces the start sound.",
+                Switch::new("mute-while-recording")
+                    .large()
+                    .checked(self.mute_while_recording)
+                    .on_click(cx.listener(|view, checked: &bool, window, cx| {
+                        view.mute_while_recording = *checked;
                         view.save(window, cx);
                         cx.notify();
                     })),
