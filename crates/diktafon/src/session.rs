@@ -96,6 +96,9 @@ struct Live {
     /// Playback muted for this dictation; dropping it restores. Taking it
     /// early in an end path lets the session's own cues play unmuted.
     muted: Option<muting::Muted>,
+    /// Filename the recording is retained under, minted at press and already
+    /// sent to the daemon for the history link; `None` when retention is off.
+    recording: Option<String>,
 }
 
 pub struct Dictations {
@@ -181,18 +184,23 @@ impl Dictations {
         let pressed_at = Instant::now();
         // Before the recorder: the daemon may have to be spawned and load its
         // models, and that runs while the user is still speaking.
-        let (config, preferred_input) = {
+        let (mut config, preferred_input, recording) = {
             let settings = self.settings.lock().unwrap();
             (
                 settings.session(),
                 settings.preferred_input().map(str::to_owned),
+                settings.retain_recordings.then(crate::recordings::new_name),
             )
         };
+        // The daemon stamps this name into the history entry; the matching WAV
+        // is written at release. Empty when retention is off.
+        config.recording = recording.as_deref().unwrap_or_default().to_owned();
         let _ = self.daemon.chunk_tx.send(Msg::Start(config));
-        let session = match self
-            .recorder
-            .start(self.daemon.chunk_tx.clone(), preferred_input.as_deref())
-        {
+        let session = match self.recorder.start(
+            self.daemon.chunk_tx.clone(),
+            preferred_input.as_deref(),
+            recording.is_some(),
+        ) {
             Ok(session) => session,
             Err(e) => {
                 // The daemon is already holding the session started above;
@@ -239,6 +247,7 @@ impl Dictations {
             mic_ready_ms: pressed_at.elapsed().as_millis() as u64,
             behavior,
             muted,
+            recording,
         });
         self.emit(PhaseEvent::RecordingStarted);
     }
@@ -255,6 +264,14 @@ impl Dictations {
         // first keeps the returning audio out of the recording tail.
         drop(live.muted.take());
         self.emit(PhaseEvent::RecordingStopped);
+        // Retain the clip before the blocking finish(): the WAV is what makes a
+        // poor transcription debuggable, and a storage failure must never stop
+        // the paste, so it is logged and ignored. Cancel never reaches here.
+        if let Some(name) = &live.recording
+            && let Err(e) = crate::recordings::save(name, &captured.samples)
+        {
+            eprintln!("retaining the recording failed: {e:#}");
+        }
 
         let (mut error, mut outcome) = classify(self.daemon.finish(), |text| {
             let failure = self.paste(text);

@@ -375,6 +375,8 @@ impl Inference {
                             entry.polish_ms = polish_ms;
                             entry.transcription_model = Some(selection.transcription.clone());
                             entry.polishing_model = Some(selection.polishing.clone());
+                            entry.recording =
+                                (!config.recording.is_empty()).then(|| config.recording.clone());
                             if let Err(e) =
                                 diktafon_protocol::history::append_to(history_path, &entry)
                             {

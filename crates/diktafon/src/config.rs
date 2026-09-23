@@ -90,6 +90,10 @@ pub struct SessionSettings {
     /// Mute the system's playback while the microphone is live, so music
     /// or call audio does not fight the dictation; restored on session end.
     pub mute_while_recording: bool,
+    /// Keep the newest dictations as local WAV audio so a poor transcription
+    /// can be heard again, re-transcribed, or used as tuning data. On by
+    /// default; clips live under `recordings/` in the data dir.
+    pub retain_recordings: bool,
     /// Dictation chord in global-hotkey syntax, e.g. "alt+space".
     pub hotkey: String,
     pub hotkey_behavior: HotkeyBehavior,
@@ -114,6 +118,7 @@ impl Default for SessionSettings {
             idle_unload_secs: 300,
             sound_cues: true,
             mute_while_recording: false,
+            retain_recordings: true,
             hotkey: "alt+space".into(),
             hotkey_behavior: HotkeyBehavior::Hold,
             input_device: String::new(),
@@ -172,6 +177,8 @@ impl SessionSettings {
             language: self.language.clone(),
             control_line: self.control_line.clone(),
             apple_prompt: self.apple_prompt.clone(),
+            recording: String::new(),
+            no_history: false,
         }
     }
 
@@ -253,6 +260,17 @@ mod tests {
         let settings: SessionSettings =
             serde_json::from_str(r#"{"mute_while_recording":true}"#).unwrap();
         assert!(settings.mute_while_recording);
+    }
+
+    #[test]
+    fn recordings_are_retained_by_default_and_can_be_opted_out() {
+        assert!(SessionSettings::default().retain_recordings);
+        let settings: SessionSettings =
+            serde_json::from_str(r#"{"retain_recordings":false}"#).unwrap();
+        assert!(!settings.retain_recordings);
+        // A config written before retention existed keeps it on.
+        let old: SessionSettings = serde_json::from_str(r#"{"sound_cues":false}"#).unwrap();
+        assert!(old.retain_recordings);
     }
 
     #[test]

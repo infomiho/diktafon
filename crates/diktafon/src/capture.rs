@@ -112,6 +112,10 @@ pub struct Captured {
     /// or muted device yields perfect zeros, which is otherwise
     /// indistinguishable from the user saying nothing.
     pub heard_audio: bool,
+    /// The whole session at 16 kHz mono, captured after resampling and before
+    /// VAD, so it includes the silences chunking dropped. Empty if the monitor
+    /// could not be joined. Used to retain the recording.
+    pub samples: Vec<f32>,
 }
 
 pub struct Session {
@@ -120,7 +124,7 @@ pub struct Session {
     cancelled: Arc<AtomicBool>,
     /// Set by the monitor once any sample is not exactly zero.
     heard: Arc<AtomicBool>,
-    monitor: JoinHandle<()>,
+    monitor: JoinHandle<Vec<f32>>,
     live_rx: mpsc::Receiver<()>,
 }
 
@@ -214,11 +218,14 @@ impl Recorder {
 
     /// Open a session on the preferred microphone (`None` for the system
     /// default), reopening the device first if the preference or the
-    /// hardware changed since the last one.
+    /// hardware changed since the last one. `retain_audio` decides whether
+    /// the monitor accumulates the whole pre-VAD session for the recording
+    /// archive; without retention that buffer would be built and thrown away.
     pub fn start(
         &mut self,
         chunk_tx: mpsc::Sender<Msg>,
         preferred: Option<&str>,
+        retain_audio: bool,
     ) -> Result<Session> {
         self.preferred = preferred.map(str::to_owned);
         let _ = self.ensure_input()?;
@@ -250,6 +257,9 @@ impl Recorder {
             move || {
                 let mut meter = LevelMeter::new();
                 let mut frame_tail: Vec<f32> = Vec::new();
+                // The whole session before VAD, so the retained recording holds
+                // exactly what the microphone heard including dropped silence.
+                let mut session_audio: Vec<f32> = Vec::new();
                 loop {
                     thread::sleep(MONITOR_TICK);
                     let done = stop.load(Ordering::Acquire);
@@ -259,6 +269,9 @@ impl Recorder {
                     }
                     meter.push(&fresh);
                     *levels.lock().unwrap() = meter.compute();
+                    if retain_audio {
+                        session_audio.extend_from_slice(&fresh);
+                    }
                     frame_tail.extend(fresh);
                     let frame_size = chunker.frame_size();
                     let mut frames = frame_tail.chunks_exact(frame_size);
@@ -283,6 +296,7 @@ impl Recorder {
                         break;
                     }
                 }
+                session_audio
             }
         });
 
@@ -386,11 +400,13 @@ impl Session {
         // Release pairs with the monitor's Acquire load, publishing the
         // `cancelled` store made by `cancel()` before this.
         self.stop.store(true, Ordering::Release);
-        self.monitor.join().ok();
+        // A panicked monitor yields no samples; retention then skips the clip.
+        let samples = self.monitor.join().unwrap_or_default();
         Captured {
             // Relaxed is enough: the join above establishes happens-before
             // with every store the monitor made.
             heard_audio: self.heard.load(Ordering::Relaxed),
+            samples,
         }
     }
 

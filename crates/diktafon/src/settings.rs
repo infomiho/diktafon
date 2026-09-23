@@ -318,6 +318,7 @@ pub struct SettingsWindow {
     autostart: bool,
     sound_cues: bool,
     mute_while_recording: bool,
+    retain_recordings: bool,
     /// The dictation chord, in global-hotkey syntax.
     hotkey: String,
     hotkey_behavior: HotkeyBehavior,
@@ -715,7 +716,7 @@ impl SettingsWindow {
         )
         .detach();
 
-        Self {
+        let view = Self {
             settings,
             section: Section::General,
             control,
@@ -735,6 +736,7 @@ impl SettingsWindow {
             autostart: false,
             sound_cues: current.sound_cues,
             mute_while_recording: current.mute_while_recording,
+            retain_recordings: current.retain_recordings,
             hotkey: current.hotkey.clone(),
             hotkey_behavior: current.hotkey_behavior,
             capturing_hotkey: false,
@@ -783,6 +785,7 @@ impl SettingsWindow {
             idle_unload_secs,
             sound_cues: self.sound_cues,
             mute_while_recording: self.mute_while_recording,
+            retain_recordings: self.retain_recordings,
             hotkey: self.hotkey.clone(),
             hotkey_behavior: self.hotkey_behavior,
             input_device: self.selected_microphone(cx),
@@ -1020,6 +1023,19 @@ impl SettingsWindow {
                     .checked(self.mute_while_recording)
                     .on_click(cx.listener(|view, checked: &bool, window, cx| {
                         view.mute_while_recording = *checked;
+                        view.save(window, cx);
+                        cx.notify();
+                    })),
+                cx,
+            ))
+            .child(Self::control_row(
+                "Keep recordings",
+                "Save dictation audio on this Mac so it can be replayed. Latest 20 kept.",
+                Switch::new("keep-recordings")
+                    .large()
+                    .checked(self.retain_recordings)
+                    .on_click(cx.listener(|view, checked: &bool, window, cx| {
+                        view.retain_recordings = *checked;
                         view.save(window, cx);
                         cx.notify();
                     })),
