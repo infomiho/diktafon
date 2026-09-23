@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Diktafon Settings mock</title>
+<script type="module" src="./settings.js?v=3"></script>
 <style>
   @font-face { font-family: "Chakra Petch"; src: url("../../crates/diktafon/assets/fonts/ChakraPetch-SemiBold.ttf"); font-weight: 600; }
   :root {
@@ -56,135 +57,6 @@
   .specimen .row { display: flex; align-items: baseline; gap: 24px; }
   .specimen .name { width: 130px; font-size: 12px; color: var(--on-surface-muted); }
   .specimen .sample { font-size: 24px; font-weight: 600; }
-
-  .window {
-    width: 720px;
-    height: 500px;
-    background: var(--background);
-    border-radius: 12px;
-    display: flex;
-    overflow: hidden;
-    box-shadow: 0 24px 60px rgba(0,0,0,0.6);
-  }
-  .sidebar {
-    width: 200px;
-    flex-shrink: 0;
-    background: var(--surface-sunken);
-    border-right: 1px solid var(--outline);
-    padding: 48px 12px 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    position: relative;
-  }
-  .traffic { position: absolute; top: 16px; left: 16px; display: flex; gap: 8px; }
-  .brand-row { display: flex; align-items: center; gap: 9px; padding: 4px 12px 14px; }
-  .brand-row img { width: 32px; height: 18px; }
-  .brand-row span { font-family: "Chakra Petch", sans-serif; font-size: 16px; font-weight: 600; letter-spacing: 0.02em; }
-  .traffic span { width: 12px; height: 12px; border-radius: 50%; background: #43465e; }
-  .traffic span:first-child { background: #ff5f57; }
-  .nav-item {
-    height: 40px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 0 12px;
-    border-radius: 8px;
-    color: var(--on-surface-muted);
-    font-size: 15px;
-  }
-  .nav-item.active { background: var(--surface-raised); color: var(--on-surface); }
-  .nav-item .icon { width: 16px; text-align: center; opacity: 0.8; }
-  /* Scrolls like the app's pane, so the mock window keeps its real height. */
-  .pane {
-    flex: 1;
-    min-width: 0;
-    padding: 32px;
-    display: flex;
-    flex-direction: column;
-    overflow-y: auto;
-    scrollbar-width: thin;
-    scrollbar-color: var(--surface-raised) transparent;
-  }
-  .pane h1 { font-family: var(--font-display); font-size: 24px; font-weight: 600; line-height: 1.2; letter-spacing: 0.01em; }
-  .content { margin-top: 32px; display: flex; flex-direction: column; gap: 32px; }
-
-  .field-label { font-size: 15px; font-weight: 500; }
-  .field .control { margin-top: 8px; }
-  .field .help { font-size: 13px; color: var(--on-surface-muted); margin-top: 8px; }
-
-  .control-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
-  .control-row .text .field-label { display: block; }
-  .control-row .text .help { font-size: 13px; color: var(--on-surface-muted); margin-top: 4px; }
-
-  .search {
-    height: 40px;
-    border: 1px solid var(--outline);
-    border-radius: 6px;
-    display: flex;
-    align-items: center;
-    padding: 0 12px;
-    background: var(--surface);
-    font-size: 15px;
-    color: var(--faint);
-    margin-bottom: 20px;
-  }
-  .hlist { display: flex; flex-direction: column; gap: 6px; }
-  .hday {
-    font-size: 13px; font-weight: 500;
-    color: var(--muted); margin: 20px 0 4px;
-  }
-  .hday:first-child { margin-top: 0; }
-  .hrow {
-    display: flex; align-items: flex-start; gap: 14px;
-    padding: 13px 14px; margin: 0 -14px; border-radius: 8px;
-  }
-  .hrow:hover { background: var(--surface-raised); }
-  .hrow .htime {
-    width: 40px; flex-shrink: 0; font-size: 13px; color: var(--faint);
-    font-variant-numeric: tabular-nums; padding-top: 1px;
-  }
-  .hrow .htext {
-    flex: 1; min-width: 0;
-    font-size: 15px; line-height: 1.5; color: var(--on-surface);
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-  }
-  .hcopy {
-    width: 28px; height: 28px; border-radius: 6px; flex-shrink: 0;
-    display: grid; place-items: center; color: var(--faint); cursor: pointer;
-  }
-  .hcopy:hover { background: color-mix(in srgb, var(--outline) 60%, transparent); color: var(--on-surface); }
-  .hcopy svg { width: 14px; height: 14px; }
-  .textarea {
-    min-height: 64px;
-    border: 1px solid var(--outline);
-    border-radius: 6px;
-    padding: 9px 12px;
-    background: var(--surface);
-    font-size: 15px;
-    color: var(--ring-idle);
-  }
-  .select, .input {
-    height: 40px;
-    border: 1px solid var(--outline);
-    border-radius: 6px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 12px;
-    background: var(--surface);
-    font-size: 15px;
-  }
-  .select.compact { width: 220px; flex-shrink: 0; }
-  .input .placeholder { color: var(--ring-idle); opacity: 0.6; }
-  .select .chev { color: var(--on-surface-muted); }
-
-  /* The kit's switch: a 36x20 track with a 16px thumb inset 2px, the same
-     for its Medium and Large sizes. */
-  .switch { width: 36px; height: 20px; border-radius: 10px; background: var(--switch-track); position: relative; flex-shrink: 0; }
-  .switch .thumb { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--on-surface); opacity: 0.9; }
-  .switch.on { background: var(--accent); }
-  .switch.on .thumb { left: auto; right: 2px; opacity: 1; }
 
   .keycaps { display: flex; gap: 6px; cursor: pointer; border-radius: 6px; }
   .keycaps:hover .key, .keycaps.hover .key { border-color: var(--outline-hover); }
@@ -254,23 +126,8 @@
   .perm + .perm { border-top: 1px solid var(--outline); }
   .perm-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .perm-name { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 500; }
-  /* State badge: a pill in the state's semantic color, green/grey/red. */
-  .badge { display: inline-flex; align-items: center; gap: 8px; height: 24px; padding: 0 8px; border-radius: 12px; font-size: 13px; font-weight: 500; color: var(--on-surface-muted); background: var(--surface-raised); border: 1px solid var(--outline); }
-  .badge .dot { width: 8px; height: 8px; border-radius: 50%; }
-  .badge.granted .dot { background: var(--status-ok); }
-  .badge.pending .dot { background: var(--ring-idle); }
-  .badge.missing .dot { background: var(--signal-red); }
   .perm .help { margin: 0; font-size: 13px; color: var(--on-surface-muted); }
-  .sheet .button { border-color: var(--outline-hover); }
-  .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-  .close {
-    width: 28px; height: 28px; margin-right: -6px; border-radius: 6px; flex-shrink: 0;
-    display: grid; place-items: center; color: var(--faint); cursor: pointer;
-    transition: background-color 120ms ease, color 120ms ease;
-  }
-  .close:hover { background: var(--surface-raised); color: var(--on-surface); }
 
-  .window { position: relative; }
   .scrim {
     position: absolute; inset: 0; background: rgba(11, 13, 32, 0.5);
     display: flex; align-items: center; justify-content: center;
@@ -282,8 +139,8 @@
     display: flex; flex-direction: column; gap: 16px;
     animation: sheet-in 150ms cubic-bezier(0.23, 1, 0.32, 1) both;
   }
+  .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
   .sheet-title { font-family: var(--font-display); font-size: 24px; font-weight: 600; line-height: 1.2; letter-spacing: 0.01em; }
-  .button.primary { background: var(--accent); border-color: transparent; color: var(--on-accent); }
   @keyframes scrim-in { from { opacity: 0; } }
   @keyframes sheet-in { from { opacity: 0; transform: scale(0.97); } }
   @media (prefers-reduced-motion: reduce) { .sheet { animation: scrim-in 160ms ease-out both; } }
@@ -323,16 +180,6 @@
   .card .row { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
   .card .row .label { font-size: 13px; color: var(--on-surface-muted); }
   .card.updates { gap: 16px; }
-  .card.updates .control-row.divided { padding-top: 16px; border-top: 1px solid var(--outline); }
-  .button {
-    height: 40px; padding: 0 16px; display: flex; align-items: center; flex-shrink: 0;
-    border: 1px solid var(--outline); border-radius: 6px; background: var(--surface-raised);
-    font-size: 15px; font-weight: 500; cursor: pointer;
-    transition: background-color 120ms ease, border-color 120ms ease, transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
-  }
-  .button:hover { background: var(--raised-hover); border-color: var(--outline-hover); }
-  .button:active { transform: scale(0.97); }
-  .button.primary:hover { background: var(--accent-hover); border-color: transparent; }
   .card .row .value {
     font-family: var(--font-mono);
     font-size: 13px;
@@ -346,74 +193,44 @@
 <body>
 
   <!-- General -->
-  <div class="window">
-    <div class="sidebar">
-      <div class="traffic"><span></span><span></span><span></span></div>
-      <div class="brand-row"><img src="../../assets/diktafon-mark-flat.svg" width="32" height="18" alt=""><span>diktafon</span></div>
-      <div class="nav-item active"><span class="icon">⚙</span>General</div>
-      <div class="nav-item"><span class="icon">◈</span>Models</div>
-      <div class="nav-item"><span class="icon">◷</span>History</div>
-      <div class="nav-item"><span class="icon">▣</span>Advanced</div>
-    </div>
-    <div class="pane">
-      <h1>General</h1>
-      <div class="content">
-        <div>
-          <div class="control-row">
-            <div class="text">
-              <span class="field-label">Hotkey</span>
-              <div class="help">Click the keys to record a new hotkey.</div>
-            </div>
-            <div class="keycaps"><span class="key">⌥</span><span class="key">Space</span></div>
-          </div>
-          <div class="options" role="radiogroup" aria-label="Hotkey behavior">
-            <div class="option on" role="radio" aria-checked="true">
-              <div class="radio"></div>
-              <div>
-                <div class="name">Hold to talk</div>
-                <div class="desc">Hold <span class="k sym">⌥</span><span class="k">Space</span> while you speak. Release to paste.</div>
-              </div>
-            </div>
-            <div class="option" role="radio" aria-checked="false">
-              <div class="radio"></div>
-              <div>
-                <div class="name">Press to toggle</div>
-                <div class="desc">Press <span class="k sym">⌥</span><span class="k">Space</span> to start. Press again to paste.</div>
-              </div>
-            </div>
+  <dk-settings-window section="general">
+    <div>
+      <dk-control-row label="Hotkey" help="Click the keys to record a new hotkey.">
+        <div class="keycaps"><span class="key">⌥</span><span class="key">Space</span></div>
+      </dk-control-row>
+      <div class="options" role="radiogroup" aria-label="Hotkey behavior">
+        <div class="option on" role="radio" aria-checked="true">
+          <div class="radio"></div>
+          <div>
+            <div class="name">Hold to talk</div>
+            <div class="desc">Hold <span class="k sym">⌥</span><span class="k">Space</span> while you speak. Release to paste.</div>
           </div>
         </div>
-        <div class="control-row">
-          <div class="text">
-            <span class="field-label">Microphone</span>
-            <div class="help">Follows System Settings unless you pick one.</div>
+        <div class="option" role="radio" aria-checked="false">
+          <div class="radio"></div>
+          <div>
+            <div class="name">Press to toggle</div>
+            <div class="desc">Press <span class="k sym">⌥</span><span class="k">Space</span> to start. Press again to paste.</div>
           </div>
-          <div class="select compact"><span>System default</span><span class="chev">⌄</span></div>
-        </div>
-        <div class="control-row">
-          <div class="text">
-            <span class="field-label">Sound cues</span>
-            <div class="help">Play a sound when a dictation starts, is canceled, or fails.</div>
-          </div>
-          <div class="switch on"><div class="thumb"></div></div>
-        </div>
-        <div class="control-row">
-          <div class="text">
-            <span class="field-label">Mute while recording</span>
-            <div class="help">Silence playback until the dictation ends. Replaces the start sound.</div>
-          </div>
-          <div class="switch"><div class="thumb"></div></div>
-        </div>
-        <div class="control-row">
-          <div class="text">
-            <span class="field-label">Open at login</span>
-            <div class="help">Open Diktafon when you log in.</div>
-          </div>
-          <div class="switch on"><div class="thumb"></div></div>
         </div>
       </div>
     </div>
-  </div>
+    <dk-control-row label="Microphone" help="Follows System Settings unless you pick one.">
+      <dk-select compact value="System default"></dk-select>
+    </dk-control-row>
+    <dk-control-row label="Sound cues" help="Play a sound when a dictation starts, is canceled, or fails.">
+      <dk-switch on></dk-switch>
+    </dk-control-row>
+    <dk-control-row label="Mute while recording" help="Silence playback until the dictation ends. Replaces the start sound.">
+      <dk-switch></dk-switch>
+    </dk-control-row>
+    <dk-control-row label="Keep recordings" help="Save dictation audio on this Mac so it can be replayed. Latest 20 kept.">
+      <dk-switch on></dk-switch>
+    </dk-control-row>
+    <dk-control-row label="Open at login" help="Open Diktafon when you log in.">
+      <dk-switch on></dk-switch>
+    </dk-control-row>
+  </dk-settings-window>
 
   <!-- Hotkey control states -->
   <div class="specimen">
@@ -425,268 +242,150 @@
   <!-- Permission row states -->
   <div class="specimen">
     <div class="perm-list">
-            <div class="perm">
-              <div class="perm-text">
-                <div class="perm-name">Microphone<span class="badge granted"><span class="dot"></span>Granted</span></div>
-                <div class="help">Records your voice while you dictate.</div>
-              </div>
-              
-            </div>
-            <div class="perm">
-              <div class="perm-text">
-                <div class="perm-name">Microphone<span class="badge pending"><span class="dot"></span>Not asked</span></div>
-                <div class="help">Records your voice while you dictate.</div>
-              </div>
-              <div class="button">Request access</div>
-            </div>
-            <div class="perm">
-              <div class="perm-text">
-                <div class="perm-name">Microphone<span class="badge missing"><span class="dot"></span>Denied</span></div>
-                <div class="help">Records your voice while you dictate.</div>
-              </div>
-              <div class="button">Open System Settings</div>
-            </div>
+      <div class="perm">
+        <div class="perm-text">
+          <div class="perm-name">Microphone<dk-badge state="granted">Granted</dk-badge></div>
+          <div class="help">Records your voice while you dictate.</div>
+        </div>
+      </div>
+      <div class="perm">
+        <div class="perm-text">
+          <div class="perm-name">Microphone<dk-badge state="pending">Not asked</dk-badge></div>
+          <div class="help">Records your voice while you dictate.</div>
+        </div>
+        <dk-button>Request access</dk-button>
+      </div>
+      <div class="perm">
+        <div class="perm-text">
+          <div class="perm-name">Microphone<dk-badge state="missing">Denied</dk-badge></div>
+          <div class="help">Records your voice while you dictate.</div>
+        </div>
+        <dk-button>Open System Settings</dk-button>
+      </div>
     </div>
   </div>
 
   <!-- Models -->
-  <div class="window">
-    <div class="sidebar">
-      <div class="traffic"><span></span><span></span><span></span></div>
-      <div class="brand-row"><img src="../../assets/diktafon-mark-flat.svg" width="32" height="18" alt=""><span>diktafon</span></div>
-      <div class="nav-item"><span class="icon">⚙</span>General</div>
-      <div class="nav-item active"><span class="icon">◈</span>Models</div>
-      <div class="nav-item"><span class="icon">◷</span>History</div>
-      <div class="nav-item"><span class="icon">▣</span>Advanced</div>
+  <dk-settings-window section="models">
+    <div class="group-card">
+      <div class="card-head">Transcription</div>
+      <dk-field label="Transcription model" help="Size: 770 MB">
+        <dk-select value="Canary 1B Flash"></dk-select>
+      </dk-field>
+      <dk-field label="Language" help="Choose the language you speak.">
+        <dk-select value="English (en)"></dk-select>
+      </dk-field>
     </div>
-    <div class="pane">
-      <h1>Models</h1>
-      <div class="content">
-        <div class="group-card">
-          <div class="card-head">Transcription</div>
-          <div class="field">
-            <div class="field-label">Transcription model</div>
-            <div class="control select"><span>Canary 1B Flash</span><span class="chev">⌄</span></div>
-            <div class="help">Size: 770 MB</div>
-          </div>
-          <div class="field">
-            <div class="field-label">Language</div>
-            <div class="control select"><span>English (en)</span><span class="chev">⌄</span></div>
-            <div class="help">Choose the language you speak.</div>
-          </div>
-        </div>
-        <div class="group-card">
-          <div class="card-head">Polishing</div>
-          <div class="field">
-            <div class="field-label">Polishing model</div>
-            <div class="control select"><span>Apple Intelligence</span><span class="chev">⌄</span></div>
-            <div class="help">On-device model built into macOS.</div>
-          </div>
-        </div>
-      </div>
+    <div class="group-card">
+      <div class="card-head">Polishing</div>
+      <dk-field label="Polishing model" help="On-device model built into macOS.">
+        <dk-select value="Apple Intelligence"></dk-select>
+      </dk-field>
     </div>
-  </div>
+  </dk-settings-window>
 
   <!-- Advanced -->
-  <div class="window">
-    <div class="sidebar">
-      <div class="traffic"><span></span><span></span><span></span></div>
-      <div class="brand-row"><img src="../../assets/diktafon-mark-flat.svg" width="32" height="18" alt=""><span>diktafon</span></div>
-      <div class="nav-item"><span class="icon">⚙</span>General</div>
-      <div class="nav-item"><span class="icon">◈</span>Models</div>
-      <div class="nav-item"><span class="icon">◷</span>History</div>
-      <div class="nav-item active"><span class="icon">▣</span>Advanced</div>
-    </div>
-    <div class="pane">
-      <h1>Advanced</h1>
-      <div class="content">
-        <div class="control-row">
-          <div class="text">
-            <span class="field-label">Permissions</span>
-            <div class="help">Microphone not requested. Accessibility not granted.</div>
-          </div>
-          <div class="button">Review…</div>
+  <dk-settings-window section="advanced">
+    <dk-control-row label="Permissions" help="Microphone not requested. Accessibility not granted.">
+      <dk-button>Review…</dk-button>
+    </dk-control-row>
+    <dk-field label="Unload models when idle" help="Frees memory between dictations. The next one starts a moment slower while models reload.">
+      <dk-select value="After 1 minute"></dk-select>
+    </dk-field>
+    <dk-field label="Daemon">
+      <div class="card">
+        <div class="status-row">
+          <span class="dot"></span>
+          <span class="status-word">Running</span>
+          <span class="residency">Models idle</span>
         </div>
-        <div class="field">
-          <div class="field-label">Unload models when idle</div>
-          <div class="control select"><span>After 1 minute</span><span class="chev">⌄</span></div>
-          <div class="help">Frees memory between dictations. The next one starts a moment slower while models reload.</div>
+        <div class="row">
+          <span class="label">Transcription model</span>
+          <span class="value">cohere-transcribe-int8</span>
         </div>
-        <div class="field">
-          <div class="field-label">Daemon</div>
-          <div class="control card">
-            <div class="status-row">
-              <span class="dot"></span>
-              <span class="status-word">Running</span>
-              <span class="residency">Models idle</span>
-            </div>
-            <div class="row">
-              <span class="label">Transcription model</span>
-              <span class="value">cohere-transcribe-int8</span>
-            </div>
-            <div class="row">
-              <span class="label">Polishing model</span>
-              <span class="value">s1-mini-q4_k_m</span>
-            </div>
-          </div>
-        </div>
-        <div class="field">
-          <div class="field-label">Updates</div>
-          <div class="control card updates">
-            <div class="control-row">
-              <div class="text">
-                <span class="field-label">Version 0.1.2</span>
-                <div class="help">Up to date.</div>
-              </div>
-              <div class="button">Check for updates</div>
-            </div>
-            <div class="control-row divided">
-              <div class="text">
-                <span class="field-label">Check for updates automatically</span>
-                <div class="help">Once a day. You choose when to install.</div>
-              </div>
-              <div class="switch on"><div class="thumb"></div></div>
-            </div>
-          </div>
+        <div class="row">
+          <span class="label">Polishing model</span>
+          <span class="value">s1-mini-q4_k_m</span>
         </div>
       </div>
-    </div>
-  </div>
-
+    </dk-field>
+    <dk-field label="Updates">
+      <div class="card updates">
+        <dk-control-row label="Version 0.1.2" help="Up to date.">
+          <dk-button>Check for updates</dk-button>
+        </dk-control-row>
+        <dk-control-row divided label="Check for updates automatically" help="Once a day. You choose when to install.">
+          <dk-switch on></dk-switch>
+        </dk-control-row>
+      </div>
+    </dk-field>
+  </dk-settings-window>
 
   <!-- Advanced, Permissions sheet open -->
-  <div class="window">
-    <div class="sidebar">
-      <div class="traffic"><span></span><span></span><span></span></div>
-      <div class="brand-row"><img src="../../assets/diktafon-mark-flat.svg" width="32" height="18" alt=""><span>diktafon</span></div>
-      <div class="nav-item"><span class="icon">⚙</span>General</div>
-      <div class="nav-item"><span class="icon">◈</span>Models</div>
-      <div class="nav-item"><span class="icon">◷</span>History</div>
-      <div class="nav-item active"><span class="icon">▣</span>Advanced</div>
-    </div>
-    <div class="pane">
-      <h1>Advanced</h1>
-      <div class="content">
-        <div class="control-row">
-          <div class="text">
-            <span class="field-label">Permissions</span>
-            <div class="help">Microphone not requested. Accessibility not granted.</div>
+  <dk-settings-window section="advanced">
+    <dk-control-row label="Permissions" help="Microphone not requested. Accessibility not granted.">
+      <dk-button>Review…</dk-button>
+    </dk-control-row>
+    <dk-field label="Unload models when idle" help="Frees memory between dictations. The next one starts a moment slower while models reload.">
+      <dk-select value="After 1 minute"></dk-select>
+    </dk-field>
+    <dk-field label="Daemon">
+      <div class="card">
+        <div class="status-row">
+          <span class="dot"></span>
+          <span class="status-word">Running</span>
+          <span class="residency">Models idle</span>
+        </div>
+        <div class="row">
+          <span class="label">Transcription model</span>
+          <span class="value">cohere-transcribe-int8</span>
+        </div>
+        <div class="row">
+          <span class="label">Polishing model</span>
+          <span class="value">s1-mini-q4_k_m</span>
+        </div>
+      </div>
+    </dk-field>
+    <dk-field label="Updates">
+      <div class="card updates">
+        <dk-control-row label="Version 0.1.2" help="Up to date.">
+          <dk-button>Check for updates</dk-button>
+        </dk-control-row>
+        <dk-control-row divided label="Check for updates automatically" help="Once a day. You choose when to install.">
+          <dk-switch on></dk-switch>
+        </dk-control-row>
+      </div>
+    </dk-field>
+    <div class="scrim">
+      <div class="sheet">
+        <div class="sheet-head">
+          <div class="sheet-title">Permissions</div>
+          <dk-icon-btn icon="x" label="Close"></dk-icon-btn>
+        </div>
+        <div class="perm-list">
+          <div class="perm">
+            <div class="perm-text">
+              <div class="perm-name">Microphone<dk-badge state="pending">Not asked</dk-badge></div>
+              <div class="help">Records your voice while you dictate.</div>
+            </div>
+            <dk-button>Request access</dk-button>
           </div>
-          <div class="button">Review…</div>
-        </div>
-        <div class="field">
-          <div class="field-label">Unload models when idle</div>
-          <div class="control select"><span>After 1 minute</span><span class="chev">⌄</span></div>
-          <div class="help">Frees memory between dictations. The next one starts a moment slower while models reload.</div>
-        </div>
-        <div class="field">
-          <div class="field-label">Daemon</div>
-          <div class="control card">
-            <div class="status-row">
-              <span class="dot"></span>
-              <span class="status-word">Running</span>
-              <span class="residency">Models idle</span>
+          <div class="perm">
+            <div class="perm-text">
+              <div class="perm-name">Accessibility<dk-badge state="missing">Not granted</dk-badge></div>
+              <div class="help">Pastes the text where you are typing.</div>
             </div>
-            <div class="row">
-              <span class="label">Transcription model</span>
-              <span class="value">cohere-transcribe-int8</span>
-            </div>
-            <div class="row">
-              <span class="label">Polishing model</span>
-              <span class="value">s1-mini-q4_k_m</span>
-            </div>
-          </div>
-        </div>
-        <div class="field">
-          <div class="field-label">Updates</div>
-          <div class="control card updates">
-            <div class="control-row">
-              <div class="text">
-                <span class="field-label">Version 0.1.2</span>
-                <div class="help">Up to date.</div>
-              </div>
-              <div class="button">Check for updates</div>
-            </div>
-            <div class="control-row divided">
-              <div class="text">
-                <span class="field-label">Check for updates automatically</span>
-                <div class="help">Once a day. You choose when to install.</div>
-              </div>
-              <div class="switch on"><div class="thumb"></div></div>
-            </div>
+            <dk-button>Request access</dk-button>
           </div>
         </div>
       </div>
     </div>
-      <div class="scrim">
-        <div class="sheet">
-          <div class="sheet-head">
-            <div class="sheet-title">Permissions</div>
-            <div class="close" role="button" aria-label="Close"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></div>
-          </div>
-          <div class="perm-list">
-            <div class="perm">
-              <div class="perm-text">
-                <div class="perm-name">Microphone<span class="badge pending"><span class="dot"></span>Not asked</span></div>
-                <div class="help">Records your voice while you dictate.</div>
-              </div>
-              <div class="button">Request access</div>
-            </div>
-            <div class="perm">
-              <div class="perm-text">
-                <div class="perm-name">Accessibility<span class="badge missing"><span class="dot"></span>Not granted</span></div>
-                <div class="help">Pastes the text where you are typing.</div>
-              </div>
-              <div class="button">Request access</div>
-            </div>
-          </div>
-        </div>
-      </div>
-  </div>
+  </dk-settings-window>
 
   <!-- History -->
-  <div class="window">
-    <div class="sidebar">
-      <div class="traffic"><span></span><span></span><span></span></div>
-      <div class="brand-row"><img src="../../assets/diktafon-mark-flat.svg" width="32" height="18" alt=""><span>diktafon</span></div>
-      <div class="nav-item"><span class="icon">⚙</span>General</div>
-      <div class="nav-item"><span class="icon">◈</span>Models</div>
-      <div class="nav-item active"><span class="icon">◷</span>History</div>
-      <div class="nav-item"><span class="icon">▣</span>Advanced</div>
-    </div>
-    <div class="pane">
-      <h1>History</h1>
-      <div class="content">
-        <div>
-          <div class="search">Search 108 dictations</div>
-          <div class="hlist">
-            <div class="hday">Today</div>
-            <div class="hrow">
-              <div class="htime">11:42</div>
-              <div class="htext">Good question. The idle unload work measured about 176 megabytes after unload, so 500 is roughly three times that.</div>
-              <div class="hcopy" role="button" aria-label="Copy dictation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></div>
-            </div>
-            <div class="hrow">
-              <div class="htime">09:31</div>
-              <div class="htext">Compare that to the dark background we have here.</div>
-              <div class="hcopy" role="button" aria-label="Copy dictation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></div>
-            </div>
-            <div class="hrow">
-              <div class="htime">09:28</div>
-              <div class="htext">It doesn't really look good when there is a light background behind it. This leads me to believe that maybe we shouldn't be doing so much transparency.</div>
-              <div class="hcopy" role="button" aria-label="Copy dictation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></div>
-            </div>
-            <div class="hday">Yesterday</div>
-            <div class="hrow">
-              <div class="htime">14:02</div>
-              <div class="htext">Penguin Enterprises' flagship Master 3000 utilizes a proprietary cryo-resistant polymer blend rated for continuous operation at temperatures down to minus 60 degrees.</div>
-              <div class="hcopy" role="button" aria-label="Copy dictation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
+  <dk-settings-window section="history">
+    <dk-history></dk-history>
+  </dk-settings-window>
 
 </body>
 </html>
