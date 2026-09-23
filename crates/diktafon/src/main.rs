@@ -229,8 +229,9 @@ fn main() -> Result<()> {
         .preferred_input()
         .map(str::to_owned);
     // The device itself opens on the first dictation, not here.
+    let vad_model = ensure_vad_model()?;
     let recorder = Recorder::new(
-        ensure_vad_model()?,
+        vad_model.clone(),
         levels.clone(),
         preferred_input.as_deref(),
     );
@@ -307,7 +308,7 @@ fn main() -> Result<()> {
     let v_keycode = Arc::new(AtomicU32::new(keymap::ANSI_V.into()));
     let paste_keycode = v_keycode.clone();
     let loop_settings = session_settings.clone();
-    let reprocess_tx = daemon.chunk_tx.clone();
+    let reprocess = crate::transport::ReprocessHandle::new(daemon.chunk_tx.clone(), vad_model);
     thread::spawn(move || {
         let dictations =
             session::Dictations::new(recorder, daemon, loop_settings, phase_tx, paste_keycode);
@@ -380,7 +381,7 @@ fn main() -> Result<()> {
             .detach();
             pill::manage(cx, dictation.clone(), levels);
             updater::start(cx);
-            statusbar::install(cx, &dictation, session_settings.clone(), reprocess_tx);
+            statusbar::install(cx, &dictation, session_settings.clone(), reprocess);
             cx.set_global(AppServices {
                 dictation,
                 hotkey: HotkeyRebind {

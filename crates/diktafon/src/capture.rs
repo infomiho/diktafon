@@ -503,6 +503,28 @@ impl VadChunker {
     }
 }
 
+/// Split retained audio exactly as the live path would: same Silero model,
+/// same smoothing, same minimum. Reruns then meet the ASR in windows the
+/// live path already proved, instead of fixed slices that can blank a model
+/// on leading silence or a mid-phrase cut.
+pub(crate) fn vad_chunks(vad_model: &std::path::Path, samples: &[f32]) -> Result<Vec<Vec<f32>>> {
+    let silero = SileroVad::new(vad_model, CONFIG.speech_threshold)
+        .with_context(|| format!("loading VAD model {}", vad_model.display()))?;
+    let mut chunker = VadChunker::new(Box::new(silero));
+    let mut chunks = Vec::new();
+    let frame = chunker.frame_size();
+    let mut frames = samples.chunks_exact(frame);
+    for frame in &mut frames {
+        if let Some(chunk) = chunker.push_frame(frame) {
+            chunks.push(chunk);
+        }
+    }
+    if let Some(chunk) = chunker.finish(frames.remainder()) {
+        chunks.push(chunk);
+    }
+    Ok(chunks)
+}
+
 /// Handy's mic-calibrated level meter: an FFT over the most recent ~32ms of
 /// 16kHz audio, 16 log-spaced buckets across 400-8000Hz, tilt-equalized, each
 /// mapped from a -68..-30dB range with gain and a softening power curve.
@@ -805,16 +827,22 @@ mod tests {
 mod silero_tests {
     use super::*;
 
-    #[test]
-    #[ignore = "loads the real Silero model and local evaluation audio, run alone"]
-    fn repeated_vad_sessions_release_memory() {
+    /// The bundled eval clip decoded to f32, shared by the ignored model
+    /// tests (no local audio on CI, hence ignored).
+    fn load_eval_clip() -> Vec<f32> {
         let wav = std::fs::read(diktafon_protocol::data_dir().join("eval-own/01.wav")).unwrap();
-        let samples: Vec<f32> = wav[44..]
+        wav[44..]
             .as_chunks::<2>()
             .0
             .iter()
             .map(|b| i16::from_le_bytes(*b) as f32 / 32768.0)
-            .collect();
+            .collect()
+    }
+
+    #[test]
+    #[ignore = "loads the real Silero model and local evaluation audio, run alone"]
+    fn repeated_vad_sessions_release_memory() {
+        let samples: Vec<f32> = load_eval_clip();
         let replay = || {
             let silero = SileroVad::new(
                 diktafon_protocol::models_dir().join("silero_vad_v4.onnx"),
@@ -856,6 +884,22 @@ mod silero_tests {
     /// `cargo test -p diktafon -- --ignored`.
     #[test]
     #[ignore = "loads the real Silero model"]
+    fn vad_chunks_emits_speech_on_eval_clip() {
+        let samples: Vec<f32> = load_eval_clip();
+        let chunks = vad_chunks(
+            &diktafon_protocol::models_dir().join("silero_vad_v4.onnx"),
+            &samples,
+        )
+        .unwrap();
+        assert!(!chunks.is_empty());
+        let covered: usize = chunks.iter().map(Vec::len).sum();
+        assert!(covered > samples.len() / 2);
+    }
+
+    /// Needs the real model and eval clips in Application Support; run with
+    /// `cargo test -p diktafon -- --ignored`.
+    #[test]
+    #[ignore = "loads the real Silero model"]
     fn detects_speech_segments_in_eval_clip() {
         let silero = SileroVad::new(
             diktafon_protocol::models_dir().join("silero_vad_v4.onnx"),
@@ -864,13 +908,7 @@ mod silero_tests {
         .unwrap();
         let mut chunker = VadChunker::new(Box::new(silero));
 
-        let wav = std::fs::read(diktafon_protocol::data_dir().join("eval-own/01.wav")).unwrap();
-        let samples: Vec<f32> = wav[44..]
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|b| i16::from_le_bytes(*b) as f32 / 32768.0)
-            .collect();
+        let samples: Vec<f32> = load_eval_clip();
         let clip_secs = samples.len() as f32 / TARGET_RATE as f32;
 
         let mut chunks: Vec<Vec<f32>> = samples

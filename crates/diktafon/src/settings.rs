@@ -12,7 +12,7 @@ use crate::statusbar::DaemonStatus;
 use crate::updater::{self, UpdateCheck};
 use crate::{autostart, statusbar, theme};
 use chrono::{Datelike, Local, NaiveDate};
-use diktafon_protocol::{HistoryEntry, Msg, ReprocessRequest};
+use diktafon_protocol::HistoryEntry;
 use gpui::{
     Animation, AnimationExt, App, AppContext, Bounds, ClipboardItem, Context, Div, Entity,
     ParentElement, Render, SharedString, Stateful, TitlebarOptions, Window, WindowBounds,
@@ -270,6 +270,7 @@ struct History {
 #[derive(Clone)]
 struct Rerun {
     text: String,
+    raw: String,
     asr_model: String,
     polishing_model: String,
 }
@@ -366,7 +367,7 @@ pub struct SettingsWindow {
     history: History,
     /// Sends retranscription requests to the transport; owned by the control
     /// thread's client, so the window never touches the daemon directly.
-    reprocess_tx: std::sync::mpsc::Sender<diktafon_protocol::Msg>,
+    reprocess: crate::transport::ReprocessHandle,
     /// The design's search well; drives the history filter.
     history_search: Entity<InputState>,
     /// Keeps the window on the action dispatch path, so the global Cmd+W
@@ -378,7 +379,7 @@ pub struct SettingsWindow {
 pub fn open(
     existing: Option<WindowHandle<Root>>,
     settings: Arc<Mutex<SessionSettings>>,
-    reprocess_tx: std::sync::mpsc::Sender<diktafon_protocol::Msg>,
+    reprocess: crate::transport::ReprocessHandle,
     cx: &mut App,
 ) -> Option<WindowHandle<Root>> {
     if let Some(handle) = existing
@@ -409,7 +410,7 @@ pub fn open(
             |window, cx| {
                 crate::window_lifecycle::release_view_on_close(window, cx);
                 force_dark_titlebar(window);
-                let view = cx.new(|cx| SettingsWindow::new(settings, reprocess_tx, window, cx));
+                let view = cx.new(|cx| SettingsWindow::new(settings, reprocess, window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             },
         )
@@ -441,7 +442,7 @@ pub fn force_dark_titlebar(window: &Window) {
 impl SettingsWindow {
     fn new(
         settings: Arc<Mutex<SessionSettings>>,
-        reprocess_tx: std::sync::mpsc::Sender<diktafon_protocol::Msg>,
+        reprocess: crate::transport::ReprocessHandle,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -780,7 +781,7 @@ impl SettingsWindow {
             permissions_sheet_open: false,
             permissions_focus: permissions_focus.clone(),
             history,
-            reprocess_tx,
+            reprocess,
             history_search,
             focus_handle,
         };
@@ -1986,19 +1987,10 @@ impl SettingsWindow {
             config.recording = String::new();
             (config, models.transcription, models.polishing)
         };
-        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        if self
-            .reprocess_tx
-            .send(Msg::Reprocess(ReprocessRequest {
-                samples,
-                config,
-                reply: reply_tx,
-            }))
-            .is_err()
-        {
+        let Some(reply_rx) = self.reprocess.request(samples, config) else {
             self.set_notice("Dictation client is gone.".into(), cx);
             return;
-        }
+        };
         self.history.working = Some(name.clone());
         cx.notify();
         cx.spawn(async move |view, cx| {
@@ -2014,11 +2006,12 @@ impl SettingsWindow {
                 }
                 view.history.working = None;
                 match answer {
-                    Ok(Ok(result)) if !result.text.trim().is_empty() => {
+                    Ok(Ok(result)) if !result.polished.trim().is_empty() => {
                         view.history.reruns.insert(
                             name.clone(),
                             Rerun {
-                                text: result.text,
+                                text: result.polished,
+                                raw: result.raw,
                                 asr_model: asr_model.clone(),
                                 polishing_model: polishing_model.clone(),
                             },
@@ -2043,11 +2036,40 @@ impl SettingsWindow {
     /// Accept the rerun: copy its text for use elsewhere and dismiss the
     /// card. The original history entry is left untouched.
     fn accept_rerun(&mut self, name: &str, cx: &mut Context<Self>) {
+        let Some(entry) = self
+            .history
+            .entries
+            .iter()
+            .find(|entry| entry.recording.as_deref() == Some(name))
+            .cloned()
+        else {
+            return;
+        };
         let Some(rerun) = self.history.reruns.remove(name) else {
             return;
         };
-        cx.write_to_clipboard(ClipboardItem::new_string(rerun.text));
-        self.set_notice("Rerun accepted. Copied to clipboard.".into(), cx);
+        let mut adopted = entry.clone();
+        adopted.raw = rerun.raw.clone();
+        adopted.polished = rerun.text.clone();
+        adopted.transcription_model = Some(rerun.asr_model.clone());
+        adopted.polishing_model = Some(rerun.polishing_model.clone());
+        match diktafon_protocol::history::replace_matching(
+            &diktafon_protocol::history::path(),
+            &entry,
+            adopted,
+        ) {
+            Ok(true) => {
+                self.history.reload();
+                cx.write_to_clipboard(ClipboardItem::new_string(rerun.text));
+                self.set_notice("Rerun accepted. Copied to clipboard.".into(), cx);
+            }
+            Ok(false) => {
+                self.set_notice("Dictation is already gone.".into(), cx);
+            }
+            Err(e) => {
+                self.set_notice(format!("Could not update history: {e:#}"), cx);
+            }
+        }
     }
 
     /// Dismiss the rerun without using it. Silent: the disappearing card is

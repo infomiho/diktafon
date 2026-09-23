@@ -2,7 +2,8 @@ use crate::dictation::PhaseEvent;
 use anyhow::{Context, Result, anyhow, bail};
 use diktafon_protocol::{
     ClientMsg, DaemonMsg, MODEL_MISMATCH_PREFIX, ModelSelection, Msg, PROTOCOL_VERSION,
-    ReprocessOutcome, ReprocessRequest, VERSION_MISMATCH_PREFIX, read_frame, write_frame,
+    ReprocessOutcome, ReprocessRequest, ReprocessResult, SessionConfig, VERSION_MISMATCH_PREFIX,
+    read_frame, write_frame,
 };
 use std::cell::Cell;
 use std::io::BufReader;
@@ -12,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc,
 };
 use std::thread;
@@ -32,9 +33,15 @@ const MODEL_SELECTION_POLL: Duration = Duration::from_millis(250);
 /// mid-rerun. Dictations are refused up front, so this only ever sees a press
 /// that lost the race by milliseconds.
 const REPROCESS_DRAIN_POLL: Duration = Duration::from_millis(50);
-/// Chunk size for streaming a retained clip: 5s windows like the bench's
-/// file transcription, small enough to flow, large enough for the ASR.
-const REPROCESS_CHUNK: usize = 16_000 * 5;
+/// How long a rerun waits out daemon respawn churn before giving up. Model
+/// switches retire and respawn the daemon; a rerun clicked into that window
+/// waits for the new one instead of failing its first send.
+const REPROCESS_START_WAIT: Duration = Duration::from_secs(15);
+const REPROCESS_START_POLL: Duration = Duration::from_millis(250);
+
+/// Refusal when a model switch would replace the daemon under a rerun (or
+/// leave it running stale models).
+const MODELS_SWITCHING: &str = "models are switching; try again in a moment";
 
 /// How long a freshly spawned daemon may take to bind its socket (it binds
 /// before provisioning, so this is process startup, not model loading). Once
@@ -61,6 +68,42 @@ enum TransportSession {
     /// A settings-pane rerun owns the connection; dictation traffic is
     /// refused or failed fast until it completes.
     Reprocessing,
+}
+
+/// What the settings window needs to issue retranscriptions: the transport
+/// inbox plus the VAD model the live path chunks with, so reruns meet the
+/// ASR in identical windows.
+#[derive(Clone, Debug)]
+pub struct ReprocessHandle {
+    tx: mpsc::Sender<Msg>,
+    vad_model: PathBuf,
+}
+
+impl ReprocessHandle {
+    pub fn new(tx: mpsc::Sender<Msg>, vad_model: PathBuf) -> Self {
+        Self { tx, vad_model }
+    }
+
+    /// Queue one rerun, returning its single answer channel, or `None` when
+    /// the transport thread is gone (client shutdown takes this window with
+    /// it). The caller builds a normal session config; `no_history` is
+    /// forced transport-side.
+    pub fn request(
+        &self,
+        samples: Vec<f32>,
+        config: SessionConfig,
+    ) -> Option<mpsc::Receiver<ReprocessResult>> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.tx
+            .send(Msg::Reprocess(ReprocessRequest {
+                samples,
+                vad_model: self.vad_model.clone(),
+                config,
+                reply: reply_tx,
+            }))
+            .ok()?;
+        Some(reply_rx)
+    }
 }
 
 /// Client side of the streaming protocol, exposing the same chunks-in/text-out
@@ -188,17 +231,24 @@ struct FlushLedger {
     /// rerun, and the polish timestamp lets the transport split rerun
     /// timings.
     reprocess: Mutex<ReprocessState>,
-    /// Set by the reader thread when the connection ends. The next send
-    /// reconnects first instead of writing into a dead socket, whose first
-    /// write always fails after an idle-timeout exit.
-    conn_dead: AtomicBool,
+    /// Connection epoch, bumped on every adopt and drop. Reader deaths and
+    /// marks carry the epoch they were born under; only the current
+    /// generation may invalidate the connection or fail the waiter. Without
+    /// this one stale reader death cascades: it drops the live connection,
+    /// whose reader death mints the next mark, splitting one session across
+    /// connections while per-connection Cancel-resets wipe its state.
+    epoch: AtomicU64,
+    /// Epoch-tagged connection death: 0 means none, otherwise epoch + 1.
+    conn_dead: AtomicU64,
 }
 
 #[derive(Default)]
 struct ReprocessState {
     tx: Option<mpsc::Sender<SessionResult>>,
     polish_at: Option<Instant>,
-    suppress_phases: bool,
+    /// Raw chunk transcripts of the rerun, joined like the daemon joins
+    /// them. Lets an accepted rerun replace the history raw verbatim.
+    raw_parts: Vec<String>,
 }
 
 impl FlushLedger {
@@ -211,7 +261,8 @@ impl FlushLedger {
             pending_flushes: Mutex::new(0),
             phase_tx,
             reprocess: Mutex::new(ReprocessState::default()),
-            conn_dead: AtomicBool::new(false),
+            epoch: AtomicU64::new(0),
+            conn_dead: AtomicU64::new(0),
         }
     }
 
@@ -249,12 +300,14 @@ impl FlushLedger {
         let _ = self.results_tx.send(SessionResult::Failed(reason));
     }
 
-    /// Arm rerun routing before its Flush is written.
+    /// Arm rerun routing before its Flush is written. A set `tx` is the
+    /// single signal for "a rerun owns the connection": result routing,
+    /// phase suppression, and polish/raw capture all key off it.
     fn begin_reprocess_flush(&self, tx: mpsc::Sender<SessionResult>) {
         let mut reprocess = self.reprocess.lock().unwrap();
         reprocess.tx = Some(tx);
         reprocess.polish_at = None;
-        reprocess.suppress_phases = true;
+        reprocess.raw_parts.clear();
     }
 
     /// Clear rerun routing after its answer arrived or the wait gave up. Late
@@ -262,11 +315,12 @@ impl FlushLedger {
     fn clear_reprocess(&self) {
         let mut reprocess = self.reprocess.lock().unwrap();
         reprocess.tx = None;
-        reprocess.suppress_phases = false;
     }
 
+    /// Whether rerun routing is armed: phase signals stay held so the pill
+    /// never mirrors a settings-pane rerun.
     fn reprocess_suppressed(&self) -> bool {
-        self.reprocess.lock().unwrap().suppress_phases
+        self.reprocess.lock().unwrap().tx.is_some()
     }
 
     /// Timestamp a polish pass, but only while rerun routing is armed. A
@@ -279,26 +333,53 @@ impl FlushLedger {
         }
     }
 
-    /// Mark the connection dead. The reader calls this on EOF or read error
-    /// so the next send reconnects instead of failing its first write.
-    fn mark_conn_dead(&self) {
-        self.conn_dead.store(true, Ordering::Release);
+    /// Mark the connection dead on behalf of `epoch`. Stale readers (from a
+    /// connection since replaced) must not invalidate the live one.
+    fn mark_conn_dead(&self, epoch: u64) {
+        if epoch == self.epoch.load(Ordering::Acquire) {
+            self.conn_dead.store(epoch + 1, Ordering::Release);
+        }
     }
 
-    /// Take a pending connection death, if the reader reported one.
+    /// Take a pending connection death, if the mark belongs to the current
+    /// generation.
     fn take_conn_dead(&self) -> bool {
-        self.conn_dead.swap(false, Ordering::AcqRel)
+        let marked = self.conn_dead.swap(0, Ordering::AcqRel);
+        marked != 0 && marked - 1 == self.epoch.load(Ordering::Acquire)
+    }
+
+    /// Open a new connection generation, returning it. Called when a
+    /// connection is adopted or dropped, so readers serving an older
+    /// generation go quiet. The double bump across a drop-then-adopt
+    /// reconnect is benign: generations only need to be unique.
+    fn bump_epoch(&self) -> u64 {
+        self.epoch.fetch_add(1, Ordering::AcqRel) + 1
     }
 
     fn take_reprocess_polish(&self) -> Option<Instant> {
         self.reprocess.lock().unwrap().polish_at.take()
     }
 
-    /// In principle a reader from an already-replaced connection could fail a
-    /// newer connection's pending flush here; that needs the shutdown-woken
-    /// reader to stay descheduled through a reconnect plus a whole session, and
-    /// at worst turns one good result into an error, never wrong text.
-    fn fail_pending(&self, reason: &str) {
+    /// Take the rerun's collected raw chunk transcripts, joined the way the
+    /// daemon joins them.
+    fn take_reprocess_raw(&self) -> String {
+        let mut reprocess = self.reprocess.lock().unwrap();
+        let raw = reprocess.raw_parts.join(" ");
+        reprocess.raw_parts.clear();
+        raw
+    }
+
+    /// Fail all owed results when the serving reader dies: the connection it
+    /// served is gone, so every flush it owned is answered as lost. Callers
+    /// pass their own generation; a reader from an already-replaced
+    /// connection is refused and goes quiet instead.
+    fn fail_pending(&self, epoch: u64, reason: &str) {
+        // A superseded reader must not touch anything: its connection is
+        // gone and a newer one owns the session state. In particular its
+        // death must never fail a healthy rerun waiter.
+        if epoch != self.epoch.load(Ordering::Acquire) {
+            return;
+        }
         let mut reprocess = self.reprocess.lock().unwrap();
         if let Some(tx) = reprocess.tx.take() {
             let _ = tx.send(SessionResult::Failed(reason.to_string()));
@@ -645,38 +726,89 @@ impl Transport {
         }
     }
 
+    /// Whether the desired models drifted from `pinned` (changed selection
+    /// or a pending refresh): the rerun must stop instead of running stale
+    /// or meeting the retire path mid-drive.
+    fn models_changed(&self, pinned: &ModelSelection) -> bool {
+        self.model_refresh_pending
+            || self
+                .connected_models
+                .as_ref()
+                .is_some_and(|c| *c != *pinned)
+    }
+
     /// Drive one retained clip through the daemon as a normal session. Runs
     /// inline on the transport thread while the run loop waits: dictation
     /// traffic arriving meanwhile is refused or failed fast, never
     /// interleaved. The daemon never learns it is a rerun except through
     /// `no_history`, which is forced here so no caller can forget it into a
-    /// history-polluting rerun.
+    /// history-polluting rerun. The clip is VAD-chunked exactly like the live
+    /// path: fixed windows can blank a model on leading silence or a
+    /// mid-phrase cut, and the live windows are already proven.
     fn run_reprocess(&mut self, req: ReprocessRequest, cmd_rx: &mpsc::Receiver<Msg>) {
         let ReprocessRequest {
             samples,
+            vad_model,
             mut config,
             reply,
         } = req;
         config.no_history = true;
+        // A model switch in progress would replace the daemon under the
+        // rerun (or leave it running stale models): refuse fast with a
+        // reason instead of either failure mode. No connection yet is fine;
+        // the drive below connects on demand.
+        self.observe_model_selection();
+        let models = self.models.get();
+        if self.models_changed(&models) {
+            let _ = reply.send(Err(MODELS_SWITCHING.into()));
+            return;
+        }
+        // The models are pinned for the drive: a switch landing mid-rerun
+        // aborts it instead of letting the retire path SIGTERM the daemon
+        // it runs on.
+        let chunks = match crate::capture::vad_chunks(&vad_model, &samples) {
+            Ok(chunks) => chunks,
+            Err(e) => {
+                eprintln!("VAD chunking failed, sending the whole clip: {e:#}");
+                vec![samples]
+            }
+        };
         self.session = TransportSession::Reprocessing;
         self.reprocessing.store(true, Ordering::Release);
-        if !self.send(&ClientMsg::Start(config)) {
+        // The daemon may be mid-respawn from an earlier switch; ride out
+        // the churn instead of failing the first send. Afterwards the models
+        // are rechecked: a switch that landed during the wait must not run
+        // stale either.
+        let start_deadline = Instant::now() + REPROCESS_START_WAIT;
+        let mut started_send = false;
+        while !started_send {
+            if self.send(&ClientMsg::Start(config.clone())) {
+                started_send = true;
+            } else if Instant::now() >= start_deadline {
+                self.end_reprocess();
+                let _ = reply.send(Err("diktafond is unavailable".into()));
+                return;
+            } else {
+                thread::sleep(REPROCESS_START_POLL);
+            }
+        }
+        if self.models.get() != models {
             self.end_reprocess();
-            let _ = reply.send(Err("diktafond is unavailable".into()));
+            let _ = reply.send(Err(MODELS_SWITCHING.into()));
             return;
         }
         // Timed after the Start is accepted so a cold daemon's model load
         // does not pollute the rerun timings.
         let started = Instant::now();
-        for chunk in samples.chunks(REPROCESS_CHUNK) {
-            if !self.send(&ClientMsg::Chunk(chunk.to_vec())) {
+        for chunk in chunks {
+            if !self.send(&ClientMsg::Chunk(chunk)) {
                 self.end_reprocess();
                 let _ = reply.send(Err("diktafond is unavailable".into()));
                 return;
             }
         }
-        let (repro_tx, repro_rx) = mpsc::channel();
-        self.ledger.begin_reprocess_flush(repro_tx);
+        let (reprocess_tx, reprocess_rx) = mpsc::channel();
+        self.ledger.begin_reprocess_flush(reprocess_tx);
         if !self.send(&ClientMsg::Flush) {
             self.end_reprocess();
             let _ = reply.send(Err("diktafond is unavailable".into()));
@@ -684,15 +816,23 @@ impl Transport {
         }
         let deadline = Instant::now() + FINISH_TIMEOUT;
         loop {
-            match repro_rx.recv_timeout(REPROCESS_DRAIN_POLL) {
+            match reprocess_rx.recv_timeout(REPROCESS_DRAIN_POLL) {
                 Ok(result) => {
                     self.drain_during_reprocess(cmd_rx);
+                    // Checked here too, not just on ticks: a switch that
+                    // landed with the answer in flight still invalidates it.
+                    if self.models.get() != models {
+                        self.end_reprocess();
+                        let _ = reply.send(Err(MODELS_SWITCHING.into()));
+                        return;
+                    }
                     match result {
                         SessionResult::Final(text) => {
                             let finished = Instant::now();
                             let polish_at = self.ledger.take_reprocess_polish();
                             let outcome = ReprocessOutcome {
-                                text,
+                                polished: text,
+                                raw: self.ledger.take_reprocess_raw(),
                                 asr_ms: polish_at
                                     .unwrap_or(finished)
                                     .duration_since(started)
@@ -716,6 +856,11 @@ impl Transport {
                     if Instant::now() >= deadline {
                         self.end_reprocess();
                         let _ = reply.send(Err("retranscription timed out".into()));
+                        return;
+                    }
+                    if self.models.get() != models {
+                        self.end_reprocess();
+                        let _ = reply.send(Err(MODELS_SWITCHING.into()));
                         return;
                     }
                     self.drain_during_reprocess(cmd_rx);
@@ -895,6 +1040,7 @@ impl Transport {
                 .try_clone()
                 .map_err(|e| ConnectFailure::Rejected(e.into()))?,
             self.ledger.clone(),
+            self.ledger.bump_epoch(),
         );
         Ok((stream, requested))
     }
@@ -988,6 +1134,7 @@ impl Transport {
     }
 
     fn drop_conn(&mut self) {
+        self.ledger.bump_epoch();
         if let Some(conn) = self.conn.take() {
             // Wakes the reader thread out of its blocking read.
             let _ = conn.shutdown(Shutdown::Both);
@@ -1026,17 +1173,21 @@ fn retire_mismatched_daemon(socket: &Path) -> bool {
     false
 }
 
-fn spawn_reader(stream: UnixStream, ledger: Arc<FlushLedger>) {
+fn spawn_reader(stream: UnixStream, ledger: Arc<FlushLedger>, epoch: u64) {
     thread::spawn(move || {
         let mut reader = BufReader::new(stream);
         loop {
             match read_frame::<DaemonMsg>(&mut reader) {
                 Ok(Some(DaemonMsg::Partial(text))) => {
                     println!("  partial: {text}");
-                    if !ledger.reprocess_suppressed()
-                        && let Some(tx) = &ledger.phase_tx
-                    {
-                        let _ = tx.unbounded_send(PhaseEvent::Partial(text));
+                    let mut reprocess = ledger.reprocess.lock().unwrap();
+                    if reprocess.tx.is_some() {
+                        reprocess.raw_parts.push(text);
+                    } else {
+                        drop(reprocess);
+                        if let Some(tx) = &ledger.phase_tx {
+                            let _ = tx.unbounded_send(PhaseEvent::Partial(text));
+                        }
                     }
                 }
                 Ok(Some(DaemonMsg::Polishing)) => {
@@ -1059,12 +1210,13 @@ fn spawn_reader(stream: UnixStream, ledger: Arc<FlushLedger>) {
                     | DaemonMsg::DownloadProgress { .. },
                 )) => {}
                 Ok(None) => {
-                    ledger.mark_conn_dead();
-                    return ledger.fail_pending("diktafond closed the connection");
+                    ledger.mark_conn_dead(epoch);
+                    return ledger.fail_pending(epoch, "diktafond closed the connection");
                 }
                 Err(e) => {
-                    ledger.mark_conn_dead();
-                    return ledger.fail_pending(&format!("connection to diktafond lost: {e}"));
+                    ledger.mark_conn_dead(epoch);
+                    return ledger
+                        .fail_pending(epoch, &format!("connection to diktafond lost: {e}"));
                 }
             }
         }
@@ -1074,7 +1226,7 @@ fn spawn_reader(stream: UnixStream, ledger: Arc<FlushLedger>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diktafon_protocol::{ReprocessRequest, ReprocessResult, SessionConfig};
+    use diktafon_protocol::{ReprocessRequest, ReprocessResult};
     use std::os::unix::net::UnixListener;
 
     /// The handshake both fake daemons open with: Hello exchange, then Ready.
@@ -1172,6 +1324,9 @@ mod tests {
             .chunk_tx
             .send(Msg::Reprocess(ReprocessRequest {
                 samples,
+                // No Silero model in tests: chunking falls back to one chunk,
+                // which keeps every fake-daemon assertion exact.
+                vad_model: PathBuf::from("/nonexistent-silero.onnx"),
                 config,
                 reply: reply_tx,
             }))
@@ -1227,7 +1382,8 @@ mod tests {
             .recv_timeout(Duration::from_secs(10))
             .unwrap()
             .unwrap();
-        assert_eq!(outcome.text, "rerun text");
+        assert_eq!(outcome.polished, "rerun text");
+        assert_eq!(outcome.raw, "rerun partial");
         assert_eq!(run_session(&client, 2).unwrap(), "2 chunks");
         assert_eq!(
             report_rx.recv_timeout(Duration::from_secs(10)).unwrap(),
@@ -1255,7 +1411,7 @@ mod tests {
         client.chunk_tx.send(Msg::Flush).unwrap();
         assert!(client.finish().is_ok());
         let outcome = run_reprocess(&client, vec![0.0; 160]).unwrap();
-        assert_eq!(outcome.text, "1 chunks");
+        assert_eq!(outcome.polished, "1 chunks");
         server.join().unwrap();
     }
 
@@ -1316,11 +1472,77 @@ mod tests {
                 .recv_timeout(Duration::from_secs(10))
                 .unwrap()
                 .unwrap()
-                .text,
+                .polished,
             "rerun text"
         );
         let err = client.finish().unwrap_err().to_string();
         assert!(err.contains("retranscription"), "{err}");
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn rerun_refuses_while_models_are_switching() {
+        // No daemon needed: the refusal happens before any send, so this
+        // also pins that a rerun never runs stale models silently.
+        let socket = test_socket("repro-switching");
+        let client = DaemonClient::spawn(socket, None, None, ModelSelection::default());
+        // Let the transport thread start so its baseline observation predates
+        // the switch; otherwise the race decides whether a refusal happens.
+        thread::sleep(Duration::from_millis(300));
+        client.models.set(ModelSelection {
+            transcription: "cohere-transcribe-q5-k-m".into(),
+            ..ModelSelection::default()
+        });
+        let err = run_reprocess(&client, vec![0.0; 160]).unwrap_err();
+        assert!(err.contains("switching"), "{err}");
+    }
+
+    #[test]
+    fn rerun_waits_out_a_respawning_daemon() {
+        let socket = test_socket("repro-respawn-wait");
+        let bound = socket.clone();
+        let server = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            let listener = UnixListener::bind(&bound).unwrap();
+            serve_conn(listener.accept().unwrap().0, 1);
+        });
+
+        let client = DaemonClient::spawn(socket.clone(), None, None, ModelSelection::default());
+        let outcome = run_reprocess(&client, vec![0.0; 160]).unwrap();
+        assert_eq!(outcome.polished, "1 chunks");
+        server.join().unwrap();
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    #[test]
+    fn rerun_aborts_when_models_change_mid_drive() {
+        let socket = test_socket("repro-diverge");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (report_tx, report_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            serve_gated_rerun(listener.accept().unwrap().0, release_rx, report_tx)
+        });
+
+        let client = DaemonClient::spawn(socket.clone(), None, None, ModelSelection::default());
+        let reply = send_reprocess(&client, vec![0.0; 800]);
+        assert_eq!(
+            report_rx.recv_timeout(Duration::from_secs(10)).unwrap(),
+            (true, 1, 1)
+        );
+        // A model switch landing mid-drive aborts the rerun instead of
+        // letting the retire path SIGTERM the daemon it runs on.
+        client.models.set(ModelSelection {
+            transcription: "cohere-transcribe-q5-k-m".into(),
+            ..ModelSelection::default()
+        });
+        release_tx.send(()).unwrap();
+        let err = reply
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap_err();
+        assert!(err.contains("switching"), "{err}");
         drop(client);
         server.join().unwrap();
     }
@@ -1352,7 +1574,7 @@ mod tests {
                 .recv_timeout(Duration::from_secs(10))
                 .unwrap()
                 .unwrap()
-                .text,
+                .polished,
             "rerun text"
         );
         drop(client);
@@ -1389,11 +1611,11 @@ mod tests {
                 .recv_timeout(Duration::from_secs(10))
                 .unwrap()
                 .unwrap()
-                .text,
+                .polished,
             "rerun text"
         );
         let outcome = run_reprocess(&client, vec![0.0; 160]).unwrap();
-        assert_eq!(outcome.text, "1 chunks");
+        assert_eq!(outcome.polished, "1 chunks");
         assert_eq!(
             report_rx.recv_timeout(Duration::from_secs(10)).unwrap(),
             (true, 1, 2)
@@ -1474,7 +1696,7 @@ mod tests {
                 .recv_timeout(Duration::from_secs(10))
                 .unwrap()
                 .unwrap()
-                .text,
+                .polished,
             "rerun text"
         );
         // The daemon sent Partial and Polishing for the rerun; neither may

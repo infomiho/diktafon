@@ -81,17 +81,40 @@ pub fn append_to(path: &Path, entry: &HistoryEntry) -> Result<()> {
 /// Remove the newest entry matching `target` by timestamp and both texts,
 /// returning whether one was dropped. Entries carry no id, but a timestamp
 /// plus both transcripts is unique in practice; newest wins because History
-/// lists newest first. The rewrite is atomic (temp file plus rename) and
-/// preserves lines that do not parse: only a positively matched entry is
-/// ever removed. Transcripts are otherwise append-only; this exists for
-/// History entry deletion, which removes the dictation outright.
+/// lists newest first. Transcripts are otherwise append-only; this exists
+/// for History entry deletion, which removes the dictation outright.
 pub fn remove_matching(path: &Path, target: &HistoryEntry) -> Result<bool> {
+    rewrite_matching(path, target, None)
+}
+
+/// Replace the newest entry matching `target` with `replacement`,
+/// returning whether one was replaced. The replacement keeps its position:
+/// callers adopting a rerun pass the entry back with new transcripts (and
+/// models), preserving timestamp, metrics, and the recording link.
+pub fn replace_matching(
+    path: &Path,
+    target: &HistoryEntry,
+    replacement: HistoryEntry,
+) -> Result<bool> {
+    rewrite_matching(path, target, Some(replacement))
+}
+
+/// Rewrite the newest entry matching `target` (by timestamp and both
+/// texts) to `replacement`, or drop it when `replacement` is `None`.
+/// Returns whether a line changed. The rewrite is atomic (temp file plus
+/// rename) and preserves lines that do not parse: only a positively matched
+/// entry is ever touched.
+fn rewrite_matching(
+    path: &Path,
+    target: &HistoryEntry,
+    replacement: Option<HistoryEntry>,
+) -> Result<bool> {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
-    let mut lines: Vec<&str> = raw.lines().collect();
+    let mut lines: Vec<String> = raw.lines().map(str::to_owned).collect();
     let found = lines.iter().rposition(|line| {
         serde_json::from_str::<HistoryEntry>(line).is_ok_and(|entry| {
             entry.at == target.at && entry.raw == target.raw && entry.polished == target.polished
@@ -100,7 +123,15 @@ pub fn remove_matching(path: &Path, target: &HistoryEntry) -> Result<bool> {
     let Some(ix) = found else {
         return Ok(false);
     };
-    lines.remove(ix);
+    match replacement {
+        Some(replacement) => {
+            lines[ix] =
+                serde_json::to_string(&replacement).context("serializing replacement entry")?;
+        }
+        None => {
+            lines.remove(ix);
+        }
+    }
     let mut tmp = path.to_path_buf();
     tmp.set_extension("tmp");
     let mut contents = lines.join("\n");
@@ -296,6 +327,47 @@ mod tests {
         assert_eq!(rest.len(), 2);
         assert_eq!(rest[0].at, old.at, "the older twin survives");
         assert_eq!(rest[1].at, other.at);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn replacing_swaps_texts_in_place() {
+        let path = remove_fixture("replace");
+        let first = dated("2026-09-01T00:00:00Z", "raw one", "One.");
+        let mut second = dated("2026-09-02T00:00:00Z", "raw two", "Two.");
+        second.recording = Some("recording-a.wav".into());
+        second.audio_secs = 4.5;
+        for entry in [&first, &second] {
+            append_to(&path, entry).unwrap();
+        }
+        let mut adopted = second.clone();
+        adopted.raw = "raw two fixed".into();
+        adopted.polished = "Two, fixed.".into();
+        adopted.transcription_model = Some("new-asr".into());
+        assert!(replace_matching(&path, &second, adopted).unwrap());
+        let rest = read_all_from(&std::fs::read_to_string(&path).unwrap());
+        assert_eq!(rest.len(), 2);
+        // Position kept; timestamp, metrics, and recording link untouched.
+        assert_eq!(rest[1].at, second.at);
+        assert_eq!(rest[1].raw, "raw two fixed");
+        assert_eq!(rest[1].polished, "Two, fixed.");
+        assert_eq!(rest[1].transcription_model.as_deref(), Some("new-asr"));
+        assert_eq!(rest[1].recording.as_deref(), Some("recording-a.wav"));
+        assert_eq!(rest[1].audio_secs, 4.5);
+        assert_eq!(rest[0].polished, "One.");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn replacing_without_a_match_changes_nothing() {
+        let path = remove_fixture("replace-miss");
+        let kept = dated("2026-09-01T00:00:00Z", "kept", "Kept.");
+        append_to(&path, &kept).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        let miss = dated("2026-09-02T00:00:00Z", "absent", "Absent.");
+        let replacement = dated("2026-09-02T00:00:00Z", "new", "New.");
+        assert!(!replace_matching(&path, &miss, replacement).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
         std::fs::remove_file(&path).unwrap();
     }
 

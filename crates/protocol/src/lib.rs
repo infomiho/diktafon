@@ -102,20 +102,25 @@ pub enum Msg {
 
 /// A retained clip plus where its rerun goes.
 pub struct ReprocessRequest {
-    /// Whole clip at 16 kHz mono, as retained (silences included).
+    /// Whole clip at 16 kHz mono, as retained (silences included). The
+    /// transport VAD-chunks it like the live path instead of slicing fixed
+    /// windows.
     pub samples: Vec<f32>,
+    /// Silero model for that chunking; the live path's own file.
+    pub vad_model: PathBuf,
     /// Session settings for the rerun; `no_history` must be set.
     pub config: SessionConfig,
     /// Receives exactly one answer: the rerun, or why it never ran.
     pub reply: std::sync::mpsc::Sender<ReprocessResult>,
 }
 
-/// A finished rerun: its text plus the pipeline timings around it. Empty text
-/// is a successful empty rerun, not an error; callers decide how to present
-/// it.
+/// A finished rerun: its polished text and the raw chunk transcripts it
+/// was polished from, plus the pipeline timings around it. Empty texts are
+/// a successful empty rerun, not an error; callers decide how to present it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReprocessOutcome {
-    pub text: String,
+    pub polished: String,
+    pub raw: String,
     pub asr_ms: u64,
     pub polish_ms: u64,
 }
