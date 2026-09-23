@@ -21,7 +21,7 @@ use bincode::{Decode, Encode};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 7;
 pub const DEFAULT_APPLE_PROMPT: &str = "Touch up the raw transcript slightly so it looks a bit more like written communication.\n\nReturn only the cleaned transcript.";
 
 /// Prefix of the daemon's handshake rejection for a version mismatch; the
@@ -92,7 +92,37 @@ pub enum Msg {
     Chunk(Vec<f32>),
     Flush,
     Cancel,
+    /// Rerun retained audio through the normal pipeline without recording a
+    /// new dictation. The transport drives it as one session while idle and
+    /// answers on `reply`; callers must send `config` with `no_history` set.
+    /// Never crosses the wire: the transport expands it into Start/Chunk
+    /// frames, so the daemon matches on it only for exhaustiveness.
+    Reprocess(ReprocessRequest),
 }
+
+/// A retained clip plus where its rerun goes.
+pub struct ReprocessRequest {
+    /// Whole clip at 16 kHz mono, as retained (silences included).
+    pub samples: Vec<f32>,
+    /// Session settings for the rerun; `no_history` must be set.
+    pub config: SessionConfig,
+    /// Receives exactly one answer: the rerun, or why it never ran.
+    pub reply: std::sync::mpsc::Sender<ReprocessResult>,
+}
+
+/// A finished rerun: its text plus the pipeline timings around it. Empty text
+/// is a successful empty rerun, not an error; callers decide how to present
+/// it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReprocessOutcome {
+    pub text: String,
+    pub asr_ms: u64,
+    pub polish_ms: u64,
+}
+
+/// The transport's one answer to a [`Msg::Reprocess`]: `Err` carries a
+/// human-readable reason (a dictation in flight, an unreachable daemon).
+pub type ReprocessResult = Result<ReprocessOutcome, String>;
 
 /// Root for everything diktafon stores: models, socket, daemon log.
 /// `DIKTAFON_DATA_DIR` overrides it; otherwise the platform data dir
@@ -134,6 +164,16 @@ pub struct SessionConfig {
     pub control_line: String,
     /// Free-form user instructions for Apple Intelligence polishing.
     pub apple_prompt: String,
+    /// Opaque recording filename minted by the client, stored verbatim in the
+    /// history entry so a retained WAV can be linked back to its dictation.
+    /// Empty when retention is off. Not a model knob: the daemon reads it only
+    /// to stamp history.
+    pub recording: String,
+    /// Skip the history append for this session. Retranscriptions run through
+    /// the normal pipeline but must not masquerade as new dictations, so the
+    /// client sets this and the daemon transcribes and polishes without
+    /// recording.
+    pub no_history: bool,
 }
 
 impl Default for SessionConfig {
@@ -142,6 +182,8 @@ impl Default for SessionConfig {
             language: "en".into(),
             control_line: "[Styling: semi-formal] [Structure: prose] [Context: general]".into(),
             apple_prompt: DEFAULT_APPLE_PROMPT.into(),
+            recording: String::new(),
+            no_history: false,
         }
     }
 }
@@ -275,6 +317,8 @@ mod tests {
                 language: "en".into(),
                 control_line: "[Styling: semi-formal]".into(),
                 apple_prompt: "Keep product names unchanged.".into(),
+                recording: "recording-2026-01-01T00-00-00.000Z.wav".into(),
+                no_history: true,
             }),
             ClientMsg::Chunk(vec![0.0, -0.5, 0.25]),
             ClientMsg::Flush,
@@ -332,7 +376,7 @@ mod tests {
             },
         )
         .unwrap();
-        let mut expected = vec![40, 0, 0, 0, 0, 5, 22];
+        let mut expected = vec![40, 0, 0, 0, 0, 7, 22];
         expected.extend_from_slice(b"canary-1b-flash-q5-k-m");
         expected.push(14);
         expected.extend_from_slice(b"s1-mini-q4-k-m");
@@ -362,6 +406,33 @@ mod tests {
         let mut buf = Vec::new();
         write_frame(&mut buf, &DaemonMsg::Polishing).unwrap();
         assert_eq!(buf, vec![1, 0, 0, 0, 7]);
+    }
+
+    /// Same freeze for `Start`: the v6/v7 field appends (`recording`,
+    /// `no_history`) must only ever extend the tail. Reordering fields or
+    /// changing the string encoding silently desyncs old daemons instead of
+    /// tripping the version retire, so this fails loudly instead.
+    #[test]
+    fn start_frame_bytes_are_stable() {
+        let mut buf = Vec::new();
+        write_frame(
+            &mut buf,
+            &ClientMsg::Start(SessionConfig {
+                language: "en".into(),
+                control_line: "x".into(),
+                apple_prompt: "y".into(),
+                recording: String::new(),
+                no_history: false,
+            }),
+        )
+        .unwrap();
+        // Variant index 1, then each string as a one-byte length plus bytes,
+        // then the empty recording and the false flag.
+        let expected = vec![10, 0, 0, 0, 1, 2, b'e', b'n', 1, b'x', 1, b'y', 0, 0];
+        assert_eq!(buf, expected);
+        // And the frozen bytes still decode.
+        let decoded: ClientMsg = read_frame(&mut Cursor::new(buf)).unwrap().unwrap();
+        assert!(matches!(decoded, ClientMsg::Start(_)));
     }
 
     #[test]

@@ -27,6 +27,11 @@ pub struct HistoryEntry {
     pub transcription_model: Option<String>,
     #[serde(default)]
     pub polishing_model: Option<String>,
+    /// Filename of the retained WAV under `recordings/`, when one was kept for
+    /// this dictation. Absent for entries written before retention existed and
+    /// for sessions whose audio was not retained, so old lines still parse.
+    #[serde(default)]
+    pub recording: Option<String>,
 }
 
 impl HistoryEntry {
@@ -41,6 +46,7 @@ impl HistoryEntry {
             polish_ms: 0,
             transcription_model: None,
             polishing_model: None,
+            recording: None,
         }
     }
 }
@@ -154,6 +160,25 @@ mod tests {
         .unwrap();
         assert_eq!(entry.transcription_model, None);
         assert_eq!(entry.polishing_model, None);
+    }
+
+    #[test]
+    fn a_recording_reference_roundtrips_and_defaults_absent() {
+        let mut entry = HistoryEntry::now("raw", "Raw.");
+        assert_eq!(entry.recording, None, "no recording until one is retained");
+        entry.recording = Some("recording-2026-01-01T00-00-00.000Z.wav".into());
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: HistoryEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed.recording.as_deref(),
+            Some("recording-2026-01-01T00-00-00.000Z.wav")
+        );
+
+        // A line written before retention existed carries no recording.
+        let old: HistoryEntry =
+            serde_json::from_str(r#"{"at":"2026-08-26T00:00:00Z","raw":"r","polished":"p"}"#)
+                .unwrap();
+        assert_eq!(old.recording, None);
     }
 
     /// `polished` per line, oldest first.
