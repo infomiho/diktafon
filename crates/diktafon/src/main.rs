@@ -6,6 +6,7 @@ mod config;
 mod control_line;
 mod daemon_process;
 mod dictation;
+mod icons;
 mod keymap;
 mod mark;
 mod muting;

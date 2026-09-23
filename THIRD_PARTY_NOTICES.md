@@ -89,6 +89,30 @@ Apple Intelligence uses Apple's system-provided Foundation Model. No Apple model
 
 - Framework documentation: https://developer.apple.com/documentation/foundationmodels
 
+## Solar Icons
+
+The interface icons in `crates/diktafon/assets/icons/diktafon` are from
+[Solar Icons](https://www.figma.com/community/file/1166831539721848736) by
+480 Design, in the Linear style, taken from the
+[Iconify](https://github.com/iconify/icon-sets) `solar` set. The glyphs are
+unmodified; each is wrapped in its own SVG element.
+
+Copyright (c) 480 Design
+
+Licensed under the
+[Creative Commons Attribution 4.0 International License](https://creativecommons.org/licenses/by/4.0/).
+
+## Lucide Icons
+
+The `x.svg` dismiss glyph bundled alongside the Solar set in
+`crates/diktafon/assets/icons/diktafon` is from
+[Lucide](https://lucide.dev/), redrawn at the Solar 1.5px stroke weight;
+all other interface icons are Solar as noted above.
+
+Copyright (c) Lucide Contributors
+
+Licensed under the [ISC License](https://opensource.org/licenses/ISC).
+
 ## MIT License
 
 The following text applies to each MIT-licensed component listed above, together with its respective copyright notice.

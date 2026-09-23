@@ -6,6 +6,7 @@
 
 use crate::config::{HotkeyBehavior, SessionSettings};
 use crate::control_line;
+use crate::icons::DiktafonIcon;
 use crate::permissions;
 use crate::statusbar::DaemonStatus;
 use crate::updater::{self, UpdateCheck};
@@ -181,12 +182,12 @@ impl Section {
         }
     }
 
-    fn icon(self) -> IconName {
+    fn icon(self) -> DiktafonIcon {
         match self {
-            Section::General => IconName::Settings,
-            Section::Models => IconName::Bot,
-            Section::History => IconName::Calendar,
-            Section::Advanced => IconName::Cpu,
+            Section::General => DiktafonIcon::Settings,
+            Section::Models => DiktafonIcon::Bot,
+            Section::History => DiktafonIcon::History,
+            Section::Advanced => DiktafonIcon::Tuning,
         }
     }
 }
@@ -1570,7 +1571,7 @@ impl SettingsWindow {
                             .on_click(cx.listener(|view, _, window, cx| {
                                 view.close_permissions_sheet(window, cx)
                             }))
-                            .child(Icon::new(IconName::WindowClose).size_4()),
+                            .child(Icon::new(DiktafonIcon::CloseCircle).size_4()),
                     ),
             )
             .child(crate::permission_ui::permission_list(self.permissions, cx));
