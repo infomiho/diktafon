@@ -182,9 +182,39 @@ struct FlushLedger {
     /// UI phase signals; piggybacks on the ledger since the reader thread
     /// already holds it.
     phase_tx: Option<futures::channel::mpsc::UnboundedSender<PhaseEvent>>,
+    /// Rerun routing: while a retranscription's Flush is owed, its
+    /// Final/Failed go to the rerun waiter instead of the dictation results,
+    /// phase signals are held so the pill never mirrors a settings-pane
+    /// rerun, and the polish timestamp lets the transport split rerun
+    /// timings.
+    reprocess: Mutex<ReprocessState>,
+    /// Set by the reader thread when the connection ends. The next send
+    /// reconnects first instead of writing into a dead socket, whose first
+    /// write always fails after an idle-timeout exit.
+    conn_dead: AtomicBool,
+}
+
+#[derive(Default)]
+struct ReprocessState {
+    tx: Option<mpsc::Sender<SessionResult>>,
+    polish_at: Option<Instant>,
+    suppress_phases: bool,
 }
 
 impl FlushLedger {
+    fn new(
+        results_tx: mpsc::Sender<SessionResult>,
+        phase_tx: Option<futures::channel::mpsc::UnboundedSender<PhaseEvent>>,
+    ) -> Self {
+        Self {
+            results_tx,
+            pending_flushes: Mutex::new(0),
+            phase_tx,
+            reprocess: Mutex::new(ReprocessState::default()),
+            conn_dead: AtomicBool::new(false),
+        }
+    }
+
     fn begin_flush(&self) {
         *self.pending_flushes.lock().unwrap() += 1;
     }
@@ -210,11 +240,70 @@ impl FlushLedger {
         }
     }
 
+    /// Fail the current dictation session straight into its results. Unlike
+    /// `deliver` this never routes to a rerun waiter: a dictation failure is
+    /// always owed to `finish`, even mid-rerun. No counter is touched — the
+    /// failure is manufactured here, not answered from the wire, so there is
+    /// nothing to match a flush against.
+    fn fail_dictation(&self, reason: String) {
+        let _ = self.results_tx.send(SessionResult::Failed(reason));
+    }
+
+    /// Arm rerun routing before its Flush is written.
+    fn begin_reprocess_flush(&self, tx: mpsc::Sender<SessionResult>) {
+        let mut reprocess = self.reprocess.lock().unwrap();
+        reprocess.tx = Some(tx);
+        reprocess.polish_at = None;
+        reprocess.suppress_phases = true;
+    }
+
+    /// Clear rerun routing after its answer arrived or the wait gave up. Late
+    /// daemon replies then fall back to the normal stale-drop path.
+    fn clear_reprocess(&self) {
+        let mut reprocess = self.reprocess.lock().unwrap();
+        reprocess.tx = None;
+        reprocess.suppress_phases = false;
+    }
+
+    fn reprocess_suppressed(&self) -> bool {
+        self.reprocess.lock().unwrap().suppress_phases
+    }
+
+    /// Timestamp a polish pass, but only while rerun routing is armed. A
+    /// mid-dictation polish must never leak into a later rerun's timing
+    /// split if arming ever forgets its reset.
+    fn note_polish(&self) {
+        let mut reprocess = self.reprocess.lock().unwrap();
+        if reprocess.tx.is_some() {
+            reprocess.polish_at = Some(Instant::now());
+        }
+    }
+
+    /// Mark the connection dead. The reader calls this on EOF or read error
+    /// so the next send reconnects instead of failing its first write.
+    fn mark_conn_dead(&self) {
+        self.conn_dead.store(true, Ordering::Release);
+    }
+
+    /// Take a pending connection death, if the reader reported one.
+    fn take_conn_dead(&self) -> bool {
+        self.conn_dead.swap(false, Ordering::AcqRel)
+    }
+
+    fn take_reprocess_polish(&self) -> Option<Instant> {
+        self.reprocess.lock().unwrap().polish_at.take()
+    }
+
     /// In principle a reader from an already-replaced connection could fail a
     /// newer connection's pending flush here; that needs the shutdown-woken
     /// reader to stay descheduled through a reconnect plus a whole session, and
     /// at worst turns one good result into an error, never wrong text.
     fn fail_pending(&self, reason: &str) {
+        let mut reprocess = self.reprocess.lock().unwrap();
+        if let Some(tx) = reprocess.tx.take() {
+            let _ = tx.send(SessionResult::Failed(reason.to_string()));
+        }
+        drop(reprocess);
         let mut pending = self.pending_flushes.lock().unwrap();
         while *pending > 0 {
             *pending -= 1;
@@ -704,7 +793,12 @@ impl Transport {
 
     fn ensure_connected(&mut self) -> bool {
         if self.conn.is_some() {
-            return true;
+            if self.ledger.take_conn_dead() {
+                eprintln!("diktafond went away; reconnecting");
+                self.drop_conn();
+            } else {
+                return true;
+            }
         }
         if Instant::now() < self.next_attempt {
             return false;
@@ -964,8 +1058,12 @@ fn spawn_reader(stream: UnixStream, ledger: Arc<FlushLedger>) {
                     | DaemonMsg::Ready
                     | DaemonMsg::DownloadProgress { .. },
                 )) => {}
-                Ok(None) => return ledger.fail_pending("diktafond closed the connection"),
+                Ok(None) => {
+                    ledger.mark_conn_dead();
+                    return ledger.fail_pending("diktafond closed the connection");
+                }
                 Err(e) => {
+                    ledger.mark_conn_dead();
                     return ledger.fail_pending(&format!("connection to diktafond lost: {e}"));
                 }
             }
@@ -1616,6 +1714,33 @@ mod tests {
             result = run_session(&client, 1);
         }
         assert_eq!(result.unwrap(), "1 chunks");
+
+        drop(client);
+        second.join().unwrap();
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    #[test]
+    fn first_session_after_daemon_death_reconnects() {
+        let socket = test_socket("respawn-clean");
+        // First fake daemon: serves one session, then vanishes like an
+        // idle-timeout exit, socket file and all.
+        let listener = UnixListener::bind(&socket).unwrap();
+        let first = thread::spawn(move || serve_conn(listener.accept().unwrap().0, 1));
+
+        let client = DaemonClient::spawn(socket.clone(), None, None, ModelSelection::default());
+        assert_eq!(run_session(&client, 1).unwrap(), "1 chunks");
+        first.join().unwrap();
+        // Let the reader observe EOF and mark the connection dead.
+        thread::sleep(Duration::from_millis(200));
+        std::fs::remove_file(&socket).unwrap();
+
+        // A respawned daemon on the same path serves the very next session:
+        // without the mark the first send would write into the dead socket
+        // and fail, failing the session instead of the send.
+        let listener = UnixListener::bind(&socket).unwrap();
+        let second = thread::spawn(move || serve_conn(listener.accept().unwrap().0, 1));
+        assert_eq!(run_session(&client, 1).unwrap(), "1 chunks");
 
         drop(client);
         second.join().unwrap();
