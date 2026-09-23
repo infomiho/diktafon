@@ -14,6 +14,8 @@ mod paste;
 mod permission_ui;
 mod permissions;
 mod pill;
+mod playback;
+mod recordings;
 mod session;
 mod settings;
 mod sounds;

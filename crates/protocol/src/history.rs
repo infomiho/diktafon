@@ -78,6 +78,40 @@ pub fn append_to(path: &Path, entry: &HistoryEntry) -> Result<()> {
     Ok(())
 }
 
+/// Remove the newest entry matching `target` by timestamp and both texts,
+/// returning whether one was dropped. Entries carry no id, but a timestamp
+/// plus both transcripts is unique in practice; newest wins because History
+/// lists newest first. The rewrite is atomic (temp file plus rename) and
+/// preserves lines that do not parse: only a positively matched entry is
+/// ever removed. Transcripts are otherwise append-only; this exists for
+/// History entry deletion, which removes the dictation outright.
+pub fn remove_matching(path: &Path, target: &HistoryEntry) -> Result<bool> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let mut lines: Vec<&str> = raw.lines().collect();
+    let found = lines.iter().rposition(|line| {
+        serde_json::from_str::<HistoryEntry>(line).is_ok_and(|entry| {
+            entry.at == target.at && entry.raw == target.raw && entry.polished == target.polished
+        })
+    });
+    let Some(ix) = found else {
+        return Ok(false);
+    };
+    lines.remove(ix);
+    let mut tmp = path.to_path_buf();
+    tmp.set_extension("tmp");
+    let mut contents = lines.join("\n");
+    if !lines.is_empty() {
+        contents.push('\n');
+    }
+    std::fs::write(&tmp, contents).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("renaming to {}", path.display()))?;
+    Ok(true)
+}
+
 /// Every entry, oldest first. Unparseable lines are skipped rather than
 /// failing the whole read.
 pub fn read_all() -> Vec<HistoryEntry> {
@@ -231,5 +265,76 @@ mod tests {
         let contents = format!("{good}\n{{ truncated\n{good}\n");
         assert_eq!(read_all_from(&contents).len(), 2);
         assert_eq!(recent_from(&contents, 5, |_| true).len(), 2);
+    }
+
+    fn remove_fixture(tag: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "dkt-history-remove-{tag}-{}.jsonl",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    fn dated(at: &str, raw: &str, polished: &str) -> HistoryEntry {
+        let mut entry = HistoryEntry::now(raw, polished);
+        entry.at = at.into();
+        entry
+    }
+
+    #[test]
+    fn removing_drops_only_the_newest_match() {
+        let path = remove_fixture("drop");
+        let old = dated("2026-09-01T00:00:00Z", "same", "Same.");
+        let new = dated("2026-09-02T00:00:00Z", "same", "Same.");
+        let other = dated("2026-09-03T00:00:00Z", "other", "Other.");
+        for entry in [&old, &new, &other] {
+            append_to(&path, entry).unwrap();
+        }
+        assert!(remove_matching(&path, &new).unwrap());
+        let rest = read_all_from(&std::fs::read_to_string(&path).unwrap());
+        assert_eq!(rest.len(), 2);
+        assert_eq!(rest[0].at, old.at, "the older twin survives");
+        assert_eq!(rest[1].at, other.at);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn removing_without_a_match_leaves_the_file_alone() {
+        let path = remove_fixture("miss");
+        let kept = dated("2026-09-01T00:00:00Z", "kept", "Kept.");
+        append_to(&path, &kept).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        let miss = dated("2026-09-02T00:00:00Z", "absent", "Absent.");
+        assert!(!remove_matching(&path, &miss).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        // A missing file is nothing to delete, not an error.
+        let absent =
+            std::env::temp_dir().join(format!("dkt-history-absent-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&absent);
+        assert!(!remove_matching(&absent, &miss).unwrap());
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn removing_preserves_torn_lines() {
+        let path = remove_fixture("torn");
+        let kept = dated("2026-09-01T00:00:00Z", "kept", "Kept.");
+        let gone = dated("2026-09-02T00:00:00Z", "gone", "Gone.");
+        append_to(&path, &kept).unwrap();
+        append_to(&path, &gone).unwrap();
+        std::fs::write(
+            &path,
+            format!("{{ truncated\n{}", std::fs::read_to_string(&path).unwrap()),
+        )
+        .unwrap();
+        assert!(remove_matching(&path, &gone).unwrap());
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            contents.contains("{ truncated"),
+            "unparseable lines survive"
+        );
+        assert_eq!(read_all_from(&contents).len(), 1);
+        std::fs::remove_file(&path).unwrap();
     }
 }

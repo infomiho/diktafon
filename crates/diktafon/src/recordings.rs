@@ -104,6 +104,54 @@ fn recording_name(path: &Path) -> Option<String> {
         .then_some(name)
 }
 
+/// The path of a retained recording, or `None` when `name` is not a name this
+/// module could have minted. History entries predate validation and the file
+/// is hand-editable, so a ref must never become a path unchecked: `../` would
+/// otherwise escape the archive.
+pub fn path(name: &str) -> Option<PathBuf> {
+    join_in(&dir(), name)
+}
+
+/// Whether the retained audio for `name` is actually on disk. A history entry
+/// can outlive its file: the user may delete it, or remove it externally.
+pub fn exists(name: &str) -> bool {
+    exists_in(&dir(), name)
+}
+
+/// Join a validated recording name onto `dir`. The single validation point
+/// for every operation that touches the archive: names that could not have
+/// been minted (`../`, absolute paths, wrong prefix or extension) never
+/// become paths.
+fn join_in(dir: &Path, name: &str) -> Option<PathBuf> {
+    let path = Path::new(name);
+    if path.file_name().and_then(|file| file.to_str()) != Some(name) {
+        return None;
+    }
+    recording_name(path).map(|_| dir.join(name))
+}
+
+fn exists_in(dir: &Path, name: &str) -> bool {
+    join_in(dir, name).is_some_and(|path| path.is_file())
+}
+
+/// Delete one recording, leaving its transcript history untouched. `Ok(false)`
+/// when there is nothing to delete: an already-missing file is the state the
+/// caller wanted, so it is not an error.
+pub fn delete(name: &str) -> Result<bool> {
+    delete_from(&dir(), name)
+}
+
+fn delete_from(dir: &Path, name: &str) -> Result<bool> {
+    let Some(path) = join_in(dir, name) else {
+        return Ok(false);
+    };
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("deleting {}", path.display())),
+    }
+}
+
 /// Decode a retained WAV back to 16 kHz mono f32 samples for
 /// retranscription. Only the shape this module writes is accepted: the `fmt`
 /// chunk must declare 16 kHz mono s16, and a `data` chunk that overclaims the
@@ -325,4 +373,29 @@ mod tests {
         assert_eq!(list_in(&dir).unwrap(), vec!["recording-a.wav".to_string()]);
     }
 
+    #[test]
+    fn names_outside_the_archive_are_rejected() {
+        assert!(path("recording-a.wav").is_some());
+        // A history entry is hand-editable, so traversal, absolute paths, and
+        // wrong names must never become paths.
+        assert_eq!(path("../evil.wav"), None);
+        assert_eq!(path("/tmp/recording-a.wav"), None);
+        assert_eq!(path("recording-a.wav.part"), None);
+        assert_eq!(path("notes.txt"), None);
+        assert_eq!(path("other.wav"), None);
+        assert_eq!(path(""), None);
+    }
+
+    #[test]
+    fn deleting_is_idempotent_and_missing_is_not_an_error() {
+        let dir = temp_dir("delete");
+        save_in(&dir, "recording-a.wav", &[0.1; 4]).unwrap();
+        assert!(exists_in(&dir, "recording-a.wav"));
+        assert!(delete_from(&dir, "recording-a.wav").unwrap());
+        assert!(!exists_in(&dir, "recording-a.wav"));
+        // Twice deleted, never existed, or invalid: all the wanted state.
+        assert!(!delete_from(&dir, "recording-a.wav").unwrap());
+        assert!(!delete_from(&dir, "recording-never.wav").unwrap());
+        assert!(!delete_from(&dir, "../evil.wav").unwrap());
+    }
 }
