@@ -2,7 +2,7 @@ use crate::dictation::PhaseEvent;
 use anyhow::{Context, Result, anyhow, bail};
 use diktafon_protocol::{
     ClientMsg, DaemonMsg, MODEL_MISMATCH_PREFIX, ModelSelection, Msg, PROTOCOL_VERSION,
-    VERSION_MISMATCH_PREFIX, read_frame, write_frame,
+    ReprocessOutcome, ReprocessRequest, VERSION_MISMATCH_PREFIX, read_frame, write_frame,
 };
 use std::cell::Cell;
 use std::io::BufReader;
@@ -10,7 +10,11 @@ use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,6 +28,13 @@ const READY_FRAME_TIMEOUT: Duration = Duration::from_secs(120);
 const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
 const MAX_BACKOFF: Duration = Duration::from_secs(8);
 const MODEL_SELECTION_POLL: Duration = Duration::from_millis(250);
+/// How often the reprocess drive checks for dictation traffic that arrived
+/// mid-rerun. Dictations are refused up front, so this only ever sees a press
+/// that lost the race by milliseconds.
+const REPROCESS_DRAIN_POLL: Duration = Duration::from_millis(50);
+/// Chunk size for streaming a retained clip: 5s windows like the bench's
+/// file transcription, small enough to flow, large enough for the ASR.
+const REPROCESS_CHUNK: usize = 16_000 * 5;
 
 /// How long a freshly spawned daemon may take to bind its socket (it binds
 /// before provisioning, so this is process startup, not model loading). Once
@@ -44,7 +55,12 @@ enum SessionResult {
 #[derive(Clone, Copy)]
 enum TransportSession {
     Idle,
-    Active { start_failed: bool },
+    Active {
+        start_failed: bool,
+    },
+    /// A settings-pane rerun owns the connection; dictation traffic is
+    /// refused or failed fast until it completes.
+    Reprocessing,
 }
 
 /// Client side of the streaming protocol, exposing the same chunks-in/text-out
@@ -58,6 +74,7 @@ pub struct DaemonClient {
     /// When the transport last auto-spawned diktafond; a spawn inside a
     /// session's window marks that session as a cold start in the timings.
     pub spawned_at: Arc<Mutex<Option<Instant>>>,
+    reprocessing: Arc<AtomicBool>,
     results_rx: mpsc::Receiver<SessionResult>,
     /// Results still owed by sessions whose `finish` timed out. Each `Flush`
     /// produces exactly one result in FIFO order, so this many must be
@@ -95,13 +112,11 @@ impl DaemonClient {
     ) -> Self {
         let (chunk_tx, cmd_rx) = mpsc::channel::<Msg>();
         let (results_tx, results_rx) = mpsc::channel();
-        let ledger = Arc::new(FlushLedger {
-            results_tx,
-            pending_flushes: Mutex::new(0),
-            phase_tx,
-        });
+        let ledger = Arc::new(FlushLedger::new(results_tx, phase_tx));
         let spawned_at = Arc::new(Mutex::new(None));
         let transport_spawned_at = spawned_at.clone();
+        let reprocessing = Arc::new(AtomicBool::new(false));
+        let transport_reprocessing = reprocessing.clone();
         let models = ModelSelectionControl(Arc::new(Mutex::new(models)));
         let transport_models = models.clone();
         thread::spawn(move || {
@@ -111,6 +126,7 @@ impl DaemonClient {
                 ledger,
                 transport_spawned_at,
                 transport_models,
+                transport_reprocessing,
             )
             .run(cmd_rx)
         });
@@ -118,9 +134,17 @@ impl DaemonClient {
             chunk_tx,
             models,
             spawned_at,
+            reprocessing,
             results_rx,
             stale_results: Cell::new(0),
         }
+    }
+
+    /// Whether a settings-pane rerun currently owns the daemon connection.
+    /// Dictations check it before arming so no speech is ever recorded into
+    /// a session the daemon never started.
+    pub fn is_reprocessing(&self) -> bool {
+        self.reprocessing.load(Ordering::Acquire)
     }
 
     /// Wait for the session flushed by `Session::stop` to finish transcribing
@@ -169,9 +193,16 @@ impl FlushLedger {
         *self.pending_flushes.lock().unwrap() > 0
     }
 
-    /// Deliver a result for the oldest pending flush; a result arriving with
-    /// none pending is stale and dropped.
+    /// Deliver daemon traffic: a rerun in flight takes precedence (its
+    /// result belongs to the waiter, never to a dictation), otherwise the
+    /// oldest pending flush is answered and anything else is stale-dropped.
     fn deliver(&self, result: SessionResult) {
+        let reprocess = self.reprocess.lock().unwrap();
+        if let Some(tx) = reprocess.tx.as_ref() {
+            let _ = tx.send(result);
+            return;
+        }
+        drop(reprocess);
         let mut pending = self.pending_flushes.lock().unwrap();
         if *pending > 0 {
             *pending -= 1;
@@ -329,6 +360,10 @@ struct Transport {
     observed_models: ModelSelection,
     model_refresh_pending: bool,
     session: TransportSession,
+    /// Mirrors [`DaemonClient::reprocessing`]: true while a rerun owns the
+    /// connection, so a press that lost the race fails fast instead of
+    /// recording into a session the daemon never started.
+    reprocessing: Arc<AtomicBool>,
 }
 
 impl Transport {
@@ -338,6 +373,7 @@ impl Transport {
         ledger: Arc<FlushLedger>,
         spawned_at: Arc<Mutex<Option<Instant>>>,
         models: ModelSelectionControl,
+        reprocessing: Arc<AtomicBool>,
     ) -> Self {
         let observed_models = models.get();
         Self {
@@ -359,6 +395,7 @@ impl Transport {
             observed_models,
             model_refresh_pending: false,
             session: TransportSession::Idle,
+            reprocessing,
         }
     }
 
@@ -408,6 +445,26 @@ impl Transport {
                     self.flush();
                     self.session = TransportSession::Idle;
                 }
+                Msg::Reprocess(req) => {
+                    // The rerun owns the daemon while it runs; a second one
+                    // (or a dictation, via the press-side guard) waits outside.
+                    // A stale dictation flush still owed would be misdelivered
+                    // as the rerun answer (and the real answer pasted later),
+                    // so anything outstanding refuses too.
+                    if self.reprocessing.load(Ordering::Acquire) {
+                        let _ = req
+                            .reply
+                            .send(Err("a retranscription is already running".to_string()));
+                    } else if !matches!(self.session, TransportSession::Idle)
+                        || self.ledger.has_pending_flushes()
+                    {
+                        let _ = req.reply.send(Err(
+                            "a dictation is in flight; try again when idle".to_string(),
+                        ));
+                    } else {
+                        self.run_reprocess(req, &cmd_rx);
+                    }
+                }
             }
             self.refresh_models_if_idle();
         }
@@ -441,7 +498,10 @@ impl Transport {
     fn refresh_models_if_idle(&mut self) {
         self.observe_model_selection();
         if !self.model_refresh_pending
-            || matches!(self.session, TransportSession::Active { .. })
+            || matches!(
+                self.session,
+                TransportSession::Active { .. } | TransportSession::Reprocessing
+            )
             || self.ledger.has_pending_flushes()
         {
             return;
@@ -457,27 +517,173 @@ impl Transport {
 
     /// End the session. If any of its audio was dropped, the daemon only holds
     /// a fragment; discard that instead of pasting silently truncated text, and
-    /// surface the loss as the session's error.
+    /// surface the loss as the session's error. A stray Flush mid-rerun is
+    /// swallowed: no dictation can own it (press is refused first), and
+    /// touching the ledger could leak the rerun's answer into dictation
+    /// results.
     fn flush(&mut self) {
-        self.ledger.begin_flush();
+        if matches!(self.session, TransportSession::Reprocessing) {
+            return;
+        }
         if matches!(
             self.session,
             TransportSession::Active { start_failed: true }
         ) {
             self.dropped_chunks = 0;
-            self.ledger.deliver(SessionResult::Failed(
+            self.ledger.fail_dictation(
                 "dictation could not start because diktafond was unreachable".to_string(),
-            ));
+            );
         } else if self.dropped_chunks > 0 {
             let dropped = std::mem::take(&mut self.dropped_chunks);
             self.send(&ClientMsg::Cancel);
-            self.ledger.deliver(SessionResult::Failed(format!(
+            self.ledger.fail_dictation(format!(
                 "{dropped} audio chunk(s) were lost while diktafond was unreachable"
-            )));
-        } else if !self.send(&ClientMsg::Flush) {
-            self.ledger.deliver(SessionResult::Failed(
-                "diktafond is unavailable".to_string(),
             ));
+        } else if !self.send(&ClientMsg::Flush) {
+            self.ledger
+                .fail_dictation("diktafond is unavailable".to_string());
+        } else {
+            self.ledger.begin_flush();
+        }
+    }
+
+    /// Drain dictation traffic that arrived mid-rerun through the refusal
+    /// paths, so a raced press fails fast instead of becoming a fresh
+    /// session afterwards.
+    fn drain_during_reprocess(&mut self, cmd_rx: &mpsc::Receiver<Msg>) {
+        while let Ok(msg) = cmd_rx.try_recv() {
+            self.handle_during_reprocess(msg);
+        }
+    }
+
+    /// Drive one retained clip through the daemon as a normal session. Runs
+    /// inline on the transport thread while the run loop waits: dictation
+    /// traffic arriving meanwhile is refused or failed fast, never
+    /// interleaved. The daemon never learns it is a rerun except through
+    /// `no_history`, which is forced here so no caller can forget it into a
+    /// history-polluting rerun.
+    fn run_reprocess(&mut self, req: ReprocessRequest, cmd_rx: &mpsc::Receiver<Msg>) {
+        let ReprocessRequest {
+            samples,
+            mut config,
+            reply,
+        } = req;
+        config.no_history = true;
+        self.session = TransportSession::Reprocessing;
+        self.reprocessing.store(true, Ordering::Release);
+        if !self.send(&ClientMsg::Start(config)) {
+            self.end_reprocess();
+            let _ = reply.send(Err("diktafond is unavailable".into()));
+            return;
+        }
+        // Timed after the Start is accepted so a cold daemon's model load
+        // does not pollute the rerun timings.
+        let started = Instant::now();
+        for chunk in samples.chunks(REPROCESS_CHUNK) {
+            if !self.send(&ClientMsg::Chunk(chunk.to_vec())) {
+                self.end_reprocess();
+                let _ = reply.send(Err("diktafond is unavailable".into()));
+                return;
+            }
+        }
+        let (repro_tx, repro_rx) = mpsc::channel();
+        self.ledger.begin_reprocess_flush(repro_tx);
+        if !self.send(&ClientMsg::Flush) {
+            self.end_reprocess();
+            let _ = reply.send(Err("diktafond is unavailable".into()));
+            return;
+        }
+        let deadline = Instant::now() + FINISH_TIMEOUT;
+        loop {
+            match repro_rx.recv_timeout(REPROCESS_DRAIN_POLL) {
+                Ok(result) => {
+                    self.drain_during_reprocess(cmd_rx);
+                    match result {
+                        SessionResult::Final(text) => {
+                            let finished = Instant::now();
+                            let polish_at = self.ledger.take_reprocess_polish();
+                            let outcome = ReprocessOutcome {
+                                text,
+                                asr_ms: polish_at
+                                    .unwrap_or(finished)
+                                    .duration_since(started)
+                                    .as_millis() as u64,
+                                polish_ms: polish_at
+                                    .map(|at| finished.duration_since(at).as_millis() as u64)
+                                    .unwrap_or(0),
+                            };
+                            self.end_reprocess();
+                            let _ = reply.send(Ok(outcome));
+                            return;
+                        }
+                        SessionResult::Failed(reason) => {
+                            self.end_reprocess();
+                            let _ = reply.send(Err(reason));
+                            return;
+                        }
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if Instant::now() >= deadline {
+                        self.end_reprocess();
+                        let _ = reply.send(Err("retranscription timed out".into()));
+                        return;
+                    }
+                    self.drain_during_reprocess(cmd_rx);
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    self.end_reprocess();
+                    let _ = reply.send(Err("retranscription was interrupted".into()));
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Dictation traffic that arrives mid-rerun. A press that lost the race
+    /// fails fast: no audio is ever recorded into a session the daemon never
+    /// started. The raced Flush answers that failure immediately (a swallowed
+    /// Flush would hang `finish` until timeout) and parks the session Idle;
+    /// a second Flush finds Idle and is swallowed so no stale failure can
+    /// poison the next dictation's result. A raced Cancel parks Idle too:
+    /// the cancel path never reads a result, so without this the failure
+    /// state would refuse every later rerun until the next dictation.
+    fn handle_during_reprocess(&mut self, msg: Msg) {
+        match msg {
+            Msg::Start(_) => {
+                self.session = TransportSession::Active { start_failed: true };
+            }
+            Msg::Flush
+                if matches!(
+                    self.session,
+                    TransportSession::Active { start_failed: true }
+                ) =>
+            {
+                self.ledger.fail_dictation(
+                    "a retranscription is running; try again in a moment".to_string(),
+                );
+                self.session = TransportSession::Idle;
+            }
+            Msg::Cancel => {
+                self.session = TransportSession::Idle;
+            }
+            Msg::Reprocess(req) => {
+                let _ = req
+                    .reply
+                    .send(Err("a retranscription is already running".into()));
+            }
+            Msg::Chunk(_) | Msg::Flush => {}
+        }
+    }
+
+    /// Release rerun ownership. The session returns to Idle only when the
+    /// rerun still owns it: a raced press that failed fast keeps its failure
+    /// state so its own Flush answers it instead of hanging.
+    fn end_reprocess(&mut self) {
+        self.reprocessing.store(false, Ordering::Release);
+        self.ledger.clear_reprocess();
+        if matches!(self.session, TransportSession::Reprocessing) {
+            self.session = TransportSession::Idle;
         }
     }
 
@@ -733,12 +939,17 @@ fn spawn_reader(stream: UnixStream, ledger: Arc<FlushLedger>) {
             match read_frame::<DaemonMsg>(&mut reader) {
                 Ok(Some(DaemonMsg::Partial(text))) => {
                     println!("  partial: {text}");
-                    if let Some(tx) = &ledger.phase_tx {
+                    if !ledger.reprocess_suppressed()
+                        && let Some(tx) = &ledger.phase_tx
+                    {
                         let _ = tx.unbounded_send(PhaseEvent::Partial(text));
                     }
                 }
                 Ok(Some(DaemonMsg::Polishing)) => {
-                    if let Some(tx) = &ledger.phase_tx {
+                    ledger.note_polish();
+                    if !ledger.reprocess_suppressed()
+                        && let Some(tx) = &ledger.phase_tx
+                    {
                         let _ = tx.unbounded_send(PhaseEvent::PolishingStarted);
                     }
                 }
@@ -765,8 +976,26 @@ fn spawn_reader(stream: UnixStream, ledger: Arc<FlushLedger>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diktafon_protocol::SessionConfig;
+    use diktafon_protocol::{ReprocessRequest, ReprocessResult, SessionConfig};
     use std::os::unix::net::UnixListener;
+
+    /// The handshake both fake daemons open with: Hello exchange, then Ready.
+    fn serve_handshake(reader: &mut BufReader<UnixStream>, writer: &mut UnixStream) {
+        match read_frame::<ClientMsg>(reader) {
+            Ok(Some(ClientMsg::Hello { .. })) => {
+                write_frame(
+                    writer,
+                    &DaemonMsg::Hello {
+                        version: PROTOCOL_VERSION,
+                        models: ModelSelection::default(),
+                    },
+                )
+                .unwrap();
+                write_frame(writer, &DaemonMsg::Ready).unwrap();
+            }
+            other => panic!("expected Hello, got {other:?}"),
+        }
+    }
 
     /// Handshake, count chunks per session, answer Flush with "<n> chunks".
     /// Returns (closing the connection) after serving `flushes` sessions, which
@@ -774,20 +1003,7 @@ mod tests {
     fn serve_conn(stream: UnixStream, mut flushes: usize) {
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut writer = stream;
-        match read_frame::<ClientMsg>(&mut reader) {
-            Ok(Some(ClientMsg::Hello { .. })) => {
-                write_frame(
-                    &mut writer,
-                    &DaemonMsg::Hello {
-                        version: PROTOCOL_VERSION,
-                        models: ModelSelection::default(),
-                    },
-                )
-                .unwrap();
-                write_frame(&mut writer, &DaemonMsg::Ready).unwrap();
-            }
-            other => panic!("expected Hello, got {other:?}"),
-        }
+        serve_handshake(&mut reader, &mut writer);
         let mut chunks = 0;
         while flushes > 0 {
             match read_frame::<ClientMsg>(&mut reader) {
@@ -802,6 +1018,74 @@ mod tests {
                 Ok(None) | Err(_) => return,
             }
         }
+    }
+
+    /// Handshake, then serve one rerun gated by the test: record whether its
+    /// Start carried `no_history` and how many chunks arrived, tell the test
+    /// the Flush landed, wait for release, then answer Polishing and Final.
+    /// Afterwards serves one ordinary session the same way `serve_conn` does,
+    /// reporting its own `(false, chunks, starts)` triple.
+    fn serve_gated_rerun(
+        stream: UnixStream,
+        release: mpsc::Receiver<()>,
+        report: mpsc::Sender<(bool, usize, usize)>,
+    ) {
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut writer = stream;
+        serve_handshake(&mut reader, &mut writer);
+        let mut starts = 0;
+        for gated in [true, false] {
+            let mut no_history = false;
+            let mut chunks = 0;
+            loop {
+                match read_frame::<ClientMsg>(&mut reader) {
+                    Ok(Some(ClientMsg::Start(config))) => {
+                        starts += 1;
+                        no_history = config.no_history;
+                    }
+                    Ok(Some(ClientMsg::Chunk(_))) => chunks += 1,
+                    Ok(Some(ClientMsg::Flush)) => break,
+                    Ok(Some(_)) => {}
+                    Ok(None) | Err(_) => return,
+                }
+            }
+            report.send((no_history, chunks, starts)).unwrap();
+            if gated {
+                release.recv().unwrap();
+                write_frame(&mut writer, &DaemonMsg::Partial("rerun partial".into())).unwrap();
+                write_frame(&mut writer, &DaemonMsg::Polishing).unwrap();
+                write_frame(&mut writer, &DaemonMsg::Final("rerun text".into())).unwrap();
+            } else {
+                write_frame(&mut writer, &DaemonMsg::Final(format!("{chunks} chunks"))).unwrap();
+                return;
+            }
+        }
+    }
+
+    /// Send one rerun without blocking, for tests that interleave dictation
+    /// traffic mid-rerun.
+    fn send_reprocess(client: &DaemonClient, samples: Vec<f32>) -> mpsc::Receiver<ReprocessResult> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        let config = SessionConfig {
+            no_history: true,
+            ..SessionConfig::default()
+        };
+        client
+            .chunk_tx
+            .send(Msg::Reprocess(ReprocessRequest {
+                samples,
+                config,
+                reply: reply_tx,
+            }))
+            .unwrap();
+        reply_rx
+    }
+
+    /// Drive one rerun through `client`, waiting up to 10s for its answer.
+    fn run_reprocess(client: &DaemonClient, samples: Vec<f32>) -> ReprocessResult {
+        send_reprocess(client, samples)
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
     }
 
     fn test_socket(name: &str) -> PathBuf {
@@ -822,6 +1106,293 @@ mod tests {
         client.finish()
     }
 
+    /// Send one rerun without blocking, for tests that interleave dictation
+    /// traffic mid-rerun.
+    #[test]
+    fn reprocess_carries_no_history_and_leaves_dictations_clean() {
+        let socket = test_socket("reprocess-clean");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (report_tx, report_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            serve_gated_rerun(listener.accept().unwrap().0, release_rx, report_tx)
+        });
+
+        let client = DaemonClient::spawn(socket.clone(), None, None, ModelSelection::default());
+        let reply = send_reprocess(&client, vec![0.0; 800]);
+        assert_eq!(
+            report_rx.recv_timeout(Duration::from_secs(10)).unwrap(),
+            (true, 1, 1)
+        );
+        release_tx.send(()).unwrap();
+        let outcome = reply
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome.text, "rerun text");
+        assert_eq!(run_session(&client, 2).unwrap(), "2 chunks");
+        assert_eq!(
+            report_rx.recv_timeout(Duration::from_secs(10)).unwrap(),
+            (false, 2, 2)
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn reprocess_is_busy_while_a_dictation_is_live() {
+        let socket = test_socket("reprocess-busy");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || serve_conn(listener.accept().unwrap().0, 2));
+
+        let client = DaemonClient::spawn(socket.clone(), None, None, ModelSelection::default());
+        client
+            .chunk_tx
+            .send(Msg::Start(SessionConfig::default()))
+            .unwrap();
+        let busy = run_reprocess(&client, vec![0.0; 160]);
+        assert!(
+            busy.is_err_and(|e| e.contains("in flight")),
+            "expected a busy refusal"
+        );
+        client.chunk_tx.send(Msg::Flush).unwrap();
+        assert!(client.finish().is_ok());
+        let outcome = run_reprocess(&client, vec![0.0; 160]).unwrap();
+        assert_eq!(outcome.text, "1 chunks");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn daemon_error_reaches_the_waiter() {
+        let socket = test_socket("reprocess-error");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            let stream = listener.accept().unwrap().0;
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            serve_handshake(&mut reader, &mut writer);
+            loop {
+                match read_frame::<ClientMsg>(&mut reader) {
+                    Ok(Some(ClientMsg::Flush)) => {
+                        write_frame(&mut writer, &DaemonMsg::Error("asr exploded".into())).unwrap();
+                        return;
+                    }
+                    Ok(Some(_)) => {}
+                    Ok(None) | Err(_) => return,
+                }
+            }
+        });
+
+        let client = DaemonClient::spawn(socket.clone(), None, None, ModelSelection::default());
+        let err = run_reprocess(&client, vec![0.0; 160]).unwrap_err();
+        assert_eq!(err, "asr exploded");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn raced_press_fails_fast_and_rerun_survives() {
+        let socket = test_socket("reprocess-race");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (report_tx, report_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            serve_gated_rerun(listener.accept().unwrap().0, release_rx, report_tx)
+        });
+
+        let client = DaemonClient::spawn(socket.clone(), None, None, ModelSelection::default());
+        let reply = send_reprocess(&client, vec![0.0; 800]);
+        assert_eq!(
+            report_rx.recv_timeout(Duration::from_secs(10)).unwrap(),
+            (true, 1, 1)
+        );
+        // A press that lost the race: its Start never reaches the daemon,
+        // and its Flush fails fast instead of hanging `finish`.
+        client
+            .chunk_tx
+            .send(Msg::Start(SessionConfig::default()))
+            .unwrap();
+        client.chunk_tx.send(Msg::Chunk(vec![0.0; 160])).unwrap();
+        client.chunk_tx.send(Msg::Flush).unwrap();
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            reply
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap()
+                .unwrap()
+                .text,
+            "rerun text"
+        );
+        let err = client.finish().unwrap_err().to_string();
+        assert!(err.contains("retranscription"), "{err}");
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn second_rerun_waits_its_turn() {
+        let socket = test_socket("repro-second");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (report_tx, report_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            serve_gated_rerun(listener.accept().unwrap().0, release_rx, report_tx)
+        });
+
+        let client = DaemonClient::spawn(socket.clone(), None, None, ModelSelection::default());
+        let first = send_reprocess(&client, vec![0.0; 800]);
+        assert_eq!(
+            report_rx.recv_timeout(Duration::from_secs(10)).unwrap(),
+            (true, 1, 1)
+        );
+        let busy = run_reprocess(&client, vec![0.0; 160]);
+        assert!(
+            busy.is_err_and(|e| e.contains("already running")),
+            "expected an already-running refusal"
+        );
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            first
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap()
+                .unwrap()
+                .text,
+            "rerun text"
+        );
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn cancel_mid_rerun_parks_idle() {
+        let socket = test_socket("repro-cancel");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (report_tx, report_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            serve_gated_rerun(listener.accept().unwrap().0, release_rx, report_tx)
+        });
+
+        let client = DaemonClient::spawn(socket.clone(), None, None, ModelSelection::default());
+        let reply = send_reprocess(&client, vec![0.0; 800]);
+        assert_eq!(
+            report_rx.recv_timeout(Duration::from_secs(10)).unwrap(),
+            (true, 1, 1)
+        );
+        // A raced press that cancels instead of releasing: no Flush ever
+        // arrives, so without the Idle parking every later rerun would see
+        // a dictation in flight that no longer exists.
+        client
+            .chunk_tx
+            .send(Msg::Start(SessionConfig::default()))
+            .unwrap();
+        client.chunk_tx.send(Msg::Cancel).unwrap();
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            reply
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap()
+                .unwrap()
+                .text,
+            "rerun text"
+        );
+        let outcome = run_reprocess(&client, vec![0.0; 160]).unwrap();
+        assert_eq!(outcome.text, "1 chunks");
+        assert_eq!(
+            report_rx.recv_timeout(Duration::from_secs(10)).unwrap(),
+            (true, 1, 2)
+        );
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn connection_loss_fails_the_waiter() {
+        let socket = test_socket("repro-conn-loss");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            let stream = listener.accept().unwrap().0;
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            serve_handshake(&mut reader, &mut writer);
+            // Read the rerun's Start, then vanish without answering.
+            while !matches!(
+                read_frame::<ClientMsg>(&mut reader),
+                Ok(Some(ClientMsg::Start(_))) | Ok(None) | Err(_)
+            ) {}
+        });
+
+        let client = DaemonClient::spawn(socket.clone(), None, None, ModelSelection::default());
+        let err = run_reprocess(&client, vec![0.0; 800]).unwrap_err();
+        assert!(
+            err.contains("closed") || err.contains("lost") || err.contains("unavailable"),
+            "{err}"
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn rerun_phases_never_reach_the_pill() {
+        use futures::channel::mpsc::unbounded;
+
+        let socket = test_socket("repro-phases");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (report_tx, report_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            serve_gated_rerun(listener.accept().unwrap().0, release_rx, report_tx)
+        });
+
+        let (phase_tx, mut phase_rx) = unbounded();
+        let client = DaemonClient::spawn(
+            socket.clone(),
+            None,
+            Some(phase_tx),
+            ModelSelection::default(),
+        );
+        let reply = send_reprocess(&client, vec![0.0; 800]);
+        use crate::dictation::PhaseEvent;
+        // Connecting announces DownloadFinished then DaemonReady; drain that
+        // handshake noise so the assertion below only sees rerun-time phases.
+        // Partial or PolishingStarted here would already be a leak.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match phase_rx.try_recv() {
+                Err(_) if Instant::now() >= deadline => panic!("no DaemonReady arrived"),
+                Err(_) => thread::sleep(Duration::from_millis(10)),
+                Ok(PhaseEvent::DaemonReady) => break,
+                Ok(PhaseEvent::Partial(_)) => panic!("Partial leaked during rerun"),
+                Ok(PhaseEvent::PolishingStarted) => {
+                    panic!("PolishingStarted leaked during rerun")
+                }
+                Ok(_) => {}
+            }
+        }
+        assert_eq!(
+            report_rx.recv_timeout(Duration::from_secs(10)).unwrap(),
+            (true, 1, 1)
+        );
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            reply
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap()
+                .unwrap()
+                .text,
+            "rerun text"
+        );
+        // The daemon sent Partial and Polishing for the rerun; neither may
+        // surface as pill phases.
+        match phase_rx.try_recv() {
+            Err(_) => {}
+            Ok(crate::dictation::PhaseEvent::Partial(_)) => panic!("Partial leaked during rerun"),
+            Ok(crate::dictation::PhaseEvent::PolishingStarted) => {
+                panic!("PolishingStarted leaked during rerun")
+            }
+            Ok(_) => panic!("another phase leaked during rerun"),
+        }
+        drop(client);
+        server.join().unwrap();
+    }
+
     #[test]
     fn desired_model_selection_can_change_without_touching_the_connection() {
         let control = ModelSelectionControl(Arc::new(Mutex::new(ModelSelection::default())));
@@ -837,17 +1408,14 @@ mod tests {
     fn a_new_model_choice_gets_its_own_restart_attempt() {
         let control = ModelSelectionControl(Arc::new(Mutex::new(ModelSelection::default())));
         let (results_tx, _) = mpsc::channel();
-        let ledger = Arc::new(FlushLedger {
-            results_tx,
-            pending_flushes: Mutex::new(0),
-            phase_tx: None,
-        });
+        let ledger = Arc::new(FlushLedger::new(results_tx, None));
         let mut transport = Transport::new(
             test_socket("new-model-restart"),
             None,
             ledger,
             Arc::new(Mutex::new(None)),
             control.clone(),
+            Arc::new(AtomicBool::new(false)),
         );
         transport.retired_mismatch = true;
         control.set(ModelSelection {
@@ -993,17 +1561,14 @@ mod tests {
             });
         });
         let (results_tx, _) = mpsc::channel();
-        let ledger = Arc::new(FlushLedger {
-            results_tx,
-            pending_flushes: Mutex::new(0),
-            phase_tx: None,
-        });
+        let ledger = Arc::new(FlushLedger::new(results_tx, None));
         let mut transport = Transport::new(
             socket.clone(),
             None,
             ledger,
             Arc::new(Mutex::new(None)),
             control,
+            Arc::new(AtomicBool::new(false)),
         );
         let (stream, connected_models) = transport
             .connect()

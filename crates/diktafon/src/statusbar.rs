@@ -296,6 +296,7 @@ pub fn install(
     cx: &mut App,
     dictation: &Entity<Dictation>,
     settings: std::sync::Arc<std::sync::Mutex<crate::config::SessionSettings>>,
+    reprocess_tx: std::sync::mpsc::Sender<diktafon_protocol::Msg>,
 ) {
     let mtm = MainThreadMarker::new().expect("not on the main thread");
     let (actions_tx, mut actions_rx) = unbounded();
@@ -323,8 +324,10 @@ pub fn install(
             match action {
                 MenuAction::OpenSettings => {
                     let settings = settings.clone();
+                    let reprocess_tx = reprocess_tx.clone();
                     cx.update(|cx| {
-                        settings_window = crate::settings::open(settings_window, settings, cx);
+                        settings_window =
+                            crate::settings::open(settings_window, settings, reprocess_tx, cx);
                     });
                 }
                 MenuAction::CheckForUpdates => {

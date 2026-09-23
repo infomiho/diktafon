@@ -12,11 +12,11 @@ use crate::statusbar::DaemonStatus;
 use crate::updater::{self, UpdateCheck};
 use crate::{autostart, statusbar, theme};
 use chrono::{Datelike, Local, NaiveDate};
-use diktafon_protocol::HistoryEntry;
+use diktafon_protocol::{HistoryEntry, Msg, ReprocessRequest};
 use gpui::{
     Animation, AnimationExt, App, AppContext, Bounds, ClipboardItem, Context, Div, Entity,
-    ParentElement, Render, SharedString, TitlebarOptions, Window, WindowBounds, WindowHandle,
-    WindowOptions, div, point, prelude::*, px, relative, rems, rgba, size,
+    ParentElement, Render, SharedString, Stateful, TitlebarOptions, Window, WindowBounds,
+    WindowHandle, WindowOptions, div, point, prelude::*, px, relative, rems, rgba, size,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::form::{Form, field, v_form};
@@ -26,9 +26,8 @@ use gpui_component::list::ListItem;
 use gpui_component::searchable_list::SearchableVec;
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::switch::Switch;
-use gpui_component::{
-    ActiveTheme, Icon, IconName, IndexPath, Root, Sizable, StyledExt, h_flex, v_flex,
-};
+use gpui_component::{ActiveTheme, Icon, IndexPath, Root, Sizable, StyledExt, h_flex, v_flex};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 #[derive(serde::Deserialize)]
@@ -242,7 +241,7 @@ fn local_time(at: &str) -> String {
 
 /// The History pane's state: dictations grouped by day, filtered by the
 /// search well. Each row's copy button puts its polished text on the
-/// clipboard.
+/// clipboard; rows with retained audio also play and delete the dictation.
 struct History {
     /// Everything shown, newest first.
     entries: Vec<HistoryEntry>,
@@ -251,6 +250,28 @@ struct History {
     query: String,
     /// Entry whose text was just copied; drives the brief check-mark flash.
     copied: Option<usize>,
+    /// Recording name playing, if any. Keyed by name, not row: deleting one
+    /// row must not silence another.
+    playing: Option<String>,
+    /// Transient feedback under the list ("Dictation deleted.", failures);
+    /// cleared on a timer like the copy flash.
+    notice: Option<String>,
+    player: crate::playback::RecordingPlayer,
+    /// Finished reruns by recording name. Names are stable across history
+    /// reloads; entry indices are not.
+    reruns: HashMap<String, Rerun>,
+    /// Recording name of the rerun in flight, if any. Single-flight: one
+    /// rerun at a time, so results cannot be misattributed.
+    working: Option<String>,
+}
+
+/// One retranscription, shown alongside the entry it reran. The original
+/// history result is never touched.
+#[derive(Clone)]
+struct Rerun {
+    text: String,
+    asr_model: String,
+    polishing_model: String,
 }
 
 impl History {
@@ -260,6 +281,11 @@ impl History {
             days: Vec::new(),
             query: String::new(),
             copied: None,
+            playing: None,
+            notice: None,
+            player: crate::playback::RecordingPlayer::new(),
+            reruns: HashMap::new(),
+            working: None,
         };
         history.regroup();
         history
@@ -268,6 +294,8 @@ impl History {
     fn reload(&mut self) {
         self.entries = load_history();
         // An index into the old entries would flash the wrong row.
+        // Playback is stopped only when its own entry is deleted; other rows
+        // must keep playing across a reload.
         self.copied = None;
         self.regroup();
     }
@@ -336,6 +364,9 @@ pub struct SettingsWindow {
     permissions_focus: gpui::FocusHandle,
     /// Reloaded when the History section is entered.
     history: History,
+    /// Sends retranscription requests to the transport; owned by the control
+    /// thread's client, so the window never touches the daemon directly.
+    reprocess_tx: std::sync::mpsc::Sender<diktafon_protocol::Msg>,
     /// The design's search well; drives the history filter.
     history_search: Entity<InputState>,
     /// Keeps the window on the action dispatch path, so the global Cmd+W
@@ -347,6 +378,7 @@ pub struct SettingsWindow {
 pub fn open(
     existing: Option<WindowHandle<Root>>,
     settings: Arc<Mutex<SessionSettings>>,
+    reprocess_tx: std::sync::mpsc::Sender<diktafon_protocol::Msg>,
     cx: &mut App,
 ) -> Option<WindowHandle<Root>> {
     if let Some(handle) = existing
@@ -377,7 +409,7 @@ pub fn open(
             |window, cx| {
                 crate::window_lifecycle::release_view_on_close(window, cx);
                 force_dark_titlebar(window);
-                let view = cx.new(|cx| SettingsWindow::new(settings, window, cx));
+                let view = cx.new(|cx| SettingsWindow::new(settings, reprocess_tx, window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             },
         )
@@ -409,6 +441,7 @@ pub fn force_dark_titlebar(window: &Window) {
 impl SettingsWindow {
     fn new(
         settings: Arc<Mutex<SessionSettings>>,
+        reprocess_tx: std::sync::mpsc::Sender<diktafon_protocol::Msg>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -747,9 +780,33 @@ impl SettingsWindow {
             permissions_sheet_open: false,
             permissions_focus: permissions_focus.clone(),
             history,
+            reprocess_tx,
             history_search,
             focus_handle,
-        }
+        };
+        // A finished clip reports itself through `is_playing`; poll it so the
+        // row drops its playing state with no task per click. Ends with the
+        // window: a closed view fails the update and breaks the loop.
+        cx.spawn(async move |view, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(500))
+                    .await;
+                let gone = view
+                    .update(cx, |view: &mut Self, cx| {
+                        if view.history.playing.is_some() && !view.history.player.is_playing() {
+                            view.history.playing = None;
+                            cx.notify();
+                        }
+                    })
+                    .is_err();
+                if gone {
+                    break;
+                }
+            }
+        })
+        .detach();
+        view
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1779,17 +1836,316 @@ impl SettingsWindow {
             .child(SharedString::from(label.to_string()))
     }
 
+    /// A 28px History row icon button. `active` tints it the polishing
+    /// magenta, `danger` turns the hover red, `accent` paints it the action
+    /// accent for the primary row decision.
+    fn history_button(
+        id: (&'static str, usize),
+        icon: impl Into<Icon>,
+        active: bool,
+        danger: bool,
+        accent: bool,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .size(px(28.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.))
+            .text_color(if active {
+                rgba(theme::SIGNAL_MAGENTA | 0xFF)
+            } else if accent {
+                rgba(theme::ACCENT | 0xFF)
+            } else {
+                rgba(theme::TEXT_FAINT | 0xFF)
+            })
+            .hover(|el| {
+                let hovered = if accent {
+                    el.bg(rgba(theme::ACCENT | 0x2E))
+                        .text_color(rgba(theme::ACCENT | 0xFF))
+                } else {
+                    el.bg(rgba(theme::HAIRLINE | 0x22))
+                        .text_color(rgba(theme::TEXT_PRIMARY | 0xFF))
+                };
+                if danger {
+                    hovered.text_color(rgba(theme::SIGNAL_RED | 0xFF))
+                } else {
+                    hovered
+                }
+            })
+            .child(Icon::new(icon).small())
+    }
+
+    /// Display name for a model id ("Canary 1B Flash"), falling back to the
+    /// id when the catalog does not know it.
+    fn model_display_name(id: &str) -> String {
+        let catalog: ModelCatalog = serde_json::from_str(diktafon_protocol::MODEL_CATALOG_JSON)
+            .expect("bundled model catalog must parse");
+        catalog
+            .models
+            .into_iter()
+            .find(|model| model.id == id)
+            .map(|model| model.name)
+            .unwrap_or_else(|| id.to_string())
+    }
+
+    /// Word-level diff of the rerun against the original: rerun-side words
+    /// the original does not have are flagged, so differences pop without
+    /// reading both texts twice.
+    fn diff_tokens(original: &str, rerun: &str) -> Vec<(String, bool)> {
+        let a: Vec<&str> = original.split_whitespace().collect();
+        let b: Vec<&str> = rerun.split_whitespace().collect();
+        let mut lcs = vec![vec![0; b.len() + 1]; a.len() + 1];
+        for i in (0..a.len()).rev() {
+            for j in (0..b.len()).rev() {
+                lcs[i][j] = if a[i] == b[j] {
+                    lcs[i + 1][j + 1] + 1
+                } else {
+                    lcs[i + 1][j].max(lcs[i][j + 1])
+                };
+            }
+        }
+        let mut out = Vec::new();
+        let (mut i, mut j) = (0, 0);
+        while i < a.len() && j < b.len() {
+            if a[i] == b[j] {
+                out.push((b[j].to_string(), false));
+                i += 1;
+                j += 1;
+            } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+                i += 1;
+            } else {
+                out.push((b[j].to_string(), true));
+                j += 1;
+            }
+        }
+        while j < b.len() {
+            out.push((b[j].to_string(), true));
+            j += 1;
+        }
+        out
+    }
+
+    /// Play `name`, or stop it when it is the one playing. Failures report in
+    /// the notice; the row keeps whatever state shows the truth.
+    fn toggle_playback(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self.history.playing.as_deref() == Some(name) {
+            self.history.player.stop();
+            self.history.playing = None;
+            return;
+        }
+        let Some(path) = crate::recordings::path(name) else {
+            self.set_notice("Audio file is missing.".into(), cx);
+            return;
+        };
+        match self.history.player.play(&path) {
+            Ok(()) => {
+                self.history.playing = Some(name.to_string());
+                self.history.notice = None;
+            }
+            Err(e) => self.set_notice(format!("Could not play the recording: {e:#}"), cx),
+        }
+    }
+
+    /// Rerun the entry's retained clip through the currently selected models.
+    /// Single-flight; the original result is never touched and neither
+    /// history nor audio is written. Every outcome reports in place.
+    fn retranscribe(&mut self, entry_ix: usize, cx: &mut Context<Self>) {
+        let Some(entry) = self.history.entries.get(entry_ix).cloned() else {
+            return;
+        };
+        let Some(name) = entry.recording.clone() else {
+            return;
+        };
+        if self.history.working.is_some() {
+            self.set_notice("A rerun is already in progress.".into(), cx);
+            return;
+        }
+        if self.history.playing.as_deref() == Some(&name) {
+            self.history.player.stop();
+            self.history.playing = None;
+        }
+        let Some(path) = crate::recordings::path(&name) else {
+            self.set_notice("Audio file is missing.".into(), cx);
+            return;
+        };
+        let samples = match crate::recordings::samples(&path) {
+            Ok(samples) => samples,
+            Err(e) => {
+                self.set_notice(format!("Could not read the recording: {e:#}"), cx);
+                return;
+            }
+        };
+        let (config, asr_model, polishing_model) = {
+            let settings = self.settings.lock().unwrap();
+            let models = settings.models();
+            let mut config = settings.session();
+            config.no_history = true;
+            config.recording = String::new();
+            (config, models.transcription, models.polishing)
+        };
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        if self
+            .reprocess_tx
+            .send(Msg::Reprocess(ReprocessRequest {
+                samples,
+                config,
+                reply: reply_tx,
+            }))
+            .is_err()
+        {
+            self.set_notice("Dictation client is gone.".into(), cx);
+            return;
+        }
+        self.history.working = Some(name.clone());
+        cx.notify();
+        cx.spawn(async move |view, cx| {
+            let answer = cx
+                .background_executor()
+                .spawn(async move { reply_rx.recv() })
+                .await;
+            let _ = view.update(cx, |view: &mut Self, cx| {
+                // A delete or reload may have cleared the working state;
+                // only the matching rerun may claim the answer.
+                if view.history.working.as_deref() != Some(&name) {
+                    return;
+                }
+                view.history.working = None;
+                match answer {
+                    Ok(Ok(result)) if !result.text.trim().is_empty() => {
+                        view.history.reruns.insert(
+                            name.clone(),
+                            Rerun {
+                                text: result.text,
+                                asr_model: asr_model.clone(),
+                                polishing_model: polishing_model.clone(),
+                            },
+                        );
+                    }
+                    Ok(Ok(_)) => {
+                        view.set_notice("The rerun came back empty.".into(), cx);
+                    }
+                    Ok(Err(reason)) => {
+                        view.set_notice(reason, cx);
+                    }
+                    Err(_) => {
+                        view.set_notice("Retranscription was interrupted.".into(), cx);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Accept the rerun: copy its text for use elsewhere and dismiss the
+    /// card. The original history entry is left untouched.
+    fn accept_rerun(&mut self, name: &str, cx: &mut Context<Self>) {
+        let Some(rerun) = self.history.reruns.remove(name) else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(rerun.text));
+        self.set_notice("Rerun accepted. Copied to clipboard.".into(), cx);
+    }
+
+    /// Dismiss the rerun without using it. Silent: the disappearing card is
+    /// the feedback.
+    fn reject_rerun(&mut self, name: &str) {
+        self.history.reruns.remove(name);
+    }
+
+    /// Delete the whole dictation: its retained audio, if any, then its
+    /// history line. Audio goes first, so a half-failure leaves a transcript
+    /// with a gracefully handled dangling reference rather than an orphaned
+    /// clip. Either failure keeps the row and reports in the notice.
+    fn delete_entry(&mut self, entry_ix: usize, cx: &mut Context<Self>) {
+        let Some(entry) = self.history.entries.get(entry_ix).cloned() else {
+            return;
+        };
+        if self.history.working.is_some() {
+            self.set_notice("Wait for the rerun to finish.".into(), cx);
+            return;
+        }
+        if self.history.playing == entry.recording {
+            self.history.player.stop();
+            self.history.playing = None;
+        }
+        if let Some(name) = entry.recording.as_deref()
+            && let Err(e) = crate::recordings::delete(name)
+        {
+            self.set_notice(format!("Could not delete the recording: {e:#}"), cx);
+            return;
+        }
+        match diktafon_protocol::history::remove_matching(
+            &diktafon_protocol::history::path(),
+            &entry,
+        ) {
+            Ok(true) => {
+                self.history.reload();
+                self.set_notice("Dictation deleted.".into(), cx);
+            }
+            Ok(false) => {
+                self.history.reload();
+                self.set_notice("Dictation is already gone.".into(), cx);
+            }
+            Err(e) => self.set_notice(format!("Could not delete the dictation: {e:#}"), cx),
+        }
+    }
+
+    /// Show transient feedback under the list, cleared after a few seconds
+    /// like the copy flash. Only the latest notice survives: a stale timer
+    /// for an older one must not clear its replacement.
+    fn set_notice(&mut self, text: String, cx: &mut Context<Self>) {
+        self.history.notice = Some(text.clone());
+        cx.spawn(async move |view, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(2500))
+                .await;
+            let _ = view.update(cx, |view: &mut Self, cx| {
+                if view.history.notice.as_deref() == Some(&text) {
+                    view.history.notice = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     fn history_row(&self, entry_ix: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let entry = &self.history.entries[entry_ix];
         let copied = self.history.copied == Some(entry_ix);
         let copy_text = entry.polished.clone();
+        // Play pairs with the clip; delete removes the whole dictation, so
+        // every row gets one — transcript-only entries are deletable too,
+        // and a missing file leaves copy and delete.
+        let play_name = entry
+            .recording
+            .clone()
+            .filter(|name| crate::recordings::exists(name));
+        let playing = play_name
+            .as_deref()
+            .is_some_and(|name| self.history.playing.as_deref() == Some(name));
+        let rerun = entry
+            .recording
+            .as_deref()
+            .and_then(|name| self.history.reruns.get(name))
+            .cloned();
+        // A rerun in flight replaces the row's result display until it lands;
+        // the stale text would read as the answer meanwhile.
+        let working_here = entry
+            .recording
+            .as_deref()
+            .is_some_and(|name| self.history.working.as_deref() == Some(name));
+        let rerun = rerun.filter(|_| !working_here);
         ListItem::new(("dictation", entry_ix))
             .px(px(10.))
             .py(px(10.))
             .rounded(px(8.))
             .child(
                 h_flex()
-                    .items_center()
+                    .items_start()
                     .gap(px(14.))
                     .w_full()
                     .child(
@@ -1801,57 +2157,271 @@ impl SettingsWindow {
                             .child(local_time(&entry.at)),
                     )
                     .child(
-                        div()
+                        v_flex()
                             .flex_1()
                             .min_w_0()
-                            .text_size(px(15.))
-                            .line_height(relative(1.5))
-                            .line_clamp(2)
-                            .child(SharedString::from(entry.polished.clone())),
-                    )
-                    .child(
-                        div()
-                            .id(("copy", entry_ix))
-                            .size(px(28.))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(6.))
-                            .text_color(if copied {
-                                rgba(theme::SIGNAL_MAGENTA | 0xFF)
-                            } else {
-                                rgba(theme::TEXT_FAINT | 0xFF)
-                            })
-                            .hover(|el| {
-                                el.bg(rgba(theme::HAIRLINE | 0x22))
-                                    .text_color(rgba(theme::TEXT_PRIMARY | 0xFF))
-                            })
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
-                                view.history.copied = Some(entry_ix);
-                                cx.notify();
-                                cx.spawn(async move |view, cx| {
-                                    cx.background_executor()
-                                        .timer(std::time::Duration::from_millis(1500))
-                                        .await;
-                                    let _ = view.update(cx, |view: &mut Self, cx| {
-                                        if view.history.copied == Some(entry_ix) {
-                                            view.history.copied = None;
-                                            cx.notify();
-                                        }
-                                    });
-                                })
-                                .detach();
-                            }))
+                            .gap(px(8.))
                             .child(
-                                Icon::new(if copied {
-                                    IconName::Check
-                                } else {
-                                    IconName::Copy
-                                })
-                                .small(),
-                            ),
+                                div()
+                                    .text_size(px(15.))
+                                    .line_height(relative(1.5))
+                                    .line_clamp(2)
+                                    .child(SharedString::from(entry.polished.clone())),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap(px(2.))
+                                    .items_center()
+                                    .when_some(play_name.clone(), |el, name| {
+                                        el.child(
+                                            Self::history_button(
+                                                ("play", entry_ix),
+                                                if playing {
+                                                    DiktafonIcon::Pause
+                                                } else {
+                                                    DiktafonIcon::Play
+                                                },
+                                                playing,
+                                                false,
+                                                false,
+                                            )
+                                            .on_click(
+                                                cx.listener(move |view, _, _, cx| {
+                                                    view.toggle_playback(&name, cx);
+                                                    cx.notify();
+                                                }),
+                                            ),
+                                        )
+                                    })
+                                    .when_some(play_name, |el, name| {
+                                        let working =
+                                            self.history.working.as_deref() == Some(&name);
+                                        el.child(
+                                            Self::history_button(
+                                                ("retranscribe", entry_ix),
+                                                DiktafonIcon::Restart,
+                                                working,
+                                                false,
+                                                false,
+                                            )
+                                            .on_click(
+                                                cx.listener(move |view, _, _, cx| {
+                                                    view.retranscribe(entry_ix, cx);
+                                                    cx.notify();
+                                                }),
+                                            ),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .id(("copy", entry_ix))
+                                            .size(px(28.))
+                                            .flex_none()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .rounded(px(6.))
+                                            .text_color(if copied {
+                                                rgba(theme::SIGNAL_MAGENTA | 0xFF)
+                                            } else {
+                                                rgba(theme::TEXT_FAINT | 0xFF)
+                                            })
+                                            .hover(|el| {
+                                                el.bg(rgba(theme::HAIRLINE | 0x22))
+                                                    .text_color(rgba(theme::TEXT_PRIMARY | 0xFF))
+                                            })
+                                            .on_click(cx.listener(move |view, _, _, cx| {
+                                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                                    copy_text.clone(),
+                                                ));
+                                                view.history.copied = Some(entry_ix);
+                                                cx.notify();
+                                                cx.spawn(async move |view, cx| {
+                                                    cx.background_executor()
+                                                        .timer(std::time::Duration::from_millis(
+                                                            1500,
+                                                        ))
+                                                        .await;
+                                                    let _ =
+                                                        view.update(cx, |view: &mut Self, cx| {
+                                                            if view.history.copied == Some(entry_ix)
+                                                            {
+                                                                view.history.copied = None;
+                                                                cx.notify();
+                                                            }
+                                                        });
+                                                })
+                                                .detach();
+                                            }))
+                                            .child(
+                                                Icon::new(if copied {
+                                                    DiktafonIcon::Check
+                                                } else {
+                                                    DiktafonIcon::Copy
+                                                })
+                                                .small(),
+                                            ),
+                                    )
+                                    .child(
+                                        Self::history_button(
+                                            ("delete", entry_ix),
+                                            DiktafonIcon::TrashBin,
+                                            false,
+                                            true,
+                                            false,
+                                        )
+                                        .on_click(
+                                            cx.listener(move |view, _, _, cx| {
+                                                view.delete_entry(entry_ix, cx);
+                                                cx.notify();
+                                            }),
+                                        ),
+                                    ),
+                            )
+                            .when(working_here, |el| {
+                                el.child(
+                                    div()
+                                        .mt(px(8.))
+                                        .py(px(12.))
+                                        .px(px(14.))
+                                        .rounded(px(8.))
+                                        .bg(rgba(theme::SURFACE | 0xFF))
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .child(
+                                            div()
+                                                .text_size(px(13.))
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child("Retranscribing…"),
+                                        )
+                                        .child(
+                                            v_flex()
+                                                .mt(px(8.))
+                                                .gap(px(8.))
+                                                .child(
+                                                    div()
+                                                        .h(px(14.))
+                                                        .rounded(px(4.))
+                                                        .bg(rgba(theme::SURFACE_RAISED | 0xFF)),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .h(px(14.))
+                                                        .rounded(px(4.))
+                                                        .bg(rgba(theme::SURFACE_RAISED | 0xFF)),
+                                                ),
+                                        ),
+                                )
+                            })
+                            .when_some(rerun, |el, rerun| {
+                                let caption = SharedString::from(format!(
+                                    "{} + {}",
+                                    Self::model_display_name(&rerun.asr_model),
+                                    Self::model_display_name(&rerun.polishing_model)
+                                ));
+                                let words = Self::diff_tokens(&entry.polished, &rerun.text);
+                                el.child(
+                                    div()
+                                        .mt(px(8.))
+                                        .py(px(12.))
+                                        .px(px(14.))
+                                        .rounded(px(8.))
+                                        .bg(rgba(theme::SURFACE | 0xFF))
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_wrap()
+                                                .text_size(px(15.))
+                                                .line_height(relative(1.5))
+                                                .children(words.into_iter().map(
+                                                    |(word, changed)| {
+                                                        div()
+                                                            .when(changed, |el| {
+                                                                el.bg(rgba(
+                                                                    theme::SIGNAL_GREEN | 0x38,
+                                                                ))
+                                                                .rounded(px(3.))
+                                                                .px(px(1.))
+                                                            })
+                                                            .child(SharedString::from(format!(
+                                                                "{word}\u{a0}"
+                                                            )))
+                                                    },
+                                                )),
+                                        )
+                                        .child(
+                                            h_flex()
+                                                .mt(px(8.))
+                                                .items_center()
+                                                .justify_between()
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.))
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(caption),
+                                                )
+                                                .child(
+                                                    h_flex()
+                                                        .gap(px(2.))
+                                                        .items_center()
+                                                        .child(
+                                                            Self::history_button(
+                                                                ("accept-rerun", entry_ix),
+                                                                DiktafonIcon::Check,
+                                                                false,
+                                                                false,
+                                                                true,
+                                                            )
+                                                            .on_click(cx.listener(
+                                                                move |view, _, _, cx| {
+                                                                    // Reborrowed per click: the map
+                                                                    // may have changed since render.
+                                                                    if let Some(name) = view
+                                                                        .history
+                                                                        .entries
+                                                                        .get(entry_ix)
+                                                                        .and_then(|entry| {
+                                                                            entry.recording.clone()
+                                                                        })
+                                                                    {
+                                                                        view.accept_rerun(
+                                                                            &name, cx,
+                                                                        );
+                                                                    }
+                                                                    cx.notify();
+                                                                },
+                                                            )),
+                                                        )
+                                                        .child(
+                                                            Self::history_button(
+                                                                ("reject-rerun", entry_ix),
+                                                                DiktafonIcon::X,
+                                                                false,
+                                                                true,
+                                                                false,
+                                                            )
+                                                            .on_click(cx.listener(
+                                                                move |view, _, _, cx| {
+                                                                    if let Some(name) = view
+                                                                        .history
+                                                                        .entries
+                                                                        .get(entry_ix)
+                                                                        .and_then(|entry| {
+                                                                            entry.recording.clone()
+                                                                        })
+                                                                    {
+                                                                        view.reject_rerun(&name);
+                                                                    }
+                                                                    cx.notify();
+                                                                },
+                                                            )),
+                                                        ),
+                                                ),
+                                        ),
+                                )
+                            }),
                     ),
             )
     }
@@ -1896,6 +2466,15 @@ impl SettingsWindow {
                     .overflow_y_scroll()
                     .child(body),
             )
+            .when_some(self.history.notice.clone(), |el, text| {
+                el.child(
+                    div()
+                        .px(px(2.))
+                        .text_size(px(13.))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(SharedString::from(text)),
+                )
+            })
     }
 }
 
@@ -1976,6 +2555,46 @@ impl Render for SettingsWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diff_flags_only_rerun_side_changes() {
+        let unchanged = SettingsWindow::diff_tokens("a b c", "a b c");
+        assert!(unchanged.iter().all(|(_, changed)| !changed));
+
+        // "anodamone" splits into two words; both flag, neighbours do not.
+        let fixed = SettingsWindow::diff_tokens("keep anodamone removal", "keep a daemon removal");
+        let changed: Vec<&str> = fixed
+            .iter()
+            .filter(|(_, changed)| *changed)
+            .map(|(word, _)| word.as_str())
+            .collect();
+        assert_eq!(changed, vec!["a", "daemon"]);
+
+        // Trailing additions flag; empty reruns flag nothing.
+        let appended = SettingsWindow::diff_tokens("a b", "a b c d");
+        assert_eq!(
+            appended.iter().filter(|(_, c)| *c).count(),
+            2,
+            "{appended:?}"
+        );
+        assert!(
+            SettingsWindow::diff_tokens("a b", "")
+                .iter()
+                .all(|(_, c)| !c)
+        );
+    }
+
+    #[test]
+    fn model_names_fall_back_to_ids() {
+        assert_eq!(
+            SettingsWindow::model_display_name("canary-1b-flash-q5-k-m"),
+            "Canary 1B Flash"
+        );
+        assert_eq!(
+            SettingsWindow::model_display_name("no-such-model"),
+            "no-such-model"
+        );
+    }
 
     #[test]
     fn microphone_rows_keep_a_disconnected_choice_selectable() {

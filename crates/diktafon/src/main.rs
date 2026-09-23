@@ -307,6 +307,7 @@ fn main() -> Result<()> {
     let v_keycode = Arc::new(AtomicU32::new(keymap::ANSI_V.into()));
     let paste_keycode = v_keycode.clone();
     let loop_settings = session_settings.clone();
+    let reprocess_tx = daemon.chunk_tx.clone();
     thread::spawn(move || {
         let dictations =
             session::Dictations::new(recorder, daemon, loop_settings, phase_tx, paste_keycode);
@@ -379,7 +380,7 @@ fn main() -> Result<()> {
             .detach();
             pill::manage(cx, dictation.clone(), levels);
             updater::start(cx);
-            statusbar::install(cx, &dictation, session_settings.clone());
+            statusbar::install(cx, &dictation, session_settings.clone(), reprocess_tx);
             cx.set_global(AppServices {
                 dictation,
                 hotkey: HotkeyRebind {

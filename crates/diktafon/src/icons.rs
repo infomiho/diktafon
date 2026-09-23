@@ -18,11 +18,13 @@ pub enum DiktafonIcon {
     Copy,
     Check,
     TrashBin,
+    Restart,
+    X,
 }
 
 impl DiktafonIcon {
     #[cfg(test)]
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 12] = [
         Self::Settings,
         Self::Bot,
         Self::History,
@@ -33,6 +35,8 @@ impl DiktafonIcon {
         Self::Copy,
         Self::Check,
         Self::TrashBin,
+        Self::Restart,
+        Self::X,
     ];
 
     fn file_name(self) -> &'static str {
@@ -47,6 +51,8 @@ impl DiktafonIcon {
             Self::Copy => "copy",
             Self::Check => "check",
             Self::TrashBin => "trash-bin",
+            Self::Restart => "restart",
+            Self::X => "x",
         }
     }
 }

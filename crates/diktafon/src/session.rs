@@ -166,8 +166,17 @@ impl Dictations {
 
     /// Arm the microphone and start streaming. Ignored while a dictation is
     /// already in flight, so a repeated key-down cannot open a second one.
+    /// Refused while a rerun owns the daemon: recording into a session the
+    /// daemon never started would silently eat speech.
     fn press(&mut self, behavior: HotkeyBehavior) {
         if self.live.is_some() {
+            return;
+        }
+        if self.daemon.is_reprocessing() {
+            eprintln!("a retranscription is running; try again in a moment");
+            self.play(sounds::Cue::Error);
+            self.emit(PhaseEvent::RecordingArmed);
+            self.ended(Some("Retranscription running".into()), false);
             return;
         }
         if permissions::microphone() == permissions::MicrophoneAccess::NotAsked {

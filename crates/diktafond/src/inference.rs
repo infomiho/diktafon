@@ -365,8 +365,11 @@ impl Inference {
                         };
                         // Gate on raw, not polished: an empty polish of real
                         // speech is exactly the lost dictation this recovers.
+                        // Retranscriptions (`no_history`) run the same pipeline
+                        // but must not masquerade as new dictations.
                         if let Some(history_path) = &history
                             && !raw.trim().is_empty()
+                            && !config.no_history
                         {
                             let mut entry = diktafon_protocol::HistoryEntry::now(&raw, &text);
                             entry.chunks = chunks;
@@ -397,6 +400,11 @@ impl Inference {
                         speech_samples = 0;
                         config = SessionConfig::default();
                         let _ = events_tx.send(DaemonMsg::Aborted);
+                    }
+                    // Never sent over the wire: the client transport expands a
+                    // reprocess into Start/Chunk frames before they arrive.
+                    Msg::Reprocess(_) => {
+                        eprintln!("reprocess reached the daemon worker; dropping");
                     }
                 }
             }
