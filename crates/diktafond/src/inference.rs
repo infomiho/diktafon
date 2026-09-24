@@ -37,6 +37,7 @@ struct Models {
     asr_backend: String,
     asr_device: String,
     polisher: PolishingBackend,
+    polishing_languages: Vec<String>,
 }
 
 enum PolishingBackend {
@@ -136,6 +137,7 @@ fn load_models(models_dir: &Path, selection: &ModelSelection) -> Result<Models> 
         asr_backend,
         asr_device,
         polisher,
+        polishing_languages: model(&selection.polishing)?.languages.clone(),
     })
 }
 
@@ -175,6 +177,51 @@ fn catch_panic<T>(what: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
             .unwrap_or("unknown panic");
         Err(anyhow!("{what} panicked: {msg}"))
     })
+}
+
+/// A session's final text. `polish_ms` is `None` when the polisher was
+/// skipped, so the raw transcript stands.
+struct SessionText {
+    text: String,
+    polish_ms: Option<u64>,
+}
+
+/// The polisher only handles its catalog languages, so a session in any
+/// other language pastes the raw transcript.
+fn polish_session(
+    raw: &str,
+    config: &SessionConfig,
+    polishing_languages: &[String],
+    events_tx: &mpsc::Sender<DaemonMsg>,
+    polish: impl FnOnce() -> Result<String>,
+) -> SessionText {
+    if raw.trim().is_empty() {
+        return SessionText {
+            text: String::new(),
+            polish_ms: None,
+        };
+    }
+    if !polishing_languages.contains(&config.language) {
+        println!(
+            "  polisher does not support {:?}; pasting raw text",
+            config.language
+        );
+        return SessionText {
+            text: raw.to_string(),
+            polish_ms: None,
+        };
+    }
+    let _ = events_tx.send(DaemonMsg::Polishing);
+    let start = Instant::now();
+    let text = catch_panic("polish", polish).unwrap_or_else(|e| {
+        eprintln!("polish error, using raw text: {e}");
+        raw.to_string()
+    });
+    println!("  polish {:.2?}", start.elapsed());
+    SessionText {
+        text,
+        polish_ms: Some(start.elapsed().as_millis() as u64),
+    }
 }
 
 /// Worker thread owning the resident ASR and polish models. Chunks stream in
@@ -347,22 +394,14 @@ impl Inference {
                             let _ = events_tx.send(DaemonMsg::Final(String::new()));
                             continue;
                         }
-                        let mut polish_ms = 0u64;
-                        let text = if raw.trim().is_empty() {
-                            String::new()
-                        } else {
-                            let _ = events_tx.send(DaemonMsg::Polishing);
-                            let start = Instant::now();
-                            let polisher = &models.polisher;
-                            let polished = catch_panic("polish", || polisher.polish(&raw, &config))
-                                .unwrap_or_else(|e| {
-                                    eprintln!("polish error, using raw text: {e}");
-                                    raw.clone()
-                                });
-                            polish_ms = start.elapsed().as_millis() as u64;
-                            println!("  polish {:.2?}", start.elapsed());
-                            polished
-                        };
+                        let polisher = &models.polisher;
+                        let SessionText { text, polish_ms } = polish_session(
+                            &raw,
+                            &config,
+                            &models.polishing_languages,
+                            &events_tx,
+                            || polisher.polish(&raw, &config),
+                        );
                         // Gate on raw, not polished: an empty polish of real
                         // speech is exactly the lost dictation this recovers.
                         // Retranscriptions (`no_history`) run the same pipeline
@@ -375,9 +414,10 @@ impl Inference {
                             entry.chunks = chunks;
                             entry.audio_secs = audio_secs;
                             entry.asr_ms = asr_ms;
-                            entry.polish_ms = polish_ms;
+                            entry.polish_ms = polish_ms.unwrap_or_default();
                             entry.transcription_model = Some(selection.transcription.clone());
-                            entry.polishing_model = Some(selection.polishing.clone());
+                            entry.polishing_model =
+                                polish_ms.is_some().then(|| selection.polishing.clone());
                             entry.recording =
                                 (!config.recording.is_empty()).then(|| config.recording.clone());
                             if let Err(e) =
@@ -485,6 +525,42 @@ mod tests {
     fn transcription_backend_receives_pcm_and_language() {
         let mut backend: Box<dyn Transcriber> = Box::new(FakeTranscriber);
         assert_eq!(backend.transcribe(&[0.0; 160], "en").unwrap(), "en:160");
+    }
+
+    #[test]
+    fn unsupported_language_pastes_raw_without_polishing() {
+        let (events_tx, events_rx) = mpsc::channel();
+        let config = SessionConfig {
+            language: "hr".into(),
+            ..SessionConfig::default()
+        };
+        let polished = std::cell::Cell::new(false);
+        let session = polish_session("dobar dan", &config, &["en".into()], &events_tx, || {
+            polished.set(true);
+            Ok("Dobar dan.".into())
+        });
+        assert_eq!(session.text, "dobar dan");
+        assert_eq!(session.polish_ms, None);
+        assert!(!polished.get());
+        assert!(events_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn supported_language_is_polished() {
+        let (events_tx, events_rx) = mpsc::channel();
+        let config = SessionConfig {
+            language: "en".into(),
+            ..SessionConfig::default()
+        };
+        let calls = std::cell::Cell::new(0);
+        let session = polish_session("hello there", &config, &["en".into()], &events_tx, || {
+            calls.set(calls.get() + 1);
+            Ok("Hello there.".into())
+        });
+        assert_eq!(session.text, "Hello there.");
+        assert!(session.polish_ms.is_some());
+        assert_eq!(calls.get(), 1);
+        assert!(matches!(events_rx.try_recv(), Ok(DaemonMsg::Polishing)));
     }
 
     #[test]

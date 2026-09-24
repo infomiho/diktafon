@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Diktafon Settings mock</title>
-<script type="module" src="./settings.js?v=3"></script>
+<script type="module" src="./settings.js?v=5"></script>
 <style>
   @font-face { font-family: "Chakra Petch"; src: url("../../crates/diktafon/assets/fonts/ChakraPetch-SemiBold.ttf"); font-weight: 600; }
   :root {
@@ -25,6 +25,8 @@
     --raised-hover: #2B2F51;
     --accent-hover: #A853D1;
     --signal-red: #FF3B4D;
+    --aurora-ember: #FF5A36;
+    --warning: var(--aurora-ember);
     --focus-ring: var(--accent);
     --outline-hover: rgba(155, 157, 255, 0.35);
     --font-display: "Chakra Petch", sans-serif;
@@ -163,6 +165,9 @@
     margin-bottom: -8px;
   }
 
+  .field-pair { display: flex; gap: 24px; align-items: flex-start; }
+  .field-pair > * { flex: 1; }
+
   .card {
     border: 1px solid var(--outline);
     border-radius: 8px;
@@ -266,6 +271,7 @@
   </div>
 
   <!-- Models -->
+  <dk-caption><b>1.</b> English: S1-mini polishes, so its prompt controls show.</dk-caption>
   <dk-settings-window section="models">
     <div class="group-card">
       <div class="card-head">Transcription</div>
@@ -278,8 +284,38 @@
     </div>
     <div class="group-card">
       <div class="card-head">Polishing</div>
-      <dk-field label="Polishing model" help="On-device model built into macOS.">
-        <dk-select value="Apple Intelligence"></dk-select>
+      <dk-field label="Polishing model" help="Size: 484 MB">
+        <dk-select value="S1-mini by Superwhisper"></dk-select>
+      </dk-field>
+      <dk-field label="Tone">
+        <dk-segmented options="Casual, Semi-casual, Semi-formal, Formal" selected="1"></dk-segmented>
+      </dk-field>
+      <div class="field-pair">
+        <dk-field label="Shape">
+          <dk-segmented options="Prose, Lists" selected="0"></dk-segmented>
+        </dk-field>
+        <dk-field label="Written for">
+          <dk-segmented options="General, Email" selected="0"></dk-segmented>
+        </dk-field>
+      </div>
+    </div>
+  </dk-settings-window>
+
+  <dk-caption><b>2.</b> Croatian: S1-mini does not polish it, so the notice replaces the size line and the prompt controls hide.</dk-caption>
+  <dk-settings-window section="models">
+    <div class="group-card">
+      <div class="card-head">Transcription</div>
+      <dk-field label="Transcription model" help="Size: 837 MB">
+        <dk-select value="Canary 1B v2"></dk-select>
+      </dk-field>
+      <dk-field label="Language" help="Choose the language you speak.">
+        <dk-select value="Croatian (hr)"></dk-select>
+      </dk-field>
+    </div>
+    <div class="group-card">
+      <div class="card-head">Polishing</div>
+      <dk-field label="Polishing model" warning help="Does not polish Croatian. Dictation is pasted as transcribed.">
+        <dk-select value="S1-mini by Superwhisper"></dk-select>
       </dk-field>
     </div>
   </dk-settings-window>

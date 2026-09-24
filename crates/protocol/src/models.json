@@ -50,6 +50,30 @@
       ]
     },
     {
+      "id": "canary-1b-v2-q5-k-m",
+      "category": "transcription",
+      "name": "Canary 1B v2",
+      "backend": "transcribe_cpp",
+      "languages": ["en", "fr", "de", "es", "it", "pt", "nl", "pl", "el", "hr"],
+      "capabilities": {
+        "streaming": false,
+        "translation": true,
+        "language_detection": false,
+        "timestamps": false,
+        "local_only": true
+      },
+      "license": "cc-by-4.0",
+      "notices": ["nvidia-canary", "handy-canary-gguf", "transcribe-cpp"],
+      "files": [
+        {
+          "path": "canary-1b-v2-Q5_K_M.gguf",
+          "url": "https://huggingface.co/handy-computer/canary-1b-v2-gguf/resolve/e2d8e6d7f2accc1259dc5497b517b4083047e44b/canary-1b-v2-Q5_K_M.gguf",
+          "size": 836664032,
+          "sha256": "9c3a893c93795438baf9b4b1c853c39b60316c3a0d259a3ba6e284712f5ddb71"
+        }
+      ]
+    },
+    {
       "id": "apple-intelligence",
       "category": "polishing",
       "name": "Apple Intelligence",

@@ -48,6 +48,24 @@ Modal. An L4 or A10G run of the 0.6B model takes about 20 minutes and a dozen ru
 
 - Publish the winner to Hugging Face, add it to the catalog, make it the default polisher, record method and numbers in `benchmarks.md`.
 
+## Croatian
+
+Croatian dictation pastes raw Canary 1B v2 output because S1-mini and Apple Intelligence are English-only. The same pipeline can cover it, and real Croatian audio also makes an ASR fine-tune possible.
+
+Pairs come from running our ASR over audio that already has a reference transcript. The raw ASR output is the polish input and the reference is the target, so the model learns the ASR's real Croatian errors (truncations, merged words, broken case endings) instead of simulated ones.
+
+Sources:
+
+- ParlaSpeech-HR (CLASSLA): about 1,800 hours of Sabor speech aligned to the official records. The records are edited by stenographers (fillers and false starts removed), which suits a polish target better than an ASR target. Formal register only, no self-corrections. Verify license and size before use.
+- Croatian-language films and series with same-language subtitles (domestic productions, HRT subtitles for the deaf and hard of hearing). Foreign films are useless because their Croatian subtitles are translations. Subtitles condense fast speech to meet reading-speed limits and cue timing is only accurate to a few hundred milliseconds, so cut at cue boundaries and keep only cues whose ASR output closely matches the subtitle. Filtering on ASR agreement keeps mostly what the ASR already gets right, so use a lenient threshold or an independent aligner and measure the filter's precision on a hand-checked sample. This is the conversational, fast, emotional speech parliament lacks.
+- VoxPopuli (European Parliament, some Croatian), FLEURS and Common Voice (hr): small read-speech sets, better as extra evaluation than as training data.
+- Synthetic dictation: a frontier model writes Croatian dictation with fillers, "ne, zapravo" corrections, and English loanwords with Croatian endings ("deployao", "pushati"), paired with the clean text. Neither parliament nor film covers self-corrections.
+- Our own Croatian `history.jsonl` rows once daily use builds them up, relabeled like the English core.
+
+ASR fine-tune: the same audio and references can fine-tune Canary 1B v2 itself through NeMo, fixing errors at the source instead of in the polisher, followed by conversion to GGUF with Handy's transcribe.cpp converter. A Croatian Canary fine-tune is unlikely to exist, but check for one on ParlaSpeech first, since conversion may then be all that is needed. Decide between ASR fine-tune, polisher, or both from the meaning-changing errors recorded in the Croatian section of `benchmarks.md`.
+
+`eval-own-hr` stays held out from every training set. Five clips are too few to separate candidates, so record 10 to 20 more before comparing Croatian models.
+
 ## Decision points
 
 - After phase 2: stop if the 0.6B fine-tune cannot beat S1. Shrinking a worse model is pointless.

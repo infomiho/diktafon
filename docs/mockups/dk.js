@@ -158,9 +158,14 @@ export class DkControlRow extends LitElement {
 }
 customElements.define('dk-control-row', DkControlRow);
 
-/// A labeled field: label + control + help stacked.
+/// A labeled field: label + control + help stacked. `warning` tints the help
+/// line in the warning color, for a notice rather than a description.
 export class DkField extends LitElement {
-  static properties = { label: { type: String }, help: { type: String } };
+  static properties = {
+    label: { type: String },
+    help: { type: String },
+    warning: { type: Boolean, reflect: true },
+  };
   static styles = [
     reset,
     css`
@@ -168,6 +173,7 @@ export class DkField extends LitElement {
       .label { font-size: 15px; font-weight: 500; }
       .control { margin-top: 8px; }
       .help { font-size: 13px; color: var(--on-surface-muted); margin-top: 8px; }
+      :host([warning]) .help { color: var(--warning); }
     `,
   ];
   render() {
@@ -202,6 +208,48 @@ export class DkSelect extends LitElement {
   }
 }
 customElements.define('dk-select', DkSelect);
+
+/// A row of choices with the current one raised, the gpui `segmented()`.
+/// `options` is a comma-separated list, `selected` the active index. The
+/// track lives on an inner wrapper, never `:host`.
+export class DkSegmented extends LitElement {
+  static properties = { options: { type: String }, selected: { type: Number } };
+  static styles = [
+    reset,
+    css`
+      :host { display: block; }
+      .track {
+        display: flex; gap: 2px; padding: 3px; border-radius: 8px;
+        background: var(--surface-sunken); border: 1px solid var(--outline);
+      }
+      button {
+        flex: 1; height: 30px; border: none; border-radius: 5px; background: none;
+        font: inherit; font-size: 13px; color: var(--on-surface-muted); cursor: pointer;
+      }
+      button:hover { background: color-mix(in srgb, var(--outline) 60%, transparent); }
+      button[aria-pressed='true'] { background: var(--surface-raised); color: var(--on-surface); font-weight: 500; }
+    `,
+  ];
+  constructor() {
+    super();
+    this.options = '';
+    this.selected = 0;
+  }
+  render() {
+    const labels = this.options.split(',').map((label) => label.trim());
+    return html`
+      <div class="track">
+        ${labels.map(
+          (label, index) => html`<button
+            aria-pressed=${index === this.selected}
+            @click=${() => (this.selected = index)}
+          >${label}</button>`,
+        )}
+      </div>
+    `;
+  }
+}
+customElements.define('dk-segmented', DkSegmented);
 
 /// A button. `primary` fills it with the accent.
 export class DkButton extends LitElement {

@@ -122,7 +122,8 @@ pub struct ReprocessOutcome {
     pub polished: String,
     pub raw: String,
     pub asr_ms: u64,
-    pub polish_ms: u64,
+    /// `None` when the daemon skipped polishing for the session's language.
+    pub polish_ms: Option<u64>,
 }
 
 /// The transport's one answer to a [`Msg::Reprocess`]: `Err` carries a

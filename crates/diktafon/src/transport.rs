@@ -838,8 +838,7 @@ impl Transport {
                                     .duration_since(started)
                                     .as_millis() as u64,
                                 polish_ms: polish_at
-                                    .map(|at| finished.duration_since(at).as_millis() as u64)
-                                    .unwrap_or(0),
+                                    .map(|at| finished.duration_since(at).as_millis() as u64),
                             };
                             self.end_reprocess();
                             let _ = reply.send(Ok(outcome));

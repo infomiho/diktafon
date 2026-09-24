@@ -44,6 +44,8 @@ The split costs ~11µs per roundtrip; per-chunk latency is inside run-to-run noi
 
 Evaluated with `cargo run --release -p diktafond --example asr_bench` (per-clip RTF over the eval set).
 
+The example takes `[MODEL_ID] [LANGUAGE] [CLIP_DIR]`, defaulting to the default transcription model, `en`, and `eval-own`. When the clip directory has a `manifest.json` it also prints WER. That WER only lowercases and replaces punctuation with spaces, so it is not comparable to the canonicalized (numbers, brand compounds) WER figures elsewhere in this doc.
+
 - CPU int8 baseline: 126.6s of audio in 13.53s, 9.4x realtime (per clip 6.1-11.0x; model load 5.6s).
 - CoreML EP (`--features coreml -- coreml`): fails at session init with onnxruntime's "model_path must not be empty" - the CoreML EP cannot handle our external-data model (the 2.7GB `.onnx.data`) under ort 2.0.0-rc.12 / transcribe-rs 0.3.11.
 
@@ -115,3 +117,41 @@ The human transcript review selected `canary-1b-flash-q5-k-m` with `s1-mini-q4-k
 Apple Intelligence remains an ordinary polishing option only when the system reports it available; unsupported devices do not see it. It is not a default or advanced-only option. A per-request Apple refusal, timeout, empty response, or other failure returns the raw transcript, avoiding an unselected S1 rewrite. Cohere remains selectable for users who prefer transcription fidelity over download size, memory, and speed.
 
 Future default ASR artifacts must run this same five-clip matrix with identical boundaries. They must introduce no new dropped clauses or meaning-changing entity/number errors, stay at or below Canary's 20.70% fixed-chunk normalized WER, and not regress its 0.87 GB ASR peak RSS or 27.0x whole-clip throughput by more than 10%. Future default polishers must add no new meaning-changing rewrites or unsolicited framing, preserve explicit corrections, and keep mean warm polish latency below 0.5 seconds on this machine.
+
+## Croatian transcription candidates (2026-09-23)
+
+Method: the Croatian eval set `eval-own-hr` (five dictations, 120s, 233 reference words, verbatim ground truth confirmed by the speaker), each clip transcribed whole by `asr_bench <model id> hr <clip dir>` from `cargo build --release -p diktafond --example asr_bench`. Three model families list Croatian: Whisper large-v3-turbo, and NVIDIA's Parakeet TDT 0.6B v3 and Canary 1B v2, all from Handy's transcribe.cpp GGUFs at pinned revisions. Each file was checked against its Hugging Face sha256 and loaded from a scratch `DIKTAFON_DATA_DIR` under a catalog model's file name. transcribe.cpp picks the architecture from GGUF metadata, and every load reported the expected family. Whisper ran with its family decode defaults: no initial prompt and the default temperature fallback. Canary v2 takes `hr` as its source-language prompt. Parakeet v3 accepts `hr` because its GGUF lists it, but it has no language prompt and detects the language itself, so an `en` hint gave identical output. Everything ran on Metal (`MTL0`) on a 16 GB M2 Pro (`Mac14,9`) with macOS 27.0.
+
+A copy of clip 01 sorts first as an unscored warmup, and warm speed is scored audio over scored inference time. Each model ran once cold and three more times under `/usr/bin/time -l`, with the dev app's daemon confirmed idle before each run. Speed and warm load are medians of the three, peak RSS is the maximum of all four. Earlier runs had already initialized Metal and read each file, so cold load is a first process for the file, not the ~10s first Metal initialization noted above.
+
+Raw WER is the `asr_bench` figure. Canonicalized WER uses a closed rule list, applied identically to reference and hypothesis and fixed before any run beyond Whisper Q5_K_M: times written `10 i 30`, `10.30`, or `10:30` become one form, `%` becomes `posto`, a hyphen between letters is removed, `tri`/`šest`/`osam`/`devet` become digits, `kilometara` becomes `km`, and the open compounds `web socket` and `stand upa` are joined. It also drops the fillers `hm`, `hmm`, `hmmm`, and `mhm`, a deviation from the English method that removes 3 reference-only edits for every model. Canary v2 applies its own number formatting and punctuation, and the same rules decide which of its formats count as matches.
+
+| Model | Raw WER (edits/233) | Canonicalized WER | Warm speed | Load cold/warm | Peak RSS | Download |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Whisper turbo Q5_K_M | 19.7% (46) | 12.7% (29/228) | 20.9x RT | 0.40s / 0.26s | 0.82GB | 620MB |
+| Whisper turbo Q8_0 | 22.3% (52) | 15.8% (36/228) | 23.3x RT | 0.66s / 0.34s | 1.10GB | 886MB |
+| Parakeet TDT 0.6B v3 Q5_K_M | 27.0% (63) | 23.2% (53/228) | 80.6x RT | 0.25s / 0.22s | 0.77GB | 549MB |
+| Canary 1B v2 Q5_K_M | 18.0% (42) | 11.0% (25/228) | 46.7x RT | 0.35s / 0.30s | 1.00GB | 837MB |
+
+With 233 words from one speaker every WER here carries roughly ±3 pp of sampling uncertainty, so both Whisper quantizations and Canary v2 overlap and only Parakeet is clearly worse. Manual review sorted the remaining canonicalized edits. An error counts as meaning-changing when the output is a real word or phrase that says something different, or when a fact is dropped. Obvious non-words are not counted.
+
+| Model | Segmentation | Omission | Morphology | Truncation | Lexical | Phonetic spelling | Proper noun | Number format | Meaning-changing |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Whisper turbo Q5_K_M | 8 | 7 | 4 | 4 | 3 | 2 | 1 | 0 | 4 |
+| Whisper turbo Q8_0 | 10 | 5 | 4 | 4 | 8 | 2 | 1 | 2 | 4 |
+| Parakeet TDT 0.6B v3 | 9 | 4 | 7 | 3 | 13 | 9 | 7 | 1 | 5 |
+| Canary 1B v2 | 4 | 7 | 3 | 0 | 5 | 3 | 3 | 0 | 2 |
+
+Whisper Q5_K_M loses a weekday and a time of day and changes a verb and a subject noun. Q8_0 loses the weekday, replaces a deadline date with a number, changes a verb, and turns another verb into a place name. Parakeet loses the weekday, reverses a spoken time correction, garbles a clause, and changes a verb's person and a product name. Canary v2 drops a weekday and changes a product name.
+
+- No Cyrillic or other wrong-language output from any model in any run.
+- Transcripts were identical across all runs of each model, so Whisper's temperature fallback never sampled differently between runs.
+- The only run of three or more deleted reference words is in both Whisper quantizations: a spoken time self-correction that Whisper resolved, next to a weekday merged into the following word. Review counts that as omitted words plus one meaning-changing error, not a dropped clause. Whisper Q8_0 replaced a four-word deadline phrase with a number and Parakeet garbled the subject and object of a clause, which score as substitutions but lose the clause's content.
+- Zero padding (each clip plus 5s of digital silence): both Whisper quantizations appended the same invented sign-off sentence to clip 05. The NVIDIA models added no text, but the padding degraded Parakeet's recognition throughout the clips (raw WER 33.0%) and changed a few words for Canary v2 (17.2%). With 0.5s of zero padding, about the VAD chunker's 0.45s hangover, no model added text.
+- Room-tone padding (5s of pink noise at -60 dBFS RMS, informational since VAD keeps silence from the ASR): Whisper invented tails on clips 03 and 05, the NVIDIA models added none, and Parakeet again degraded throughout (33.0%).
+- Parakeet has no token for one capital Croatian letter and emitted a literal `<unk>` inside a place name.
+- The fixed 5s chunk stress test was not run: `--transcribe-file` starts every session with default settings and so always requests English.
+
+Croatian is opt-in, so the gates are absolute rather than relative to Canary 1B Flash: no wrong-language output, no dropped clause in whole-clip runs, no text on zero padding, at least 10x realtime warm, and peak RSS at or below Cohere's 1.91 GB. WER has no threshold. Both Whisper quantizations pass the language, speed, and memory gates and fail the zero-padding gate, and Q8_0 also fails the dropped-clause gate on review. Parakeet fails the dropped-clause gate on review. Canary v2 passes all five.
+
+Decision: Canary 1B v2 Q5_K_M is the catalog's Croatian model. Whisper turbo is not shipped. Canary v2 is the only candidate that passes every gate, it has the fewest meaning-changing errors (2 against Whisper Q5_K_M's 4) and the lowest WER, though within Whisper's uncertainty, and it runs 2.2x faster than Whisper Q5_K_M for 0.18 GB more peak RSS and a 217 MB larger download. Its `hr` hint is a real prompt token, so the product's per-session language needs no daemon change. Parakeet is the fastest and smallest but has twice the edits and the most meaning-changing errors, ignores the language hint, and degrades badly when trailing audio changes. Croatian still pastes raw ASR because no polisher supports `hr`, so the remaining errors reach the user unedited.

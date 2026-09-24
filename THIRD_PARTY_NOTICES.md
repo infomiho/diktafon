@@ -2,15 +2,17 @@
 
 This file covers the downloadable models and native inference components used by diktafon. Model files are downloaded separately, but remain subject to these notices.
 
-## NVIDIA Canary 1B Flash and Handy GGUF
+## NVIDIA Canary 1B Flash, Canary 1B v2, and Handy GGUF
 
-NVIDIA Canary 1B Flash (`nvidia/canary-1b-flash`) by NVIDIA is licensed under Creative Commons Attribution 4.0 International. Diktafon uses the GGUF conversion and Q5_K_M quantization published by handy-computer for transcribe.cpp. The weights were converted and quantized from NVIDIA's original model; diktafon did not modify the model weights.
+NVIDIA Canary 1B Flash (`nvidia/canary-1b-flash`) and Canary 1B v2 (`nvidia/canary-1b-v2`) by NVIDIA are licensed under Creative Commons Attribution 4.0 International. Diktafon uses the GGUF conversions and Q5_K_M quantizations published by handy-computer for transcribe.cpp. The weights were converted and quantized from NVIDIA's original models, and diktafon did not modify the model weights.
 
-- NVIDIA source: https://huggingface.co/nvidia/canary-1b-flash/tree/a9a55e0295e7dd50d0c8c2a19491900a0daf24f3
-- Handy conversion: https://huggingface.co/handy-computer/canary-1b-flash-gguf/tree/b427664769b93c021df108a2fa8bfb858ae236c1
+- NVIDIA Canary 1B Flash source: https://huggingface.co/nvidia/canary-1b-flash/tree/a9a55e0295e7dd50d0c8c2a19491900a0daf24f3
+- Handy Canary 1B Flash conversion: https://huggingface.co/handy-computer/canary-1b-flash-gguf/tree/b427664769b93c021df108a2fa8bfb858ae236c1
+- NVIDIA Canary 1B v2 source: https://huggingface.co/nvidia/canary-1b-v2/tree/87bc52657add533cd0156b3fc1aef027280754bf
+- Handy Canary 1B v2 conversion: https://huggingface.co/handy-computer/canary-1b-v2-gguf/tree/e2d8e6d7f2accc1259dc5497b517b4083047e44b
 - License: https://creativecommons.org/licenses/by/4.0/legalcode
 
-The conversion and quantization are adaptations licensed under CC BY 4.0 by handy-computer. No endorsement by NVIDIA or handy-computer is implied.
+The conversions and quantizations are adaptations licensed under CC BY 4.0 by handy-computer. No endorsement by NVIDIA or handy-computer is implied.
 
 ## Cohere Transcribe and Handy GGUF
 

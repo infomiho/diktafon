@@ -4,7 +4,7 @@
 //! prompt and language apply to the next dictation, the idle-unload time
 //! when the daemon restarts.
 
-use crate::config::{HotkeyBehavior, SessionSettings};
+use crate::config::{HotkeyBehavior, SessionSettings, catalog, transcription_languages};
 use crate::control_line;
 use crate::icons::DiktafonIcon;
 use crate::permissions;
@@ -30,34 +30,21 @@ use gpui_component::{ActiveTheme, Icon, IndexPath, Root, Sizable, StyledExt, h_f
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-#[derive(serde::Deserialize)]
-struct ModelCatalog {
-    models: Vec<CatalogModel>,
+/// Dropdown rows for a model picker, with each row's id, help line, and
+/// catalog languages at the same index.
+struct ModelOptions {
+    ids: Vec<String>,
+    labels: Vec<SharedString>,
+    descriptions: Vec<String>,
+    languages: Vec<Vec<String>>,
 }
 
-#[derive(serde::Deserialize)]
-struct CatalogModel {
-    id: String,
-    category: String,
-    name: String,
-    files: Vec<CatalogFile>,
-}
-
-#[derive(serde::Deserialize)]
-struct CatalogFile {
-    size: u64,
-}
-
-fn model_options(
-    current: &str,
-    category: &str,
-    apple_available: bool,
-) -> (Vec<String>, Vec<SharedString>, Vec<String>) {
-    let catalog: ModelCatalog = serde_json::from_str(diktafon_protocol::MODEL_CATALOG_JSON)
-        .expect("bundled model catalog must parse");
+fn model_options(current: &str, category: &str, apple_available: bool) -> ModelOptions {
+    let catalog = catalog();
     let mut ids = Vec::new();
     let mut labels = Vec::new();
     let mut descriptions = Vec::new();
+    let mut languages = Vec::new();
     for model in catalog.models.into_iter().filter(|model| {
         model.category == category && (model.id != "apple-intelligence" || apple_available)
     }) {
@@ -74,14 +61,42 @@ fn model_options(
         };
         labels.push(model.name.clone().into());
         descriptions.push(metadata);
+        languages.push(model.languages);
         ids.push(model.id);
     }
     if !ids.iter().any(|id| id == current) && (current != "apple-intelligence" || apple_available) {
         ids.push(current.to_string());
         labels.push(format!("Unknown model ({current})").into());
         descriptions.push("This model is not available. Choose another model.".into());
+        languages.push(Vec::new());
     }
-    (ids, labels, descriptions)
+    ModelOptions {
+        ids,
+        labels,
+        descriptions,
+        languages,
+    }
+}
+
+/// Whether polishing is skipped for `language`, so the transcript is pasted
+/// raw. A polisher listing no languages is an unknown model, whose own help
+/// line already says it is unavailable.
+fn skips_polishing(polisher_languages: &[String], language: &str) -> bool {
+    let is_unknown = polisher_languages.is_empty();
+    !is_unknown && !polisher_languages.iter().any(|code| code == language)
+}
+
+fn language_name(code: &str) -> &str {
+    LANGUAGES
+        .iter()
+        .find(|(known, _)| *known == code)
+        .map_or(code, |(_, name)| name)
+}
+
+/// The polishing model's help line when it skips the selected language.
+fn polishing_skipped_notice(language: &str) -> String {
+    let language = language_name(language);
+    format!("Does not polish {language}. Dictation is pasted as transcribed.")
 }
 fn open_third_party_notices() -> std::io::Result<()> {
     let executable = std::env::current_exe()?;
@@ -102,22 +117,23 @@ const DAEMON_POLL: std::time::Duration = std::time::Duration::from_millis(750);
 /// How often the Advanced pane re-reads the macOS grants, so a switch
 /// flipped in System Settings shows up while the sheet is open.
 const PERMISSIONS_POLL: std::time::Duration = std::time::Duration::from_secs(1);
-/// ISO 639-1 codes the language dropdown offers; a configured code outside
-/// this list is appended so it stays selectable.
+/// Display names for every ISO 639-1 code a transcription model may list,
+/// in picker order.
 const LANGUAGES: &[(&str, &str)] = &[
     ("en", "English"),
-    ("de", "German"),
-    ("fr", "French"),
-    ("es", "Spanish"),
-    ("it", "Italian"),
-    ("pt", "Portuguese"),
-    ("nl", "Dutch"),
-    ("pl", "Polish"),
-    ("el", "Greek"),
     ("ar", "Arabic"),
+    ("zh", "Chinese"),
+    ("hr", "Croatian"),
+    ("nl", "Dutch"),
+    ("fr", "French"),
+    ("de", "German"),
+    ("el", "Greek"),
+    ("it", "Italian"),
     ("ja", "Japanese"),
     ("ko", "Korean"),
-    ("zh", "Chinese"),
+    ("pl", "Polish"),
+    ("pt", "Portuguese"),
+    ("es", "Spanish"),
     ("vi", "Vietnamese"),
 ];
 
@@ -147,6 +163,22 @@ fn microphone_options(
     }
     let selected = names.iter().position(|name| name == current).unwrap_or(0);
     (names, labels, selected)
+}
+
+/// Dropdown rows for the language picker: the languages the transcription
+/// model supports, in [`LANGUAGES`] order. Returns the codes parallel to the
+/// labels and the selected row, the first one when `current` is not listed.
+fn language_options(
+    supported: &[String],
+    current: &str,
+) -> (Vec<String>, Vec<SharedString>, usize) {
+    let (codes, labels): (Vec<String>, Vec<SharedString>) = LANGUAGES
+        .iter()
+        .filter(|(code, _)| supported.iter().any(|language| language == code))
+        .map(|(code, name)| (code.to_string(), format!("{name} ({code})").into()))
+        .unzip();
+    let selected = codes.iter().position(|code| code == current).unwrap_or(0);
+    (codes, labels, selected)
 }
 
 const IDLE_OPTIONS: &[(u64, &str)] = &[
@@ -272,7 +304,7 @@ struct Rerun {
     text: String,
     raw: String,
     asr_model: String,
-    polishing_model: String,
+    polishing_model: Option<String>,
 }
 
 impl History {
@@ -336,6 +368,7 @@ pub struct SettingsWindow {
     polishing_select: Entity<SelectState<SearchableVec<SharedString>>>,
     polishing_ids: Vec<String>,
     polishing_descriptions: Vec<String>,
+    polishing_languages: Vec<Vec<String>>,
     apple_prompt_input: Entity<TextareaState>,
     idle_select: Entity<SelectState<SearchableVec<SharedString>>>,
     /// Seconds parallel to the idle dropdown items.
@@ -496,20 +529,10 @@ impl SettingsWindow {
 
         let control = control_line::AXES.map(|axis| axis.index_in(&current.control_line));
 
-        let mut language_codes: Vec<String> =
-            LANGUAGES.iter().map(|(c, _)| c.to_string()).collect();
-        let mut language_items: Vec<SharedString> = LANGUAGES
-            .iter()
-            .map(|(code, name)| SharedString::from(format!("{name} ({code})")))
-            .collect();
-        let language_index = match language_codes.iter().position(|c| *c == current.language) {
-            Some(index) => index,
-            None => {
-                language_codes.push(current.language.clone());
-                language_items.push(current.language.clone().into());
-                language_items.len() - 1
-            }
-        };
+        let (language_codes, language_items, language_index) = language_options(
+            &transcription_languages(&current.transcription_model),
+            &current.language,
+        );
         let language_select = cx.new(|cx| {
             SelectState::new(
                 SearchableVec::new(language_items),
@@ -519,7 +542,12 @@ impl SettingsWindow {
             )
         });
 
-        let (transcription_ids, transcription_items, transcription_descriptions) = model_options(
+        let ModelOptions {
+            ids: transcription_ids,
+            labels: transcription_items,
+            descriptions: transcription_descriptions,
+            ..
+        } = model_options(
             &current.transcription_model,
             "transcription",
             apple_available,
@@ -536,8 +564,12 @@ impl SettingsWindow {
                 cx,
             )
         });
-        let (polishing_ids, polishing_items, polishing_descriptions) =
-            model_options(&current.polishing_model, "polishing", apple_available);
+        let ModelOptions {
+            ids: polishing_ids,
+            labels: polishing_items,
+            descriptions: polishing_descriptions,
+            languages: polishing_languages,
+        } = model_options(&current.polishing_model, "polishing", apple_available);
         let polishing_index = polishing_ids
             .iter()
             .position(|id| id == &current.polishing_model)
@@ -567,8 +599,7 @@ impl SettingsWindow {
             .iter()
             .map(|(_, label)| (*label).into())
             .collect();
-        // A hand-edited value outside the presets stays selectable; the
-        // language dropdown gets the same treatment.
+        // A hand-edited value outside the presets stays selectable.
         let idle_index = match idle_values
             .iter()
             .position(|secs| *secs == current.idle_unload_secs)
@@ -763,6 +794,7 @@ impl SettingsWindow {
             polishing_select,
             polishing_ids,
             polishing_descriptions,
+            polishing_languages,
             apple_prompt_input,
             idle_select,
             idle_values,
@@ -813,12 +845,7 @@ impl SettingsWindow {
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let defaults = SessionSettings::default();
         let control_line = control_line::compose(self.control[0], self.control[1], self.control[2]);
-        let language = self
-            .language_select
-            .read(cx)
-            .selected_index(cx)
-            .and_then(|index| self.language_codes.get(index.row).cloned())
-            .unwrap_or(defaults.language);
+        let language = self.selected_language(cx).unwrap_or(defaults.language);
         let idle_unload_secs = self
             .idle_select
             .read(cx)
@@ -848,29 +875,58 @@ impl SettingsWindow {
             hotkey: self.hotkey.clone(),
             hotkey_behavior: self.hotkey_behavior,
             input_device: self.selected_microphone(cx),
-            transcription_model: transcription_model.clone(),
+            transcription_model,
             onboarded: self.settings.lock().unwrap().onboarded,
             polishing_model,
         };
         let models = updated.models();
         updated.transcription_model = models.transcription.clone();
-        if updated.transcription_model != transcription_model
-            && let Some(index) = self
-                .transcription_ids
-                .iter()
-                .position(|id| id == &updated.transcription_model)
-        {
-            self.transcription_select.update(cx, |select, cx| {
-                select.set_selected_index(Some(IndexPath::new(index)), window, cx);
-                cx.notify();
-            });
-        }
+        updated.normalize_language();
+        self.refresh_languages(&updated, window, cx);
         if let Err(e) = updated.save() {
             eprintln!("saving settings failed: {e:#}");
             return;
         }
         *self.settings.lock().unwrap() = updated;
         cx.global::<crate::AppServices>().models.set(models);
+    }
+
+    fn selected_language(&self, cx: &App) -> Option<String> {
+        self.language_select
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|index| self.language_codes.get(index.row).cloned())
+    }
+
+    /// The notice replacing a polishing row's help line when that polisher
+    /// skips the selected language.
+    fn polishing_skipped_notice(&self, row: usize, cx: &App) -> Option<String> {
+        let language = self.selected_language(cx)?;
+        let polisher_languages = self.polishing_languages.get(row)?;
+        if !skips_polishing(polisher_languages, &language) {
+            return None;
+        }
+        Some(polishing_skipped_notice(&language))
+    }
+
+    /// Rebuild the language rows for the settings' transcription model and
+    /// select their language.
+    fn refresh_languages(
+        &mut self,
+        settings: &SessionSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (codes, items, index) = language_options(
+            &transcription_languages(&settings.transcription_model),
+            &settings.language,
+        );
+        self.language_codes = codes;
+        self.language_select.update(cx, |select, cx| {
+            select.set_items(SearchableVec::new(items), window, cx);
+            select.set_selected_index(Some(IndexPath::new(index)), window, cx);
+        });
+        cx.notify();
     }
 
     /// The device name behind the dropdown's selection; empty for the
@@ -1739,20 +1795,29 @@ impl SettingsWindow {
             .and_then(|index| self.transcription_descriptions.get(index.row))
             .cloned()
             .unwrap_or_default();
-        let polishing_description = self
+        let polishing_row = self
             .polishing_select
             .read(cx)
             .selected_index(cx)
-            .and_then(|index| self.polishing_descriptions.get(index.row))
-            .cloned()
-            .unwrap_or_default();
-        let selected_polisher = self
-            .polishing_select
-            .read(cx)
-            .selected_index(cx)
-            .and_then(|index| self.polishing_ids.get(index.row));
-        let uses_s1_prompt = selected_polisher.is_some_and(|id| id == "s1-mini-q4-k-m");
-        let uses_apple_prompt = selected_polisher.is_some_and(|id| id == "apple-intelligence");
+            .map(|index| index.row);
+        let skipped_notice = polishing_row.and_then(|row| self.polishing_skipped_notice(row, cx));
+        let polishes = skipped_notice.is_none();
+        let polishing_field = field().label("Polishing model");
+        let polishing_field = match skipped_notice {
+            Some(notice) => polishing_field.description_fn(move |_, cx| {
+                div().text_color(cx.theme().warning).child(notice.clone())
+            }),
+            None => {
+                let description = polishing_row
+                    .and_then(|row| self.polishing_descriptions.get(row).cloned())
+                    .unwrap_or_default();
+                polishing_field.description(description)
+            }
+        };
+        let selected_polisher = polishing_row.and_then(|row| self.polishing_ids.get(row));
+        let uses_s1_prompt = polishes && selected_polisher.is_some_and(|id| id == "s1-mini-q4-k-m");
+        let uses_apple_prompt =
+            polishes && selected_polisher.is_some_and(|id| id == "apple-intelligence");
         let transcription = Self::section_card("Transcription", cx).child(
             Self::form()
                 .child(
@@ -1770,12 +1835,8 @@ impl SettingsWindow {
         );
         let polishing = Self::section_card("Polishing", cx)
             .child(
-                Self::form().child(
-                    field()
-                        .label("Polishing model")
-                        .description(polishing_description)
-                        .child(Select::new(&self.polishing_select).large()),
-                ),
+                Self::form()
+                    .child(polishing_field.child(Select::new(&self.polishing_select).large())),
             )
             .when(uses_s1_prompt, |card| card.child(self.polishing_prompt(cx)))
             .when(uses_apple_prompt, |card| card.child(self.apple_prompt()));
@@ -1882,14 +1943,22 @@ impl SettingsWindow {
     /// Display name for a model id ("Canary 1B Flash"), falling back to the
     /// id when the catalog does not know it.
     fn model_display_name(id: &str) -> String {
-        let catalog: ModelCatalog = serde_json::from_str(diktafon_protocol::MODEL_CATALOG_JSON)
-            .expect("bundled model catalog must parse");
-        catalog
+        catalog()
             .models
             .into_iter()
             .find(|model| model.id == id)
             .map(|model| model.name)
             .unwrap_or_else(|| id.to_string())
+    }
+
+    fn rerun_caption(rerun: &Rerun) -> String {
+        let asr = Self::model_display_name(&rerun.asr_model);
+        match &rerun.polishing_model {
+            Some(polishing_model) => {
+                format!("{asr} + {}", Self::model_display_name(polishing_model))
+            }
+            None => asr,
+        }
     }
 
     /// Word-level diff of the rerun against the original: rerun-side words
@@ -2013,7 +2082,10 @@ impl SettingsWindow {
                                 text: result.polished,
                                 raw: result.raw,
                                 asr_model: asr_model.clone(),
-                                polishing_model: polishing_model.clone(),
+                                polishing_model: result
+                                    .polish_ms
+                                    .is_some()
+                                    .then(|| polishing_model.clone()),
                             },
                         );
                     }
@@ -2052,7 +2124,7 @@ impl SettingsWindow {
         adopted.raw = rerun.raw.clone();
         adopted.polished = rerun.text.clone();
         adopted.transcription_model = Some(rerun.asr_model.clone());
-        adopted.polishing_model = Some(rerun.polishing_model.clone());
+        adopted.polishing_model = rerun.polishing_model.clone();
         match diktafon_protocol::history::replace_matching(
             &diktafon_protocol::history::path(),
             &entry,
@@ -2336,11 +2408,7 @@ impl SettingsWindow {
                                 )
                             })
                             .when_some(rerun, |el, rerun| {
-                                let caption = SharedString::from(format!(
-                                    "{} + {}",
-                                    Self::model_display_name(&rerun.asr_model),
-                                    Self::model_display_name(&rerun.polishing_model)
-                                ));
+                                let caption = SharedString::from(Self::rerun_caption(&rerun));
                                 let words = Self::diff_tokens(&entry.polished, &rerun.text);
                                 el.child(
                                     div()
@@ -2619,6 +2687,98 @@ mod tests {
     }
 
     #[test]
+    fn every_catalog_transcription_language_has_a_name() {
+        let transcription_models = catalog()
+            .models
+            .into_iter()
+            .filter(|model| model.category == "transcription");
+        for model in transcription_models {
+            for language in &model.languages {
+                assert!(
+                    LANGUAGES.iter().any(|(code, _)| code == language),
+                    "{} lists {language} without a display name",
+                    model.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_polisher_lists_named_languages() {
+        let polishers = catalog()
+            .models
+            .into_iter()
+            .filter(|model| model.category == "polishing");
+        for model in polishers {
+            assert!(
+                !model.languages.is_empty(),
+                "{} lists no languages",
+                model.id
+            );
+            for language in &model.languages {
+                assert!(
+                    LANGUAGES.iter().any(|(code, _)| code == language),
+                    "{} lists {language} without a display name",
+                    model.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn polishing_is_skipped_only_for_unlisted_languages() {
+        let english_only = vec!["en".to_string()];
+        assert!(!skips_polishing(&english_only, "en"));
+        assert!(skips_polishing(&english_only, "hr"));
+        assert!(
+            !skips_polishing(&[], "hr"),
+            "an unknown model keeps its own help"
+        );
+    }
+
+    #[test]
+    fn catalog_polishers_skip_croatian() {
+        let ModelOptions { ids, languages, .. } = model_options(
+            diktafon_protocol::DEFAULT_POLISHING_MODEL,
+            "polishing",
+            true,
+        );
+        let languages_of = |id: &str| {
+            let row = ids.iter().position(|known| known == id).unwrap();
+            &languages[row]
+        };
+        assert!(!skips_polishing(languages_of("s1-mini-q4-k-m"), "en"));
+        assert!(skips_polishing(languages_of("s1-mini-q4-k-m"), "hr"));
+        assert!(skips_polishing(languages_of("apple-intelligence"), "hr"));
+    }
+
+    #[test]
+    fn unknown_polisher_row_lists_no_languages() {
+        let ModelOptions { ids, languages, .. } =
+            model_options("retired-polisher", "polishing", false);
+        let row = ids.iter().position(|id| id == "retired-polisher").unwrap();
+        assert!(languages[row].is_empty());
+    }
+
+    #[test]
+    fn skipped_notice_names_the_language() {
+        assert_eq!(
+            polishing_skipped_notice("hr"),
+            "Does not polish Croatian. Dictation is pasted as transcribed."
+        );
+    }
+
+    #[test]
+    fn language_options_filter_and_order() {
+        let supported = vec!["fr".to_string(), "en".to_string(), "de".to_string()];
+        let (codes, labels, selected) = language_options(&supported, "de");
+        assert_eq!(codes, vec!["en", "fr", "de"]);
+        let labels: Vec<&str> = labels.iter().map(|label| label.as_ref()).collect();
+        assert_eq!(labels, vec!["English (en)", "French (fr)", "German (de)"]);
+        assert_eq!(selected, 2);
+    }
+
+    #[test]
     fn microphone_rows_keep_a_disconnected_choice_selectable() {
         let connected = vec!["MacBook Pro Microphone".to_string()];
         let (names, labels, selected) = microphone_options(&connected, "");
@@ -2638,28 +2798,31 @@ mod tests {
 
     #[test]
     fn apple_intelligence_is_only_offered_when_available() {
-        let (unavailable, _, _) = model_options(
+        let unavailable = model_options(
             diktafon_protocol::DEFAULT_POLISHING_MODEL,
             "polishing",
             false,
-        );
+        )
+        .ids;
         assert!(!unavailable.iter().any(|id| id == "apple-intelligence"));
 
-        let (available, _, _) = model_options(
+        let available = model_options(
             diktafon_protocol::DEFAULT_POLISHING_MODEL,
             "polishing",
             true,
-        );
+        )
+        .ids;
         assert!(available.iter().any(|id| id == "apple-intelligence"));
     }
 
     #[test]
     fn model_descriptions_are_brief() {
-        let (_, _, descriptions) = model_options(
+        let descriptions = model_options(
             diktafon_protocol::DEFAULT_TRANSCRIPTION_MODEL,
             "transcription",
             false,
-        );
+        )
+        .descriptions;
         assert!(
             descriptions
                 .iter()
@@ -2667,7 +2830,9 @@ mod tests {
                     && description.split_whitespace().count() <= 6)
         );
 
-        let (ids, _, descriptions) = model_options("apple-intelligence", "polishing", true);
+        let ModelOptions {
+            ids, descriptions, ..
+        } = model_options("apple-intelligence", "polishing", true);
         let apple = ids
             .iter()
             .position(|id| id == "apple-intelligence")

@@ -173,23 +173,23 @@ fn main() -> Result<()> {
         return stats::report();
     }
 
-    let mut loaded_settings = config::SessionSettings::load();
-    let original_models = (
-        loaded_settings.transcription_model.clone(),
-        loaded_settings.polishing_model.clone(),
-    );
+    let mut loaded_settings = config::SessionSettings::read();
+    let healed_fields = |settings: &config::SessionSettings| {
+        (
+            settings.transcription_model.clone(),
+            settings.polishing_model.clone(),
+            settings.language.clone(),
+        )
+    };
+    let original = healed_fields(&loaded_settings);
     let resolved_models = loaded_settings.models();
     loaded_settings.transcription_model = resolved_models.transcription;
     loaded_settings.polishing_model = resolved_models.polishing;
     if loaded_settings.polishing_model == "apple-intelligence" && !apple_intelligence_available() {
         loaded_settings.polishing_model = diktafon_protocol::DEFAULT_POLISHING_MODEL.into();
     }
-    if original_models
-        != (
-            loaded_settings.transcription_model.clone(),
-            loaded_settings.polishing_model.clone(),
-        )
-    {
+    loaded_settings.normalize_language();
+    if original != healed_fields(&loaded_settings) {
         loaded_settings.save()?;
     }
     // Onboarding does the asking when it runs. Otherwise nothing else will,

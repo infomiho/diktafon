@@ -461,6 +461,13 @@ mod tests {
             canary.files[0].sha256,
             "7eed3cac92f255a4adbd518c58663d3fbf65984d2619189e593f2d374b05c601"
         );
+        let canary_v2 = model("canary-1b-v2-q5-k-m").unwrap();
+        assert_eq!(canary_v2.backend, ModelBackend::TranscribeCpp);
+        assert!(canary_v2.languages.iter().any(|language| language == "hr"));
+        assert_eq!(
+            model_path(root, "canary-1b-v2-q5-k-m").unwrap(),
+            root.join("canary-1b-v2-Q5_K_M.gguf")
+        );
     }
 
     #[test]

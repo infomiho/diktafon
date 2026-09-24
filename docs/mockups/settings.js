@@ -4,7 +4,7 @@
 //! confirm, copy flash) to be a component itself.
 
 import { LitElement, html, css } from 'https://esm.sh/lit@3.3.3';
-import './dk.js?v=3';
+import './dk.js?v=5';
 
 const SECTIONS = [
   { id: 'general', label: 'General', icon: '⚙', title: 'General' },

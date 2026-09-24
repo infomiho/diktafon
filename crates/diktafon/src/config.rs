@@ -129,6 +129,58 @@ impl Default for SessionSettings {
     }
 }
 
+#[derive(serde::Deserialize)]
+pub struct ModelCatalog {
+    pub models: Vec<CatalogModel>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct CatalogModel {
+    pub id: String,
+    pub category: String,
+    pub name: String,
+    #[serde(default)]
+    pub languages: Vec<String>,
+    pub files: Vec<CatalogFile>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct CatalogFile {
+    pub size: u64,
+}
+
+pub fn catalog() -> ModelCatalog {
+    serde_json::from_str(diktafon_protocol::MODEL_CATALOG_JSON)
+        .expect("bundled model catalog must parse")
+}
+
+/// Language codes the transcription model's catalog entry lists; empty for
+/// an unknown model.
+pub fn transcription_languages(model_id: &str) -> Vec<String> {
+    catalog()
+        .models
+        .into_iter()
+        .find(|model| model.id == model_id && model.category == "transcription")
+        .map(|model| model.languages)
+        .unwrap_or_default()
+}
+
+/// The language to keep for a model supporting `supported`: the current one
+/// when the model has it, else English, else the model's first language.
+pub fn language_for_model(current: &str, supported: &[String]) -> String {
+    let is_supported = |code: &str| supported.iter().any(|language| language == code);
+    if is_supported(current) {
+        return current.to_string();
+    }
+    if is_supported("en") {
+        return "en".to_string();
+    }
+    supported
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "en".to_string())
+}
+
 fn settings_path() -> std::path::PathBuf {
     diktafon_protocol::data_dir().join("config.json")
 }
@@ -140,10 +192,18 @@ impl SessionSettings {
         (!name.is_empty()).then_some(name)
     }
 
+    /// [`Self::read`] with the language normalized against the transcription
+    /// model, so a language the model cannot transcribe never reaches it.
+    pub fn load() -> Self {
+        let mut settings = Self::read();
+        settings.normalize_language();
+        settings
+    }
+
     /// Missing or unparseable file falls back to the defaults. A hotkey
     /// string that does not parse is reset in place so every surface (keycaps,
     /// startup line) shows the chord that is actually registered.
-    pub fn load() -> Self {
+    pub fn read() -> Self {
         let mut settings: Self = std::fs::read_to_string(settings_path())
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
@@ -183,48 +243,32 @@ impl SessionSettings {
     }
 
     pub fn models(&self) -> ModelSelection {
-        let catalog: serde_json::Value =
-            serde_json::from_str(diktafon_protocol::MODEL_CATALOG_JSON)
-                .expect("bundled model catalog must parse");
+        let catalog = catalog();
         let valid = |id: &str, category: &str| {
-            catalog["models"].as_array().is_some_and(|models| {
-                models
-                    .iter()
-                    .any(|model| model["id"] == id && model["category"].as_str() == Some(category))
-            })
+            catalog
+                .models
+                .iter()
+                .any(|model| model.id == id && model.category == category)
         };
-        let supports_language = |model: &serde_json::Value| {
-            model["languages"]
-                .as_array()
-                .is_some_and(|languages| languages.iter().any(|code| code == &self.language))
-        };
-        let transcription = catalog["models"]
-            .as_array()
-            .and_then(|models| {
-                models
-                    .iter()
-                    .find(|model| {
-                        model["id"] == self.transcription_model
-                            && model["category"] == "transcription"
-                            && supports_language(model)
-                    })
-                    .or_else(|| {
-                        models.iter().find(|model| {
-                            model["category"] == "transcription" && supports_language(model)
-                        })
-                    })
-            })
-            .and_then(|model| model["id"].as_str())
-            .unwrap_or(DEFAULT_TRANSCRIPTION_MODEL)
-            .to_string();
         ModelSelection {
-            transcription,
+            transcription: if valid(&self.transcription_model, "transcription") {
+                self.transcription_model.clone()
+            } else {
+                DEFAULT_TRANSCRIPTION_MODEL.into()
+            },
             polishing: if valid(&self.polishing_model, "polishing") {
                 self.polishing_model.clone()
             } else {
                 DEFAULT_POLISHING_MODEL.into()
             },
         }
+    }
+
+    /// Resets the language when the resolved transcription model does not
+    /// list it; see [`language_for_model`].
+    pub fn normalize_language(&mut self) {
+        let supported = transcription_languages(&self.models().transcription);
+        self.language = language_for_model(&self.language, &supported);
     }
 }
 
@@ -326,13 +370,62 @@ mod tests {
         assert!(settings.apple_prompt.is_empty());
     }
 
+    fn codes(codes: &[&str]) -> Vec<String> {
+        codes.iter().map(|code| code.to_string()).collect()
+    }
+
     #[test]
-    fn unsupported_transcription_model_falls_back_to_one_for_the_language() {
-        let settings = SessionSettings {
-            language: "it".into(),
+    fn a_supported_language_is_kept() {
+        assert_eq!(language_for_model("de", &codes(&["en", "de"])), "de");
+    }
+
+    #[test]
+    fn an_unsupported_language_resets_to_english() {
+        assert_eq!(language_for_model("hr", &codes(&["de", "en"])), "en");
+    }
+
+    #[test]
+    fn without_english_the_first_listed_language_is_chosen() {
+        assert_eq!(language_for_model("hr", &codes(&["fr", "de"])), "fr");
+    }
+
+    #[test]
+    fn an_empty_language_list_means_english() {
+        assert_eq!(language_for_model("hr", &[]), "en");
+    }
+
+    #[test]
+    fn loading_resets_a_language_the_model_lacks() {
+        let mut settings = SessionSettings {
+            language: "hr".into(),
             transcription_model: "canary-1b-flash-q5-k-m".into(),
             ..Default::default()
         };
-        assert_eq!(settings.models().transcription, "cohere-transcribe-q5-k-m");
+        settings.normalize_language();
+        assert_eq!(settings.language, "en");
+        assert_eq!(settings.transcription_model, "canary-1b-flash-q5-k-m");
+    }
+
+    #[test]
+    fn loading_keeps_a_language_the_model_supports() {
+        let mut settings = SessionSettings {
+            language: "hr".into(),
+            transcription_model: "canary-1b-v2-q5-k-m".into(),
+            ..Default::default()
+        };
+        settings.normalize_language();
+        assert_eq!(settings.language, "hr");
+    }
+
+    #[test]
+    fn an_unknown_model_normalizes_against_the_default_model() {
+        let mut settings = SessionSettings {
+            language: "hr".into(),
+            transcription_model: "missing".into(),
+            ..Default::default()
+        };
+        settings.normalize_language();
+        assert!(!transcription_languages(DEFAULT_TRANSCRIPTION_MODEL).contains(&"hr".into()));
+        assert_eq!(settings.language, "en");
     }
 }
