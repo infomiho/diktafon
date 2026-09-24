@@ -632,7 +632,7 @@ fn status_label(text: String) -> AnyElement {
     div()
         .flex_1()
         .text_size(px(13.))
-        .text_color(rgba(theme::TEXT_FAINT | 0xFF))
+        .text_color(rgba(theme::TEXT_DIM | 0xFF))
         .text_right()
         .whitespace_nowrap()
         .overflow_hidden()

@@ -24,37 +24,46 @@ pub const TEXT_PRIMARY: u32 = 0xF1F2FF00;
 pub const TEXT_DIM: u32 = 0xAAACD600;
 /// The third and last text level: timestamps, ghost icon buttons,
 /// placeholders. Present but out of the way; never for words that must be read.
-pub const TEXT_FAINT: u32 = 0x7F84A200;
+pub const TEXT_FAINT: u32 = 0x8B90AF00;
 
 // The phase language. Status colors derive from it: danger is SIGNAL_RED,
-// warning is AURORA_EMBER, success/completion is white (Signal has no green).
+// warning is SIGNAL_AMBER, success/completion is white.
 /// Recording signal.
 pub const SIGNAL_RED: u32 = 0xFF3B4D00;
 /// Transcribing signal.
 pub const SIGNAL_WHITE: u32 = 0xFFFFFF00;
 /// Polishing signal.
 pub const SIGNAL_MAGENTA: u32 = 0xCE5CFF00;
-/// Semantic "granted" for permission badges; the Signal palette has no
-/// other green.
+/// Semantic green: permission "granted" dots and the History diff highlight.
 pub const SIGNAL_GREEN: u32 = 0x34D39900;
+/// Warning. The one warm status hue, far enough from SIGNAL_RED that the
+/// two stay apart under color blindness.
+pub const SIGNAL_AMBER: u32 = 0xE6AC3D00;
 /// The meter at rest; muted, never glows.
 pub const RING_IDLE: u32 = 0x8E90BE00;
 /// Aurora wash companions to SIGNAL_RED: a warm ember and a red-magenta
 /// rose, so the recording glow spans a hot-red family instead of one flat hue.
+/// The ember also tints the app icon's foot.
 pub const AURORA_EMBER: u32 = 0xFF5A3600;
 pub const AURORA_ROSE: u32 = 0xE0459E00;
 
 // The single interactive accent: the polishing magenta deepened for large
 // fills (white text passes AA on it), so buttons and focus rings speak the
-// same "diktafon is acting" hue as the pill without going neon.
+// same "diktafon is acting" hue as the pill without going neon. The primary
+// button darkens on hover and press, so white text keeps AA in every state.
 pub const ACCENT: u32 = 0x9843C000;
-const ACCENT_HOVER: u32 = 0xA853D100;
-const ACCENT_ACTIVE: u32 = 0x8835AE00;
+const ACCENT_HOVER: u32 = 0x8835AE00;
+const ACCENT_ACTIVE: u32 = 0x79239E00;
+/// The accent lifted for text and icons on dark grounds (links, accent
+/// icon buttons), where ACCENT itself falls below AA.
+pub const ACCENT_TEXT: u32 = 0xBF80E000;
+/// Top stop of the app icon's squircle gradient; the bottom is SURFACE_SUNKEN.
+pub const ICON_GROUND_TOP: u32 = 0x1B1E3F00;
 const RAISED_HOVER: u32 = 0x2B2F5100;
 const RAISED_ACTIVE: u32 = 0x1D213F00;
 /// Off-state switch track: the raised surface is invisible against the
 /// window ground at track size, so it gets its own clearly lighter step.
-const SWITCH_TRACK: u32 = 0x5A608600;
+const SWITCH_TRACK: u32 = 0x63698F00;
 
 /// One height for every control in every window. The kit's Large inputs and
 /// selects are 40px, but its Large button keeps the 32px Medium height, so
@@ -139,7 +148,7 @@ fn signal_theme_config() -> gpui_component::ThemeConfig {
     colors.selection = alpha(ACCENT, 0x40);
     colors.ring = color(ACCENT);
     colors.caret = color(TEXT_PRIMARY);
-    colors.link = color(ACCENT);
+    colors.link = color(ACCENT_TEXT);
     colors.switch = color(SWITCH_TRACK);
     // The kit falls back to the window background for the thumb, which on
     // this dark ground reads as a hole in the track.
@@ -147,9 +156,10 @@ fn signal_theme_config() -> gpui_component::ThemeConfig {
     colors.scrollbar_thumb = alpha(HAIRLINE, 0x50);
     colors.overlay = alpha(SURFACE_SUNKEN, 0x80);
     colors.danger = color(SIGNAL_RED);
-    colors.danger_foreground = Some("#ff6b78".into());
-    colors.warning = color(AURORA_EMBER);
-    colors.warning_foreground = Some("#ff7e5c".into());
+    // Text on a solid status fill.
+    colors.danger_foreground = color(BACKGROUND);
+    colors.warning = color(SIGNAL_AMBER);
+    colors.warning_foreground = color(BACKGROUND);
     colors.success = color(SIGNAL_WHITE);
     colors.success_foreground = color(TEXT_PRIMARY);
     ThemeConfig {

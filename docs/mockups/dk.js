@@ -104,7 +104,7 @@ export class DkIconBtn extends LitElement {
     css`
       button {
         width: 28px; height: 28px; border: none; border-radius: 6px; padding: 0;
-        display: grid; place-items: center; color: var(--faint, #7f84a2);
+        display: grid; place-items: center; color: var(--faint, #8b90af);
         background: none; font: inherit; cursor: pointer;
       }
       button:hover {
@@ -113,10 +113,10 @@ export class DkIconBtn extends LitElement {
       }
       :host([active]) button { color: var(--status-live); }
       :host([danger]) button:hover { color: var(--signal-red); }
-      :host([accent]) button { color: var(--accent); }
+      :host([accent]) button { color: var(--accent-text); }
       :host([accent]) button:hover {
         background: color-mix(in srgb, var(--accent) 18%, transparent);
-        color: var(--accent-hover);
+        color: var(--accent-text);
       }
       svg { width: 14px; height: 14px; display: block; }
     `,
@@ -267,6 +267,7 @@ export class DkButton extends LitElement {
       button:active { transform: scale(0.97); }
       :host([primary]) button { background: var(--accent); border-color: transparent; color: var(--on-accent); }
       :host([primary]) button:hover { background: var(--accent-hover); border-color: transparent; }
+      :host([primary]) button:active { background: var(--accent-active); border-color: transparent; }
     `,
   ];
   render() {

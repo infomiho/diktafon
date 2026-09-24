@@ -1572,7 +1572,7 @@ impl SettingsWindow {
     /// summary that overflowed the pane.
     fn daemon_card(&self, cx: &App) -> impl IntoElement {
         let status = &self.daemon_status;
-        // White = alive, muted = not; the dot never glows (glow means live
+        // Magenta = alive, dim idle = not; the dot never glows (glow means live
         // signal, and a resident daemon is not one).
         let (dot, word) = if status.running {
             (rgba(theme::SIGNAL_MAGENTA | 0xFF), "Running")
@@ -1919,14 +1919,14 @@ impl SettingsWindow {
             .text_color(if active {
                 rgba(theme::SIGNAL_MAGENTA | 0xFF)
             } else if accent {
-                rgba(theme::ACCENT | 0xFF)
+                rgba(theme::ACCENT_TEXT | 0xFF)
             } else {
                 rgba(theme::TEXT_FAINT | 0xFF)
             })
             .hover(|el| {
                 let hovered = if accent {
                     el.bg(rgba(theme::ACCENT | 0x2E))
-                        .text_color(rgba(theme::ACCENT | 0xFF))
+                        .text_color(rgba(theme::ACCENT_TEXT | 0xFF))
                 } else {
                     el.bg(rgba(theme::HAIRLINE | 0x22))
                         .text_color(rgba(theme::TEXT_PRIMARY | 0xFF))

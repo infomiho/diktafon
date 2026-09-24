@@ -12,14 +12,14 @@
   /* Pure white, low opacity: a tinted outline reads as dirt on an image edge. */
   --text-primary: #f1f2ff;
   --text-dim: #aaacd6;
-  --text-faint: #7f84a2;
+  --text-faint: #8b90af;
   --aurora-ember: #ff5a36;
   --aurora-rose: #e0459e;
   --signal-red: #ff3b4d;
   --signal-magenta: #ce5cff;
   --accent: #9843c0;
-  --accent-hover: #a853d1;
-  --link: #ce5cff;
+  --accent-hover: #8835ae;
+  --link: #bf80e0;
   /* The app's ring at rest (theme.rs RING_IDLE); illustrations idle in it. */
   --viz-idle: #8e90be;
 

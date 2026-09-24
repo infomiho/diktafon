@@ -13,20 +13,22 @@
     --surface-sunken: #0B0D20;
     --on-surface: #F1F2FF;
     --on-surface-muted: #AAACD6;
-    --faint: #7F84A2;
+    --faint: #8B90AF;
     --muted: var(--on-surface-muted);
     --outline: rgba(155, 157, 255, 0.13);
     --accent: #9843C0;
     --on-accent: #F1F2FF;
     --ring-idle: #8E90BE;
-    --switch-track: #5A6086;
+    --switch-track: #63698F;
     --status-live: #CE5CFF;
     --status-ok: #34D399;
     --raised-hover: #2B2F51;
-    --accent-hover: #A853D1;
+    --accent-hover: #8835AE;
+    --accent-active: #79239E;
+    --accent-text: #BF80E0;
     --signal-red: #FF3B4D;
-    --aurora-ember: #FF5A36;
-    --warning: var(--aurora-ember);
+    --signal-amber: #E6AC3D;
+    --warning: var(--signal-amber);
     --focus-ring: var(--accent);
     --outline-hover: rgba(155, 157, 255, 0.35);
     --font-display: "Chakra Petch", sans-serif;
@@ -192,6 +194,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  .link { color: var(--accent-text, var(--accent)); font-size: 13px; }
 
 </style>
 </head>
@@ -355,6 +358,7 @@
         </dk-control-row>
       </div>
     </dk-field>
+    <a class="link" href="#">Third-party notices</a>
   </dk-settings-window>
 
   <!-- Advanced, Permissions sheet open -->
@@ -392,6 +396,7 @@
         </dk-control-row>
       </div>
     </dk-field>
+    <a class="link" href="#">Third-party notices</a>
     <div class="scrim">
       <div class="sheet">
         <div class="sheet-head">

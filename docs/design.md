@@ -4,22 +4,27 @@ colors:
   background: "#101229"        # window ground; the deep void
   surface: "#171934"           # pill glass, input/card ground
   surface-raised: "#242849"    # hover fills, active nav, popovers
+  surface-raised-hover: "#2B2F51"   # secondary buttons and list rows, hovered
+  surface-raised-active: "#1D213F"  # secondary buttons and list rows, pressed
   surface-sunken: "#0B0D20"    # sidebar; deepest step
   on-surface: "#F1F2FF"        # words and labels; cool white
   on-surface-muted: "#AAACD6"  # supporting prose: descriptions, group labels, status words
-  on-surface-faint: "#7F84A2"  # metadata scanned, not read: timestamps, counters, ghost icons
-  outline: "#9B9DFF"           # hairline borders; violet-tinted, at ~13% alpha
-  accent: "#9843C0"            # the polishing magenta deepened for fills; buttons, focus ring, links
-  accent-hover: "#A853D1"
-  accent-active: "#8835AE"
-  on-accent: "#F1F2FF"        # white on accent passes AA (4.8:1)
+  on-surface-faint: "#8B90AF"  # metadata scanned, not read: timestamps, counters, ghost icons
+  outline: "#9B9DFF"           # violet-tinted; 8% ghost hover fill, 13% hairline, 27% dashed hotkey-capture border, 31% scrollbar thumb, 35% keycap hover border
+  accent: "#9843C0"            # the polishing magenta deepened for fills; buttons, focus ring, selection
+  accent-hover: "#8835AE"      # darkens on hover
+  accent-active: "#79239E"
+  accent-text: "#BF80E0"       # links and accent icons; the accent lifted for text on dark grounds
+  on-accent: "#F1F2FF"        # 4.8:1 on accent, 6.0:1 on hover, 7.4:1 pressed
   selection: "#9843C0"         # accent at ~25% alpha
+  overlay: "{surface-sunken} @ 50%"  # scrim behind sheets and dialogs
   signal-red: "#FF3B4D"        # recording; doubles as danger
   signal-white: "#FFFFFF"      # transcribing; doubles as success/completion
   signal-magenta: "#CE5CFF"    # polishing; the accent is this hue deepened
   ring-idle: "#8E90BE"         # the meter at rest; muted, never glows
-  signal-green: "#34D399"      # permission status dots only; see color roles
-  aurora-ember: "#FF5A36"      # recording wash companion; doubles as warning
+  signal-green: "#34D399"      # permission status dots and the History diff highlight; see color roles
+  signal-amber: "#E6AC3D"      # warning
+  aurora-ember: "#FF5A36"      # recording wash companion; app icon foot
   aurora-rose: "#E0459E"       # recording wash companion
 typography:
   display:                     # pane titles
@@ -77,7 +82,7 @@ components:
     backgroundColor: "{background}"
     borderColor: "{outline} @ 13%"
   switch:
-    trackColor: "#5A6086"      # own lighter step; raised surface vanishes at track size
+    trackColor: "#63698F"      # own lighter step; raised surface vanishes at track size
     checkedColor: "{accent}"
   nav-item:
     height: 40px
@@ -148,17 +153,23 @@ Chrome, text, and containers never glow.
   never from drop shadows.
 - The phase language is fixed: red = recording, white = transcribing,
   magenta = polishing. Status colors derive from it: danger is signal red,
-  warning is aurora ember, success/completion is white: a paste completes
-  with a white bloom, and any "saved / done" state is white.
-- One exception, and only this one: **permission status dots** use
+  warning is signal amber, the one warm status hue, kept far from signal red
+  so warning and error stay apart for color-blind readers.
+  Success/completion is white: a paste completes with a white bloom, and any
+  "saved / done" state is white.
+- Two exceptions use green. First, **permission status dots** use
   signal green for granted, ring idle for not asked, signal red for denied.
   A permission is a macOS fact, not a diktafon phase, and every other app on
   the system reports it in green; borrowing the phase white here would read
   as "transcribing". The green is confined to an 8px dot inside a neutral
   badge whose text stays muted, so it never becomes a second accent.
+- Second, the **History diff highlight** tints the changed words of a rerun
+  green at 22% behind unchanged text, the universal diff convention. An
+  accent tint would read as selection.
 - Magenta is the single interactive accent: primary buttons, focus rings,
-  selection, links. It is the polishing hue deepened for large fills
-  (white text passes AA on it); both mean "diktafon is acting". The vivid
+  selection. It is the polishing hue deepened for large fills
+  (white text passes AA on it); both mean "diktafon is acting". Links and
+  accent icons use accent-text, the same hue lifted so it passes AA as text. The vivid
   SIGNAL_MAGENTA stays reserved for the pill's glowing grille.
 - The palette is designed in OKLCH: every surface step sits on hue 277 with
   restrained chroma (large fills never exceed C 0.06); saturation is spent
@@ -176,7 +187,8 @@ Three text levels, expressed by color; one lever changes per level step.
 - **Secondary** `on-surface-muted`: supporting prose read when engaged -
   field descriptions, group labels, phase words.
 - **Faint** `on-surface-faint`: metadata scanned rather than read -
-  timestamps, counters, placeholder text, ghost icon controls at rest.
+  timestamps, counters, placeholder text, ghost icon controls at rest,
+  the pill's time readout.
 
 Values outrank labels in data displays (the daemon card's white mono values
 under muted labels); labels outrank descriptions in forms. Size stays fixed
@@ -196,7 +208,9 @@ Three levels, no stacking beyond them:
 The pill window disables the system shadow and lets clicks pass through.
 A system-blur material for the pill was tried and declined (diktafon-7r4):
 over light content the blur washes out the Signal indigo and collapses the
-muted text's contrast. The chip stays painted at 91%.
+muted text's contrast. The chip stays painted at 91%. That leaves one known
+contrast exception: the pill's 11px faint time readout is 4.24:1 over a white
+desktop. A 93% chip would pass (4.52:1) but reopens diktafon-7r4.
 
 ## Type
 
@@ -263,6 +277,10 @@ x 27/31.5/36, y 18.5/24/29.5). Everything else derives from it:
 - The menu bar (`statusbar.rs`) is the one programmatic rendering, drawn
   from the same `mark` constants because its face is dynamic: the dial hub
   appears while recording, grille dots alternate size while processing.
+- The hub is always `accent`, in every colored variant. The menu bar mark
+  is a template image, so macOS colors it and it carries no hue.
+- The app icon's squircle gradient runs from `ICON_GROUND_TOP` to
+  `surface-sunken`.
 
 ## Provenance
 

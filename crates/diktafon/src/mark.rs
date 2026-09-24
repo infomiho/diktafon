@@ -103,7 +103,7 @@ fn flat_svg() -> String {
 "##,
         face = hex(theme::TEXT_PRIMARY),
         device = device_path(BODY_X, BODY_Y, 1.),
-        accent = hex(theme::SIGNAL_MAGENTA),
+        accent = hex(theme::ACCENT),
     )
 }
 
@@ -116,7 +116,7 @@ fn app_icon_svg() -> String {
         r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <defs>
     <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#1B1E3F"/>
+      <stop offset="0" stop-color="{ground_top}"/>
       <stop offset="1" stop-color="{sunken}"/>
     </linearGradient>
     <radialGradient id="ember" cx="0.5" cy="1.02" r="0.55">
@@ -131,6 +131,7 @@ fn app_icon_svg() -> String {
 </svg>
 "##,
         ember = hex(theme::AURORA_EMBER),
+        ground_top = hex(theme::ICON_GROUND_TOP),
         sunken = hex(theme::SURFACE_SUNKEN),
         face = hex(theme::TEXT_PRIMARY),
         device = device_path(x, y, s),

@@ -74,9 +74,9 @@ export class DkPill extends LitElement {
       white-space: nowrap; overflow: hidden;
       transition: opacity 180ms ease-out;
     }
-    .label.status { text-align: right; color: rgba(170, 172, 214, 0.55); }
+    .label.status { text-align: right; color: var(--muted); }
     .time {
-      font-size: 11px; color: rgba(170, 172, 214, 0.55);
+      font-size: 11px; color: var(--faint);
       font-variant-numeric: tabular-nums;
     }
     .grille { display: grid; grid-template-columns: repeat(5, auto); gap: 3px; flex-shrink: 0; }
