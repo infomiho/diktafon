@@ -41,16 +41,19 @@ struct Models {
 }
 
 enum PolishingBackend {
-    S1(Polisher),
+    LlamaCpp(Polisher),
     AppleIntelligence,
 }
 
 impl PolishingBackend {
     fn load(models_dir: &Path, selection: &ModelSelection) -> Result<Self> {
-        match model(&selection.polishing)?.backend {
+        let polishing = model(&selection.polishing)?;
+        match polishing.backend {
             ModelBackend::LlamaCpp => {
                 let path = model_path(models_dir, &selection.polishing)?;
-                Ok(Self::S1(Polisher::load(&path).context("loading S1-mini")?))
+                let polisher = Polisher::load(&path, polishing.prompt)
+                    .with_context(|| format!("loading {}", selection.polishing))?;
+                Ok(Self::LlamaCpp(polisher))
             }
             ModelBackend::AppleFoundationModels => Ok(Self::AppleIntelligence),
             backend => Err(anyhow!("unsupported polishing backend {backend:?}")),
@@ -59,7 +62,7 @@ impl PolishingBackend {
 
     fn polish(&self, transcript: &str, config: &SessionConfig) -> Result<String> {
         match self {
-            Self::S1(polisher) => polisher.polish(transcript, &config.control_line),
+            Self::LlamaCpp(polisher) => polisher.polish(transcript, &config.control_line),
             Self::AppleIntelligence => {
                 crate::apple_intelligence::polish(transcript, &config.apple_prompt)
             }

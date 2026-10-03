@@ -2,9 +2,11 @@
 //! config file can replace this later without touching the consumers.
 
 use diktafon_protocol::{
-    DEFAULT_APPLE_PROMPT, DEFAULT_POLISHING_MODEL, DEFAULT_TRANSCRIPTION_MODEL, ModelSelection,
-    SessionConfig,
+    CROATIAN_POLISHING_MODEL, CROATIAN_TRANSCRIPTION_MODEL, DEFAULT_APPLE_PROMPT,
+    DEFAULT_POLISHING_MODEL, DEFAULT_TRANSCRIPTION_MODEL, ModelSelection, SessionConfig,
 };
+
+const CROATIAN: &str = "hr";
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 
 const TEMPLATE_DEFAULT_APPLE_PROMPT: &str = "Touch up the raw transcript slightly so it looks a bit more like written communication.\n\nReturn only the cleaned transcript.\n\nTranscript:\n${output}";
@@ -30,6 +32,15 @@ pub struct Config {
     /// a phrase can send the decoder into a loop: 1.7s of "on the ... and"
     /// decoded as "and" 281 times.
     pub min_chunk_secs: f32,
+    /// Speech chunks are held back and sent as one piece until the next would
+    /// take the piece past this length. Each chunk is transcribed on its own
+    /// and ends as a finished sentence, so a cut at a mid-sentence pause
+    /// leaves "do četvrtka, ne. Petka" for the polisher; whole dictations
+    /// measured 1.1 points of WER better. Canary is trained on inputs up to
+    /// about 40 s, so longer dictations are cut at the pauses that keep pieces
+    /// under this. One unbroken stretch of speech longer than this still goes
+    /// as a single piece, since the VAD offers no cut inside it.
+    pub max_piece_secs: f32,
 }
 
 /// Handy's tuned Silero values; language and control line match the daemon's
@@ -44,6 +55,7 @@ pub const CONFIG: Config = Config {
     prefill_frames: 15,
     hangover_frames: 15,
     min_chunk_secs: 3.0,
+    max_piece_secs: 40.0,
 };
 
 impl Config {
@@ -264,6 +276,22 @@ impl SessionSettings {
         }
     }
 
+    /// Croatian gets its own models: switching the language to Croatian picks
+    /// Diktafon Dictate HR 1 and Polisher HR 1, every other polisher skips
+    /// Croatian so the HR polisher stays while the language is Croatian, and
+    /// leaving Croatian hands the polisher back to the default.
+    pub fn match_models_to_language(&mut self, previous_language: &str) {
+        let is_croatian = self.language == CROATIAN;
+        if is_croatian && previous_language != CROATIAN {
+            self.transcription_model = CROATIAN_TRANSCRIPTION_MODEL.into();
+        }
+        if is_croatian {
+            self.polishing_model = CROATIAN_POLISHING_MODEL.into();
+        } else if self.polishing_model == CROATIAN_POLISHING_MODEL {
+            self.polishing_model = DEFAULT_POLISHING_MODEL.into();
+        }
+    }
+
     /// Resets the language when the resolved transcription model does not
     /// list it; see [`language_for_model`].
     pub fn normalize_language(&mut self) {
@@ -275,6 +303,44 @@ impl SessionSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn choosing_croatian_picks_the_croatian_models() {
+        let mut settings = SessionSettings {
+            language: "hr".into(),
+            transcription_model: "canary-1b-v2-q5-k-m".into(),
+            ..SessionSettings::default()
+        };
+        settings.match_models_to_language("en");
+        assert_eq!(settings.transcription_model, CROATIAN_TRANSCRIPTION_MODEL);
+        assert_eq!(settings.polishing_model, CROATIAN_POLISHING_MODEL);
+    }
+
+    #[test]
+    fn croatian_keeps_a_chosen_transcription_model_but_not_a_skipping_polisher() {
+        let mut settings = SessionSettings {
+            language: "hr".into(),
+            transcription_model: "canary-1b-v2-q5-k-m".into(),
+            ..SessionSettings::default()
+        };
+        settings.match_models_to_language("hr");
+        assert_eq!(settings.transcription_model, "canary-1b-v2-q5-k-m");
+        assert_eq!(settings.polishing_model, CROATIAN_POLISHING_MODEL);
+    }
+
+    #[test]
+    fn leaving_croatian_returns_the_default_polisher() {
+        let mut settings = SessionSettings {
+            language: "en".into(),
+            polishing_model: CROATIAN_POLISHING_MODEL.into(),
+            ..SessionSettings::default()
+        };
+        settings.match_models_to_language("hr");
+        assert_eq!(settings.polishing_model, DEFAULT_POLISHING_MODEL);
+        settings.polishing_model = "apple-intelligence".into();
+        settings.match_models_to_language("en");
+        assert_eq!(settings.polishing_model, "apple-intelligence");
+    }
 
     #[test]
     fn hotkey_strings_parse_and_bare_keys_are_rejected() {

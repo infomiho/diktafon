@@ -30,7 +30,8 @@ fn polish_file(path: Option<&str>) -> Result<()> {
     let models_dir = diktafon_protocol::models_dir();
     let model_path =
         diktafond::manifest::model_path(&models_dir, diktafond::manifest::DEFAULT_POLISHING_MODEL)?;
-    let polisher = diktafond::llm::Polisher::load(&model_path)?;
+    let prompt = diktafond::manifest::model(diktafond::manifest::DEFAULT_POLISHING_MODEL)?.prompt;
+    let polisher = diktafond::llm::Polisher::load(&model_path, prompt)?;
     let control_line = diktafon_protocol::SessionConfig::default().control_line;
     let start = std::time::Instant::now();
     let polished = polisher.polish(transcript.trim(), &control_line)?;

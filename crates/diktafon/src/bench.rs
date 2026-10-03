@@ -1,10 +1,11 @@
 //! Headless benchmark mode: `diktafon --transcribe-file x.wav [--repeat N]
 //! [--json] [--paced] [--chunk-secs N] [--transcription-model ID]
-//! [--polishing-model ID] [--memory-dir DIR]`. Feeds a 16kHz mono s16 WAV through
+//! [--polishing-model ID] [--memory-dir DIR] [--vad | --pieces | --whole]`. Feeds a 16kHz mono s16 WAV through
 //! the daemon (auto-spawning it like a normal session would) and reports
 //! per-stage timings; the daemon's `Polishing` frame marks the ASR/polish
 //! boundary. Batch mode sends the whole file at once and measures raw
-//! throughput; `--paced` replays chunks on the wall clock as if spoken live,
+//! throughput, in fixed slices, in silence chunks (`--vad`), in the live
+//! path's pieces (`--pieces`), or as one piece (`--whole`); `--paced` replays chunks on the wall clock as if spoken live,
 //! measuring what a user would wait at release: backlog at flush, tail ASR,
 //! and polish. Benches run against their own daemon on a temp socket with
 //! history recording off, so runs never appear as the user's dictations.
@@ -56,17 +57,32 @@ pub fn transcribe_file(args: &[String]) -> Result<()> {
         .transpose()
         .context("--chunk-secs wants a number")?
         .unwrap_or(5.0);
-    let mut models = crate::config::SessionSettings::load().models();
+    let settings = crate::config::SessionSettings::load();
+    let mut models = settings.models();
     if let Some(model) = option(args, "--transcription-model") {
         models.transcription = model.to_string();
     }
     if let Some(model) = option(args, "--polishing-model") {
         models.polishing = model.to_string();
     }
+    // The configured language, unless the transcription override cannot
+    // speak it.
+    let mut session = settings.session();
+    session.language = crate::config::language_for_model(
+        &settings.language,
+        &crate::config::transcription_languages(&models.transcription),
+    );
+    let splits: Vec<&str> = ["--whole", "--vad", "--pieces"]
+        .into_iter()
+        .filter(|flag| args.iter().any(|a| a == flag))
+        .collect();
+    anyhow::ensure!(
+        splits.len() <= 1 && (splits.is_empty() || !paced),
+        "use at most one of --whole, --vad, --pieces, and none with --paced"
+    );
 
     let samples = wav_samples(path)?;
     let audio_secs = samples.len() as f32 / TARGET_RATE as f32;
-
     ensure_daemon(&models)?;
     let stream = UnixStream::connect(socket_path()).context("connecting to diktafond")?;
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -97,6 +113,7 @@ pub fn transcribe_file(args: &[String]) -> Result<()> {
     );
     if paced {
         let options = PacedOptions {
+            session: &session,
             chunk_secs,
             repeat,
             json,
@@ -109,16 +126,22 @@ pub fn transcribe_file(args: &[String]) -> Result<()> {
         return run_paced(reader, writer, &samples, &options);
     }
 
+    let batch_chunks = match splits.first().copied() {
+        Some("--whole") => vec![samples.clone()],
+        Some("--vad") => crate::capture::vad_chunks(&crate::ensure_vad_model()?, &samples)?,
+        Some("--pieces") => crate::capture::vad_pieces(&crate::ensure_vad_model()?, &samples)?,
+        _ => samples
+            .chunks(TARGET_RATE as usize * CHUNK_SECS)
+            .map(<[f32]>::to_vec)
+            .collect(),
+    };
     snapshot_memory(memory_dir, 0)?;
     let mut runs = Vec::new();
     for i in 0..repeat {
         let start = Instant::now();
-        write_frame(
-            &mut writer,
-            &ClientMsg::Start(crate::config::SessionSettings::default().session()),
-        )?;
-        for chunk in samples.chunks(TARGET_RATE as usize * CHUNK_SECS) {
-            write_frame(&mut writer, &ClientMsg::Chunk(chunk.to_vec()))?;
+        write_frame(&mut writer, &ClientMsg::Start(session.clone()))?;
+        for chunk in &batch_chunks {
+            write_frame(&mut writer, &ClientMsg::Chunk(chunk.clone()))?;
         }
         write_frame(&mut writer, &ClientMsg::Flush)?;
 
@@ -209,6 +232,7 @@ struct PacedRun {
 /// speech would have ended, so ASR overlaps "speaking" exactly as in a real
 /// session. What remains at Flush is what a user would wait for.
 struct PacedOptions<'a> {
+    session: &'a diktafon_protocol::SessionConfig,
     chunk_secs: f32,
     repeat: usize,
     json: bool,
@@ -238,10 +262,7 @@ fn run_paced(
     let chunk_len = ((TARGET_RATE as f32 * options.chunk_secs) as usize).max(1);
     let mut runs = Vec::new();
     for i in 0..options.repeat {
-        write_frame(
-            &mut writer,
-            &ClientMsg::Start(crate::config::SessionSettings::default().session()),
-        )?;
+        write_frame(&mut writer, &ClientMsg::Start(options.session.clone()))?;
         let started = Instant::now();
         let mut acked = 0usize;
         let mut raw_parts = Vec::new();

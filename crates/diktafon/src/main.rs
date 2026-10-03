@@ -189,6 +189,8 @@ fn main() -> Result<()> {
         loaded_settings.polishing_model = diktafon_protocol::DEFAULT_POLISHING_MODEL.into();
     }
     loaded_settings.normalize_language();
+    let language = loaded_settings.language.clone();
+    loaded_settings.match_models_to_language(&language);
     if original != healed_fields(&loaded_settings) {
         loaded_settings.save()?;
     }

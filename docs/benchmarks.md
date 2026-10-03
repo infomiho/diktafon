@@ -155,3 +155,18 @@ Whisper Q5_K_M loses a weekday and a time of day and changes a verb and a subjec
 Croatian is opt-in, so the gates are absolute rather than relative to Canary 1B Flash: no wrong-language output, no dropped clause in whole-clip runs, no text on zero padding, at least 10x realtime warm, and peak RSS at or below Cohere's 1.91 GB. WER has no threshold. Both Whisper quantizations pass the language, speed, and memory gates and fail the zero-padding gate, and Q8_0 also fails the dropped-clause gate on review. Parakeet fails the dropped-clause gate on review. Canary v2 passes all five.
 
 Decision: Canary 1B v2 Q5_K_M is the catalog's Croatian model. Whisper turbo is not shipped. Canary v2 is the only candidate that passes every gate, it has the fewest meaning-changing errors (2 against Whisper Q5_K_M's 4) and the lowest WER, though within Whisper's uncertainty, and it runs 2.2x faster than Whisper Q5_K_M for 0.18 GB more peak RSS and a 217 MB larger download. Its `hr` hint is a real prompt token, so the product's per-session language needs no daemon change. Parakeet is the fastest and smallest but has twice the edits and the most meaning-changing errors, ignores the language hint, and degrades badly when trailing audio changes. Croatian still pastes raw ASR because no polisher supports `hr`, so the remaining errors reach the user unedited.
+
+## Diktafon HR 1 (2026-10-03)
+
+Diktafon Dictate HR 1 (fine-tuned Canary 1B v2) and Diktafon Polisher HR 1 (fine-tuned Qwen3.5-0.8B) replace stock Canary 1B v2 and raw output for Croatian. Word error rate with number formatting normalised, Q5_K_M in transcribe.cpp and llama.cpp on an M2 Pro:
+
+| Eval set | Canary 1B v2 | Diktafon HR 1 |
+| --- | ---: | ---: |
+| Dictation, 50 clips | 8.6% | 4.7% |
+| Same clips with room reverb and noise | 19.0% | 11.9% |
+| Same clips joined into 25 to 45 s inputs | 14.4% | 5.2% |
+| Volunteers, 44 clips, 5 speakers | 18.6% | 12.0% |
+| Final text against the written references (with the polisher) | 12.1% | 6.5% |
+
+Dictate HR 1 runs at 43x realtime in 1.02 GB, and a warm polish takes 0.32 s median. Sending a dictation of up to 40 s to the ASR as one piece instead of one piece per pause cut the final-text WER from 7.8% to 6.7% on the same clips with an earlier pair of these models, because every piece is transcribed as a finished sentence. Model cards: [Dictate HR 1](https://huggingface.co/infomiho/diktafon-dictate-hr-1), [Polisher HR 1](https://huggingface.co/infomiho/diktafon-polisher-hr-1).
+

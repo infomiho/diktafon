@@ -234,6 +234,7 @@ impl Recorder {
         let silero = SileroVad::new(&self.vad_model, CONFIG.speech_threshold)
             .with_context(|| format!("loading VAD model {}", self.vad_model.display()))?;
         let mut chunker = VadChunker::new(Box::new(silero));
+        let mut pieces = PieceGrouper::default();
         let mut resampler = StreamResampler::new(self.input()?.rate, TARGET_RATE);
 
         let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
@@ -276,8 +277,11 @@ impl Recorder {
                     let frame_size = chunker.frame_size();
                     let mut frames = frame_tail.chunks_exact(frame_size);
                     for frame in &mut frames {
-                        if let Some(chunk) = chunker.push_frame(frame) {
-                            let _ = chunk_tx.send(Msg::Chunk(chunk));
+                        if let Some(piece) = chunker
+                            .push_frame(frame)
+                            .and_then(|chunk| pieces.push(chunk))
+                        {
+                            let _ = chunk_tx.send(Msg::Chunk(piece));
                         }
                     }
                     frame_tail = frames.remainder().to_vec();
@@ -287,8 +291,14 @@ impl Recorder {
                             // result, so nothing can paste late.
                             let _ = chunk_tx.send(Msg::Cancel);
                         } else {
-                            if let Some(chunk) = chunker.finish(&frame_tail) {
-                                let _ = chunk_tx.send(Msg::Chunk(chunk));
+                            if let Some(piece) = chunker
+                                .finish(&frame_tail)
+                                .and_then(|chunk| pieces.push(chunk))
+                            {
+                                let _ = chunk_tx.send(Msg::Chunk(piece));
+                            }
+                            if let Some(piece) = pieces.finish() {
+                                let _ = chunk_tx.send(Msg::Chunk(piece));
                             }
                             let _ = chunk_tx.send(Msg::Flush);
                         }
@@ -423,6 +433,41 @@ fn push_mono(buffer: &Arc<Mutex<Vec<f32>>>, data: &[f32], channels: usize) {
         data.chunks_exact(channels)
             .map(|frame| frame.iter().sum::<f32>() / channels as f32),
     );
+}
+
+/// Joins speech chunks into pieces of up to `max_piece_secs` (see Config), so
+/// a dictation of that length reaches the ASR whole and longer ones are split
+/// only at pauses. A single chunk longer than the limit stays one piece.
+#[derive(Default)]
+struct PieceGrouper {
+    pending: Vec<f32>,
+}
+
+impl PieceGrouper {
+    /// The finished piece when `chunk` no longer fits beside the held audio.
+    fn push(&mut self, chunk: Vec<f32>) -> Option<Vec<f32>> {
+        let max = (CONFIG.max_piece_secs * TARGET_RATE as f32) as usize;
+        let full = !self.pending.is_empty() && self.pending.len() + chunk.len() > max;
+        let piece = full.then(|| std::mem::take(&mut self.pending));
+        self.pending.extend(chunk);
+        piece
+    }
+
+    fn finish(&mut self) -> Option<Vec<f32>> {
+        (!self.pending.is_empty()).then(|| std::mem::take(&mut self.pending))
+    }
+}
+
+/// Live-path pieces for retained audio: silence chunks grouped exactly as a
+/// session groups them.
+pub(crate) fn vad_pieces(vad_model: &std::path::Path, samples: &[f32]) -> Result<Vec<Vec<f32>>> {
+    let mut pieces = PieceGrouper::default();
+    let mut grouped: Vec<Vec<f32>> = vad_chunks(vad_model, samples)?
+        .into_iter()
+        .filter_map(|chunk| pieces.push(chunk))
+        .collect();
+    grouped.extend(pieces.finish());
+    Ok(grouped)
 }
 
 fn min_chunk_samples() -> usize {
@@ -820,6 +865,34 @@ mod tests {
             "{} samples",
             expected.len()
         );
+    }
+
+    #[test]
+    fn pieces_hold_a_dictation_whole_until_the_limit() {
+        let second = TARGET_RATE as usize;
+        let max = CONFIG.max_piece_secs as usize * second;
+        let mut pieces = PieceGrouper::default();
+        assert_eq!(pieces.push(vec![0.0; 10 * second]), None);
+        assert_eq!(pieces.push(vec![0.0; max - 10 * second]), None);
+        let full = pieces
+            .push(vec![0.0; second])
+            .expect("the limit closes a piece");
+        assert_eq!(full.len(), max);
+        assert_eq!(pieces.finish().map(|piece| piece.len()), Some(second));
+        assert_eq!(pieces.finish(), None);
+    }
+
+    #[test]
+    fn a_chunk_longer_than_the_limit_stays_one_piece() {
+        let second = TARGET_RATE as usize;
+        let long = CONFIG.max_piece_secs as usize * second + second;
+        let mut pieces = PieceGrouper::default();
+        assert_eq!(pieces.push(vec![0.0; long]), None);
+        assert_eq!(
+            pieces.push(vec![0.0; second]).map(|piece| piece.len()),
+            Some(long)
+        );
+        assert_eq!(pieces.finish().map(|piece| piece.len()), Some(second));
     }
 }
 

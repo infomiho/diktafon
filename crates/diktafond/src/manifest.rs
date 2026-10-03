@@ -65,6 +65,9 @@ pub struct Model {
     pub directory: Option<String>,
     #[allow(dead_code)]
     pub minimum_macos: Option<u32>,
+    /// Prompt format of a llama.cpp polisher.
+    #[serde(default)]
+    pub prompt: crate::llm::PromptStyle,
     pub files: Vec<ModelFile>,
 }
 

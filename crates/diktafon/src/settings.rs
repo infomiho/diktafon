@@ -12,7 +12,7 @@ use crate::statusbar::DaemonStatus;
 use crate::updater::{self, UpdateCheck};
 use crate::{autostart, statusbar, theme};
 use chrono::{Datelike, Local, NaiveDate};
-use diktafon_protocol::HistoryEntry;
+use diktafon_protocol::{HistoryEntry, ModelSelection};
 use gpui::{
     Animation, AnimationExt, App, AppContext, Bounds, ClipboardItem, Context, Div, Entity,
     ParentElement, Render, SharedString, Stateful, TitlebarOptions, Window, WindowBounds,
@@ -879,9 +879,15 @@ impl SettingsWindow {
             onboarded: self.settings.lock().unwrap().onboarded,
             polishing_model,
         };
+        let previous_language = self.settings.lock().unwrap().language.clone();
+        updated.match_models_to_language(&previous_language);
         let models = updated.models();
         updated.transcription_model = models.transcription.clone();
+        updated.polishing_model = models.polishing.clone();
         updated.normalize_language();
+        updated.match_models_to_language(&previous_language);
+        let models = updated.models();
+        self.select_models(&models, window, cx);
         self.refresh_languages(&updated, window, cx);
         if let Err(e) = updated.save() {
             eprintln!("saving settings failed: {e:#}");
@@ -889,6 +895,35 @@ impl SettingsWindow {
         }
         *self.settings.lock().unwrap() = updated;
         cx.global::<crate::AppServices>().models.set(models);
+    }
+
+    /// Point both model rows at `models`, which differ from the rows when a
+    /// language change picked the Croatian models.
+    fn select_models(
+        &mut self,
+        models: &ModelSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rows = [
+            (
+                &self.transcription_select,
+                &self.transcription_ids,
+                &models.transcription,
+            ),
+            (
+                &self.polishing_select,
+                &self.polishing_ids,
+                &models.polishing,
+            ),
+        ];
+        for (select, ids, id) in rows {
+            if let Some(row) = ids.iter().position(|known| known == id) {
+                select.update(cx, |select, cx| {
+                    select.set_selected_index(Some(IndexPath::new(row)), window, cx)
+                });
+            }
+        }
     }
 
     fn selected_language(&self, cx: &App) -> Option<String> {

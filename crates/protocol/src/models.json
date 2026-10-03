@@ -74,6 +74,30 @@
       ]
     },
     {
+      "id": "diktafon-dictate-hr-1-q5-k-m",
+      "category": "transcription",
+      "name": "Diktafon Dictate HR 1",
+      "backend": "transcribe_cpp",
+      "languages": ["hr"],
+      "capabilities": {
+        "streaming": false,
+        "translation": false,
+        "language_detection": false,
+        "timestamps": false,
+        "local_only": true
+      },
+      "license": "cc-by-4.0",
+      "notices": ["nvidia-canary", "transcribe-cpp"],
+      "files": [
+        {
+          "path": "diktafon-dictate-hr-1-q5_k_m.gguf",
+          "url": "https://huggingface.co/infomiho/diktafon-dictate-hr-1-GGUF/resolve/0736d5afe18085b8a122f0b3d0a733ab690aef9e/diktafon-dictate-hr-1-q5_k_m.gguf",
+          "size": 836664032,
+          "sha256": "108489d828f8794e0653cd359551053369bfb223fbb1bf2552dbf69aa39755c7"
+        }
+      ]
+    },
+    {
       "id": "apple-intelligence",
       "category": "polishing",
       "name": "Apple Intelligence",
@@ -112,6 +136,31 @@
           "url": "https://huggingface.co/superwhisper/s1-mini-GGUF/resolve/8eab4779866f477ae6e7f237ca45fc2c65153f50/s1-mini-q4_k_m.gguf",
           "size": 484219808,
           "sha256": "3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634"
+        }
+      ]
+    },
+    {
+      "id": "diktafon-polisher-hr-1-q5-k-m",
+      "category": "polishing",
+      "name": "Diktafon Polisher HR 1",
+      "backend": "llama_cpp",
+      "languages": ["hr"],
+      "capabilities": {
+        "streaming": false,
+        "translation": false,
+        "language_detection": false,
+        "timestamps": false,
+        "local_only": true
+      },
+      "license": "apache-2.0",
+      "notices": ["qwen3", "llama-cpp"],
+      "prompt": "croatian",
+      "files": [
+        {
+          "path": "diktafon-polisher-hr-1-q5_k_m.gguf",
+          "url": "https://huggingface.co/infomiho/diktafon-polisher-hr-1-GGUF/resolve/1a03db5447638fa17689baaba71a0a242e0d0eab/diktafon-polisher-hr-1-q5_k_m.gguf",
+          "size": 577998176,
+          "sha256": "26dd333eff4a7a85bc76d90a5623b86766fc862c24a1a7328929b2e1e76240fc"
         }
       ]
     }

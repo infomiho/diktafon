@@ -32,6 +32,8 @@ pub const MODEL_MISMATCH_PREFIX: &str = "model selection mismatch";
 
 pub const DEFAULT_TRANSCRIPTION_MODEL: &str = "canary-1b-flash-q5-k-m";
 pub const DEFAULT_POLISHING_MODEL: &str = "s1-mini-q4-k-m";
+pub const CROATIAN_TRANSCRIPTION_MODEL: &str = "diktafon-dictate-hr-1-q5-k-m";
+pub const CROATIAN_POLISHING_MODEL: &str = "diktafon-polisher-hr-1-q5-k-m";
 pub const MODEL_CATALOG_JSON: &str = include_str!("models.json");
 
 /// Models a client expects the daemon to have resident. It is exchanged in the

@@ -766,7 +766,7 @@ impl Transport {
         // The models are pinned for the drive: a switch landing mid-rerun
         // aborts it instead of letting the retire path SIGTERM the daemon
         // it runs on.
-        let chunks = match crate::capture::vad_chunks(&vad_model, &samples) {
+        let chunks = match crate::capture::vad_pieces(&vad_model, &samples) {
             Ok(chunks) => chunks,
             Err(e) => {
                 eprintln!("VAD chunking failed, sending the whole clip: {e:#}");
