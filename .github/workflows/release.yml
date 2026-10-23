@@ -13,7 +13,7 @@ jobs:
     env:
       KEYCHAIN_PATH: ${{ github.workspace }}/release.keychain-db
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # checkout leaves the tag pointing at the commit; the annotated tag
       # object holds the release notes, so fetch it explicitly.
       - name: Fetch the annotated tag
