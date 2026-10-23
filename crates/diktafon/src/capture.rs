@@ -437,7 +437,7 @@ fn push_mono(buffer: &Arc<Mutex<Vec<f32>>>, data: &[f32], channels: usize) {
 
 /// Joins speech chunks into pieces of up to `max_piece_secs` (see Config), so
 /// a dictation of that length reaches the ASR whole and longer ones are split
-/// only at pauses. A single chunk longer than the limit stays one piece.
+/// at pauses, or where `VadChunker` cuts unbroken speech.
 #[derive(Default)]
 struct PieceGrouper {
     pending: Vec<f32>,
@@ -446,8 +446,8 @@ struct PieceGrouper {
 impl PieceGrouper {
     /// The finished piece when `chunk` no longer fits beside the held audio.
     fn push(&mut self, chunk: Vec<f32>) -> Option<Vec<f32>> {
-        let max = (CONFIG.max_piece_secs * TARGET_RATE as f32) as usize;
-        let full = !self.pending.is_empty() && self.pending.len() + chunk.len() > max;
+        let full =
+            !self.pending.is_empty() && self.pending.len() + chunk.len() > max_piece_samples();
         let piece = full.then(|| std::mem::take(&mut self.pending));
         self.pending.extend(chunk);
         piece
@@ -470,8 +470,50 @@ pub(crate) fn vad_pieces(vad_model: &std::path::Path, samples: &[f32]) -> Result
     Ok(grouped)
 }
 
+fn secs_to_samples(secs: f32) -> usize {
+    (secs * TARGET_RATE as f32) as usize
+}
+
 fn min_chunk_samples() -> usize {
-    (CONFIG.min_chunk_secs * TARGET_RATE as f32) as usize
+    secs_to_samples(CONFIG.min_chunk_secs)
+}
+
+fn max_piece_samples() -> usize {
+    secs_to_samples(CONFIG.max_piece_secs)
+}
+
+/// How far back from the piece limit a forced cut looks for a quiet point.
+const FORCED_CUT_SEARCH_SECS: f32 = 15.0;
+/// Span whose energy is compared when choosing a forced cut: long enough to
+/// skip the gap inside a plosive, short enough to fit a breath.
+const FORCED_CUT_WINDOW_SECS: f32 = 0.15;
+
+/// Middle of the lowest-energy window within the last `search_len` samples,
+/// starting no earlier than `min_cut` so the piece before the cut is never a
+/// sliver. Ties go to the latest window, which
+/// keeps the piece before the cut as long as possible.
+fn quietest_point(samples: &[f32], search_len: usize, min_cut: usize, window_step: usize) -> usize {
+    let window = secs_to_samples(FORCED_CUT_WINDOW_SECS);
+    let Some(last_start) = samples.len().checked_sub(window) else {
+        return samples.len();
+    };
+    let from = samples
+        .len()
+        .saturating_sub(search_len)
+        .max(min_cut)
+        .min(last_start);
+    let energy = |start: usize| -> f32 {
+        samples[start..start + window]
+            .iter()
+            .map(|sample| sample * sample)
+            .sum()
+    };
+    (from..last_start + 1)
+        .step_by(window_step)
+        .rev()
+        .map(|start| (start, energy(start)))
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map_or(samples.len(), |(start, _)| start + window / 2)
 }
 
 /// Cuts the sample stream into speech chunks using a smoothed VAD: a chunk is
@@ -524,7 +566,7 @@ impl VadChunker {
                 self.pending.extend_from_slice(&prefill[skip..]);
             }
             self.pending.extend_from_slice(frame);
-            return None;
+            return self.cut_overlong_speech();
         }
         if was_in_speech {
             self.frames_since_speech = 0;
@@ -535,6 +577,24 @@ impl VadChunker {
             self.frames_since_speech = self.frames_since_speech.saturating_add(1);
         }
         None
+    }
+
+    /// Speech the VAD never closes would reach the ASR as one piece far past
+    /// what the model handles, which then repeats a phrase to the end. At the
+    /// piece limit the pending speech is cut at its quietest recent stretch,
+    /// most likely a breath between words.
+    fn cut_overlong_speech(&mut self) -> Option<Vec<f32>> {
+        if self.pending.len() < max_piece_samples() {
+            return None;
+        }
+        let cut = quietest_point(
+            &self.pending,
+            secs_to_samples(FORCED_CUT_SEARCH_SECS),
+            min_chunk_samples(),
+            self.frame_size(),
+        );
+        let rest = self.pending.split_off(cut);
+        Some(std::mem::replace(&mut self.pending, rest))
     }
 
     /// End of session: emit whatever speech is pending, including a partial
@@ -776,6 +836,34 @@ mod tests {
     }
 
     #[test]
+    fn unbroken_speech_is_cut_at_its_quietest_point_before_the_limit() {
+        let mut chunker = test_chunker();
+        let mut samples = noise(30.0);
+        // A dip quieter than the rest but still above the VAD threshold, so
+        // the segment never ends on its own.
+        samples.extend(vec![0.02; 2400]);
+        samples.extend(noise(60.0));
+        let chunks = feed(&mut chunker, &samples);
+        let secs: Vec<f32> = chunks
+            .iter()
+            .map(|chunk| chunk.len() as f32 / TARGET_RATE as f32)
+            .collect();
+        assert_eq!(chunks.len(), 2, "chunks of {secs:?}");
+        assert!(
+            (30.0..=30.15).contains(&secs[0]),
+            "first cut at {}s",
+            secs[0]
+        );
+        assert!(secs.iter().all(|s| *s <= CONFIG.max_piece_secs));
+        let emitted = chunks.iter().map(Vec::len).sum::<usize>()
+            + chunker.finish(&[]).map_or(0, |rest| rest.len());
+        assert_eq!(
+            emitted,
+            samples.len() - samples.len() % chunker.frame_size()
+        );
+    }
+
+    #[test]
     fn short_segment_is_held_and_merged() {
         let mut chunker = test_chunker();
         let mut samples = noise(0.5);
@@ -880,19 +968,6 @@ mod tests {
         assert_eq!(full.len(), max);
         assert_eq!(pieces.finish().map(|piece| piece.len()), Some(second));
         assert_eq!(pieces.finish(), None);
-    }
-
-    #[test]
-    fn a_chunk_longer_than_the_limit_stays_one_piece() {
-        let second = TARGET_RATE as usize;
-        let long = CONFIG.max_piece_secs as usize * second + second;
-        let mut pieces = PieceGrouper::default();
-        assert_eq!(pieces.push(vec![0.0; long]), None);
-        assert_eq!(
-            pieces.push(vec![0.0; second]).map(|piece| piece.len()),
-            Some(long)
-        );
-        assert_eq!(pieces.finish().map(|piece| piece.len()), Some(second));
     }
 }
 

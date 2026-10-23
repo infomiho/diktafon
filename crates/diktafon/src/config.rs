@@ -38,8 +38,8 @@ pub struct Config {
     /// leaves "do četvrtka, ne. Petka" for the polisher; whole dictations
     /// measured 1.1 points of WER better. Canary is trained on inputs up to
     /// about 40 s, so longer dictations are cut at the pauses that keep pieces
-    /// under this. One unbroken stretch of speech longer than this still goes
-    /// as a single piece, since the VAD offers no cut inside it.
+    /// under this. Speech without a pause long enough to end a VAD segment is
+    /// cut at its quietest point before reaching this length.
     pub max_piece_secs: f32,
 }
 
